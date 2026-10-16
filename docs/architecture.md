@@ -80,7 +80,7 @@ from the shared board schema's Model options.
 
 Several projects share a GitHub Project (today vecs and SpaceRocks share vworlds #4), so its schema
 is one definition, versioned in vmethod as `board/<name>.schema`. It holds the Status options, the
-fields (Estimate options 0…999, Model options, Progress), the Progress emoji table, and the "Done
+fields (Estimate as a number of points, Model options, Progress text), the Progress emoji table, and the "Done
 keeps the last 6" policy. `vmethod.conf` only names the board. A schema change is a vmethod
 release, adopted by every project on that board.
 
