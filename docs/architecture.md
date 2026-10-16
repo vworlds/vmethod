@@ -208,24 +208,48 @@ pools these, so a lesson paid for in one project is free in the others.
 ### The model log (per project, shared format)
 
 Each project keeps its raw log at `.vmethod-data/model-log.jsonl`. It is project data, written by
-`grade.sh` after every merge. One record per delivery, in a format vmethod defines and validates:
+`grade.sh` after every closed delivery (merged or not). One record per delivery, in a format
+vmethod defines and validates:
 
 ```json
-{"date":"2026-10-15","repo":"vworlds/vecs","pr":321,"task":"Markdown/Mermaid validator in posting scripts",
- "kind":"tooling","family":"luna","model":"<provider>/<id>","points":3,"rounds":1,
- "round_causes":[],"outcome":"merged","findings":["clean"],"notes":"reproduces GitHub error exactly"}
+{"date":"2026-10-15","repo":"vworlds/spacerocks","pr":319,"task":"…","kind":"gameplay",
+ "segments":[{"family":"sol","model":"<provider>/<id>","rounds":[1],"why":"start"},
+             {"family":"glm","model":"<provider>/<id>","rounds":[2],"why":"quota"},
+             {"family":"sol","model":"<provider>/<id>","rounds":[3],"why":"rebase"}],
+ "points_open":5,"points_final":8,"rounds":3,
+ "round_causes":["worker-defect","integration","prompt-defect"],
+ "outcome":"merged",
+ "findings":[{"tag":"fix-worsened-baseline","caught_by":"orchestrator-verify"}],
+ "notes":"…"}
 ```
 
-- `round_causes` separates worker defects from rounds the worker didn't cause, e.g.
-  `design-change`, `owner-question`, `new-requirement`, `integration`.
-- `findings` uses a shared tag vocabulary, e.g. `clean`, `weak-tests`, `duplication`,
-  `scope-creep`, `stalled-silently`, `security-catch`, `good-questions`, `could-use-cheaper`.
+- **`segments`**: one per model that worked on the delivery, with the rounds it did and why it
+  took over (`start`, `quota`, `escalation`, `rebase`, `owner-request`). A switch mid-task is no
+  longer hidden.
+- **`points_open` / `points_final`**: the estimate when the task opened and the final grade. The
+  gap is the calibration signal.
+- **`round_causes`**: separates worker defects from rounds the worker didn't cause:
+  `worker-defect`, `design-change`, `playtest-design-change`, `owner-question`,
+  `new-requirement`, `integration`, `prompt-defect`. `prompt-defect` covers an under-specified
+  brief, so the model's record stays fair and the orchestrator's prompts get graded too.
+- **`outcome`**: `merged`, `rejected-in-playtest`, `reassigned`, `abandoned`. A delivery whose
+  metrics pass but which the owner rejects in playtest is among the most valuable records.
+- **`findings`**: each entry has a tag from the shared vocabulary and `caught_by`
+  (`worker-tests`, `ci`, `orchestrator-verify`, `owner-playtest`, `post-merge`), which shows
+  which gate earns its cost. The vocabulary includes, among others:
+  - quality: `clean`, `weak-tests`, `duplication`, `scope-creep`, `fix-worsened-baseline`,
+    `metrics-pass-feel-fails`, `committed-artefacts`;
+  - conduct: `stalled-silently`, `ran-full-suite`, `crossed-messages`;
+  - credit: `security-catch`, `good-questions`, `stop-and-ask`, `could-use-cheaper`.
+
+  New tags are added through `learning` PRs.
 - `points` follow the shared estimate scale.
 
 The model is graded on the outcome, not on the size of the task.
 
-vecs' `.agents/model-log.md` table and SpaceRocks' `grade.sh` output are converted once, at
-adoption.
+Both existing logs are hand-kept tables: vecs' `.agents/model-log.md` and the "Model log" in
+SpaceRocks' `docs/agents/orchestrator.md`. They are converted once, at adoption. `grade.sh`, which
+today only writes the board's Estimate, gains the log writing.
 
 ### Contributing back
 
