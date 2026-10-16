@@ -34,7 +34,10 @@ test('YAML 1.2 strings, nested keys, explicit validation and unknown keys', () =
   const path = join(root, 'vmethod.yaml');
   writeFileSync(
     path,
-    readFileSync(path, 'utf8') + '\ntrack: no\nstateName: "1.10"\n',
+    readFileSync(path, 'utf8').replace(
+      'stateName: example-state',
+      'stateName: "1.10"\ntrack: no',
+    ),
   );
   expect(configValue(getConfig(root, {}), 'track')).toBe('no');
   expect(configValue(getConfig(root, {}), 'stateName')).toBe('1.10');
@@ -46,7 +49,14 @@ test('YAML 1.2 strings, nested keys, explicit validation and unknown keys', () =
     path,
     readFileSync(path, 'utf8').replace('number: 1', 'number: wrong'),
   );
-  expect(() => getConfig(root, {})).toThrow(/vmethod.yaml:8:.*integer/);
+  const numberLine =
+    readFileSync(path, 'utf8')
+      .split('\n')
+      .findIndex((line) => line.includes('number: wrong')) + 1;
+  expect(numberLine).toBeGreaterThan(0);
+  expect(() => getConfig(root, {})).toThrow(
+    new RegExp(`vmethod.yaml:${numberLine}:.*integer`),
+  );
 }, 15000);
 
 test('VMETHOD overrides config; VECS, SPACEROCKS and bare BASE are ignored', () => {
@@ -78,9 +88,12 @@ test('default board switch, arrays and credential-name overrides are typed and v
   const path = join(root, 'vmethod.yaml');
   writeFileSync(
     path,
-    readFileSync(path, 'utf8') + '\ncredentials:\n  githubToken: GH_TOKEN\n',
+    readFileSync(path, 'utf8').replace('EXAMPLE_GITHUB_TOKEN', 'GH_TOKEN'),
   );
   expect(getConfig(root, {})).toMatchObject({ board: { enabled: true } });
+  expect(getConfig(root, {})).toMatchObject({
+    credentials: { githubToken: 'GH_TOKEN' },
+  });
   expect(
     getConfig(root, {
       VMETHOD_CREDENTIALS_GITHUB_TOKEN: 'OTHER_TOKEN',

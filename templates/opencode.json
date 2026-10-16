@@ -1,0 +1,41 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "shell", "resource": "*", "effect": "ask" },
+    {
+      "action": "shell",
+      "resource": "npm exec --no -- vmethod *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "bash scripts/agent/*.sh *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "bash scripts/orchestrator/*.sh *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "./scripts/agent/*.sh *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "./scripts/orchestrator/*.sh *",
+      "effect": "allow"
+    },
+    { "action": "shell", "resource": "gh *", "effect": "deny" },
+    { "action": "shell", "resource": "npx *", "effect": "deny" },
+    { "action": "shell", "resource": "curl *github.com*", "effect": "deny" },
+    { "action": "shell", "resource": "wget *github.com*", "effect": "deny" },
+    { "action": "shell", "resource": "git push*", "effect": "deny" },
+    {
+      "action": "webfetch",
+      "resource": "https://api.github.com*",
+      "effect": "deny"
+    }
+  ]
+}

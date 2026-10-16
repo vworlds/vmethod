@@ -1,10 +1,33 @@
-# Replace example identity and board settings before use.
+# Example only: replace identity, paths, recipes and env names before use.
 repo: example/project
 org: example
 baseBranch: dev
 releaseBranch: master
+workerUser: example-worker
+stateName: example-state
+branches:
+  taskPattern: '<number>-<slug>'
+  worktreeRoot: .worktrees
+  mainCheckout: /replace/with/consumer/checkout
+  packPrefix: pack/
+  trackPrefix: track/
 board:
+  enabled: true
   owner: example
   number: 1
   repos: [example/project]
 learningsPrivacy: public
+checks:
+  verify: [npm run test]
+  release: [npm run build]
+  docsGlob: 'docs/**/*.md'
+  ci: [check]
+postMerge:
+  install: npm ci
+  trigger: package-lock.json
+changelog:
+  directory: changes/unreleased
+  kinds: [breaking, feature, fix]
+credentials:
+  githubToken: EXAMPLE_GITHUB_TOKEN
+  workerPassword: EXAMPLE_WORKER_PASSWORD

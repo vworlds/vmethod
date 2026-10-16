@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm exec --no -- vmethod *)",
+      "Bash(bash scripts/agent/*.sh *)",
+      "Bash(bash scripts/orchestrator/*.sh *)",
+      "Bash(./scripts/agent/*.sh *)",
+      "Bash(./scripts/orchestrator/*.sh *)"
+    ],
+    "deny": [
+      "Bash(gh *)",
+      "Bash(npx *)",
+      "Bash(curl *github.com*)",
+      "Bash(wget *github.com*)",
+      "Bash(git push*)",
+      "WebFetch(domain:api.github.com)"
+    ]
+  }
+}

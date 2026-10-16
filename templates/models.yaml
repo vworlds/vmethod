@@ -1,4 +1,13 @@
+# Replace ids with installed models. Family names must match board options.
 - family: sol
   model: example/replace-me
   kind: opencode
+  gate: none
+- family: astra
+  model: example/owner-gated-model
+  kind: opencode
+  gate: owner
+- family: sonnet
+  model: replace-with-installed-model-id
+  kind: claude
   gate: none
