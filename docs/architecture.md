@@ -94,9 +94,10 @@ the project. A release is adopted by vmethod exactly as by any consumer.
 ### `vmethod.yaml` (per project)
 
 YAML at the repo root, validated against a JSON Schema shipped in the package (`vmethod check`).
-The parser follows YAML 1.2, so `no` stays a string and `1.10` stays `1.10`. Environment variables
-override any key, so track sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`. These become
-`VMETHOD_TRACK` / `VMETHOD_BASE`, with the old names accepted as aliases.
+The parser follows YAML 1.2, so `no` stays a string and `1.10` stays `1.10`. `VMETHOD_*` environment
+variables override any key (e.g. `VMETHOD_TRACK`, `VMETHOD_BASE`, `VMETHOD_BOARD=off`). There are
+no project prefixes: every orchestrator runs with a private environment, and consumers rename
+`VECS_*` / `SPACEROCKS_*` variables on adoption (owner decision, #14).
 
 | Group | Keys (indicative) |
 |---|---|
