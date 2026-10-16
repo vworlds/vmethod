@@ -40,9 +40,17 @@ an exactly pinned devDependency (`"@vworlds/vmethod": "1.2.0"`). Both current co
   test covers this.
 - **The package replaces itself during a merge.** `merge-task` fast-forwards the main checkout
   and runs `npm ci`, which rewrites `node_modules/@vworlds/vmethod` while `merge-task` runs from
-  it. The TS bundle is loaded once at start, so it is safe. Legacy bash is read as it runs, so the
-  CLI copies a legacy script to a temp file before running it, and every legacy script keeps
-  `main "$@"; exit`. A test replaces the package mid-run.
+  it. The hazard is **version mixing**: a later step of the same run (a sourced helper, a second
+  legacy script, a lazily imported chunk) loading the *new* version in the middle of an
+  old-version run. So:
+  - the TS build is a single bundle without code splitting, so there is no dynamic `import()` of
+    chunks;
+  - at the start of a run, the CLI snapshots the whole `legacy/` tree into a per-run temp
+    directory, and every legacy step of that run executes from the snapshot;
+  - `merge-task` reinstalls dependencies as its **last** step, after archiving and board updates;
+  - every legacy script keeps `main "$@"; exit`;
+  - a test replaces the package between two steps and checks that every later step ran from the
+    version the run started with.
 - **`mermaid` is pinned to GitHub's renderer version exactly.** The release declares that version,
   and `vmethod check` fails if the installed peer differs. A peer range would let consumers
   drift, and the check is only useful if it parses as GitHub does.
