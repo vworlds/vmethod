@@ -30,9 +30,8 @@ We chose this over a git submodule because:
 | `vmethod check --online` | Also compares the live board's fields and options against the shared board schema. Opt-in. |
 
 **Wrappers.** `sync` writes `scripts/agent/<x>.sh` and `scripts/orchestrator/<x>.sh` as one-line
-`exec "$(git rev-parse --show-toplevel)/.vmethod/scripts/..." "$@"` stubs, each marked
-`# vmethod wrapper`. (The stub resolves the toplevel without needing git if
-`VMETHOD_ROOT` is set.) The paths workers already know keep working. `sync` never overwrites a file
+`exec "$(dirname "$0")/../../.vmethod/scripts/..." "$@"` stubs (no git needed), each marked
+`# vmethod wrapper`. The paths workers already know keep working. `sync` never overwrites a file
 that lacks the marker, so project scripts can sit next to the wrappers. A script that vmethod
 renames keeps a one-release alias.
 
