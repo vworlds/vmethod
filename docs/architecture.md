@@ -65,7 +65,7 @@ sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TR
 | Group | Keys (indicative) |
 |---|---|
 | Identity | repo slug, base branch, release branch, owner / orchestrator / worker logins, worker OS user |
-| Board | `BOARD_OWNER`, `BOARD_NUMBER`, `BOARD_REPOS` (all repos on the board; >1 = shared). The shape comes from `board/schema` |
+| Board | `BOARD_OWNER`, `BOARD_NUMBER`, `BOARD_REPOS`, `BOARD_LOCK_REPO` (all repos on the board; >1 = shared). The shape comes from `board/schema` |
 | Branches | task-branch pattern, worktree root, main checkout path, pack and track prefixes |
 | Checks | verify steps, release pre-check steps, docs Markdown glob, CI check names |
 | Post-merge | dependency install command and its trigger file (e.g. `npm ci` / `package-lock.json`) |
@@ -99,6 +99,10 @@ migrated: 2026-11-02T10:14Z by spacerocks79 (vmethod v1.1.0)
 <!-- /vmethod-board -->
 ```
 
+The README is also human-edited (board notes). `migrate` rewrites only the text between the
+markers, re-reads the README just before each write, and refuses to write if the markers are
+missing (except on the first `migrate`, which appends the block) or duplicated.
+
 A board with no block is version 0 (unmanaged). `min_compatible` is the lowest `BOARD_VERSION`
 whose scripts still work on this board. Expand migrations leave it alone; a contract migration
 raises it.
@@ -127,14 +131,18 @@ the latest migration, generated from the migrations and used by the scripts.
 
 1. **Read** the board's version N from the README block, and the target version from the release.
    If the board is already at or above the target, do nothing; it never downgrades.
-2. **Lock.** A Project README has no compare-and-set, so the lock is optimistic:
-   - Write `lock: <run-id> <login> expires <time+15min>` into the block.
-   - Wait a few seconds, then re-read. Proceed only if the line still carries this run's id.
-     Otherwise another run won, and this one exits.
-   - Re-read the lock before each migration and before each version bump, and extend the expiry
-     as the run goes.
-   - Another run that finds an unexpired lock stops. An expired one can be taken over.
-   - Tests cover two concurrent `migrate` runs.
+2. **Lock.** A Project README has no compare-and-set, so the lock is taken atomically elsewhere:
+   - Create the git ref `refs/vmethod-locks/board-<owner>-<number>` in `BOARD_LOCK_REPO` (a repo
+     every orchestrator on the board can push to; default `vworlds/vmethod`). `POST /git/refs`
+     fails if the ref exists, so exactly one run wins.
+   - The ref's commit message carries the run id, login and expiry. A
+     `lock: <run-id> <login> expires <time>` line in the README block mirrors it for humans.
+   - The lock is re-checked and extended before each migration and each version bump, and the
+     ref is deleted on success.
+   - **A budget stop is not a crash.** A run that stops above the GraphQL reserve releases the
+     lock and records `paused at <migration>/<op>`, so the next `migrate` by any adopter resumes
+     without `--steal`. Only an expired lock (a crashed run, after 1 h) needs `--steal`.
+   - Tests cover two concurrent runs.
 3. **Replay** migrations N+1 … target in order. Every operation is idempotent (it checks before it
    acts), so a run interrupted by an error or the GraphQL budget resumes where it stopped.
 4. **Verify** the live board against the migration's `expect` after each migration.
@@ -170,6 +178,9 @@ On a dedicated board, `requires` is trivially met, so expand and contract run ba
 - **GraphQL budget.** Mutations are batched (aliases in one request) and paced on the rate-limit
   response headers. A run stops above a reserve with "N cards left", and resumes with the next
   run.
+- **Built-in project workflows.** Projects v2 automations (e.g. "item closed → Done") and Status-driven
+  watchers react to card moves. `--dry-run` of a migration that touches Status lists the
+  active built-in workflows. Review them before a Status contract.
 - **Tests.** A fake board runs every migration from 0 and from each intermediate version, with
   cards on the old options, two watchers, an interruption mid-migration, two concurrent runs
   against the lock, and old scripts against an expanded and a contracted board.
