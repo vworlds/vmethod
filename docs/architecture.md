@@ -325,7 +325,15 @@ engineering docs. Generic docs never name project files or commands. They refer 
   approval → `merge-task`. Shortcuts: `--direct` (the owner's "go" in chat) and `--unapproved`
   (opened before Approved, with the reason stated on the issue, e.g. a bug with a reproducer). Also tracks, packs, and Blocked-by relations.
 - **Board:** Status Backlog → Ready → In progress → In review → Approved → Done. Assignee = whose
-  move it is. Estimate, Model, Progress. Every script that changes Status or Assignee also sets
+  move it is. Estimate, Model, Progress.
+- **Estimates belong to issues, never to PRs** (owner rule, 2026-10-16):
+  - Every issue gets an Estimate while it is in Backlog, so the owner knows what is being taken
+    in before moving it to Ready.
+  - Estimates can be revised at any time as information becomes clearer, e.g. while an issue is
+    developed, when a design question changes the scope, or at grading.
+  - A task PR carries no Estimate. Its Model and Progress fields are about the delivery.
+  - Grading writes `points_final` back to the issue's Estimate. The model log keeps
+    `points_open` (the Estimate when the task PR opened) and `points_final`. Every script that changes Status or Assignee also sets
   Progress.
 - **Comment protocol:** `[worker] ACK | DESIGN | QUESTION | BLOCKED | READY FOR REVIEW (round n)`;
   `[orchestrator] REVIEW round n | OWNER REVIEW | ANSWER | AMENDMENT | GO | APPROVED`
@@ -382,8 +390,8 @@ vmethod defines and validates:
 - **`segments`**: one per model that worked on the delivery, with the rounds it did and why it
   took over (`start`, `quota`, `escalation`, `rebase`, `owner-request`). A switch mid-task is no
   longer hidden.
-- **`points_open` / `points_final`**: the estimate when the task opened and the final grade. The
-  gap is the calibration signal.
+- **`points_open` / `points_final`**: the issue's Estimate when its task PR opened, and the final
+  grade written back to the issue. The gap is the calibration signal.
 - **`round_causes`**: separates worker defects from rounds the worker didn't cause:
   `worker-defect`, `design-change`, `playtest-design-change`, `owner-question`,
   `new-requirement`, `integration`, `prompt-defect`. A `prompt-defect` comes with
