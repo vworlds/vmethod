@@ -69,7 +69,7 @@ sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TR
 | Checks | verify steps, release pre-check steps, docs Markdown glob, CI check names |
 | Post-merge | dependency install command and its trigger file (e.g. `npm ci` / `package-lock.json`) |
 | Changelog | fragment directory (e.g. `architecture/unreleased/`), tag vocabulary |
-| State | `STATE_NAME`: watcher state directory name (vecs: `vecs`), so existing `once`/`graded`/`merged` markers and the lock survive adoption without replaying old events |
+| State | `STATE_NAME`: watcher state directory name (vecs: `vecs`), so existing `once`/`graded`/`merged` markers and the lock survive adoption without replaying old events (SpaceRocks: `spacerocks`). The merged watcher must read both projects' marker names (e.g. vecs `graded-<n>`, SpaceRocks `grade-<n>`) |
 | Credentials | env var **names** only (GH token, SSH key, opencode server password). Never values |
 
 `models.tsv` stays a project file: provider/id, kind and `gate` column (e.g. owner-gated models
