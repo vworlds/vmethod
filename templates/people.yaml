@@ -1,0 +1,4 @@
+# Replace this example with owner-approved GitHub logins and numeric ids.
+- login: example-owner
+  id: 1
+  role: owner

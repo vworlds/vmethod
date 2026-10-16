@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(gh *)",
+      "Bash(npx *)",
+      "Bash(curl *github.com*)",
+      "Bash(wget *github.com*)",
+      "Bash(git push*)"
+    ]
+  }
+}

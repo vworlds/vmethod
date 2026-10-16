@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "up": [],
+  "expect": {
+    "fields": {
+      "Status": {
+        "type": "single_select",
+        "options": [
+          "Backlog",
+          "Ready",
+          "In progress",
+          "In review",
+          "Approved",
+          "Done"
+        ]
+      },
+      "Model": {
+        "type": "single_select",
+        "options": [
+          "sol",
+          "luna",
+          "astra",
+          "sonnet",
+          "opus",
+          "glm",
+          "big-pickle",
+          "glm-flash",
+          "other"
+        ]
+      },
+      "Estimate": { "type": "number" },
+      "Progress": { "type": "text" }
+    },
+    "policy": { "doneKeeps": 6 }
+  }
+}

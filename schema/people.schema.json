@@ -1,0 +1,21 @@
+{
+  "$id": "people",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["login", "id", "role"],
+    "properties": {
+      "login": { "type": "string", "minLength": 1 },
+      "id": { "type": "integer", "minimum": 1 },
+      "role": {
+        "enum": ["owner", "orchestrator", "worker", "collaborator", "system"]
+      },
+      "events": {
+        "type": "array",
+        "items": { "enum": ["check_run", "status", "workflow_run"] }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# Replace example identity and board settings before use.
+repo: example/project
+org: example
+baseBranch: dev
+releaseBranch: master
+board:
+  owner: example
+  number: 1
+  repos: [example/project]
+learningsPrivacy: public

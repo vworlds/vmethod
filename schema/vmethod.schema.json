@@ -1,0 +1,79 @@
+{
+  "$id": "vmethod",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repo", "org", "baseBranch", "board"],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "org": { "type": "string", "minLength": 1 },
+    "baseBranch": { "type": "string", "minLength": 1 },
+    "releaseBranch": { "type": "string" },
+    "track": { "type": "string" },
+    "workerUser": { "type": "string" },
+    "stateName": { "type": "string" },
+    "learningsPrivacy": { "enum": ["public", "private"] },
+    "board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "number", "repos"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "owner": { "type": "string", "minLength": 1 },
+        "number": { "type": "integer", "minimum": 1 },
+        "repos": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "branches": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "taskPattern": { "type": "string" },
+        "worktreeRoot": { "type": "string" },
+        "mainCheckout": { "type": "string" },
+        "packPrefix": { "type": "string" },
+        "trackPrefix": { "type": "string" }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "verify": { "type": "array", "items": { "type": "string" } },
+        "release": { "type": "array", "items": { "type": "string" } },
+        "docsGlob": { "type": "string" },
+        "ci": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "postMerge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "install": { "type": "string" },
+        "trigger": { "type": "string" }
+      }
+    },
+    "changelog": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "directory": { "type": "string" },
+        "kinds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]*$"
+      }
+    }
+  }
+}

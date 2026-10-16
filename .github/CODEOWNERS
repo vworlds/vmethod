@@ -1,6 +1,11 @@
 # Executable code and the board schema run with every consumer's credentials:
 # changes need the owner's review.
-/bin/        @jpeletier
-/scripts/    @jpeletier
-/board/      @jpeletier
-/.github/    @jpeletier
+/bin/ @jpeletier
+/scripts/ @jpeletier
+/board/ @jpeletier
+/src/ @jpeletier
+/legacy/ @jpeletier
+/schema/ @jpeletier
+/package.json @jpeletier
+/package-lock.json @jpeletier
+/.github/ @jpeletier
