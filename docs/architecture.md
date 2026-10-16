@@ -28,9 +28,8 @@ We chose this over a git submodule because:
 |---|---|
 | `.vmethod/bin/vmethod sync <tag>` | Replaces `.vmethod/` with the tag's tree, writes `.vmethod/VERSION` (tag + tree hash) and regenerates the wrappers. The adoption PR is an ordinary, reviewable diff. |
 | `vmethod check` | Offline, needs no git. Fails if `.vmethod/` differs from the manifest of hashes in `VERSION`, if `vmethod.conf` fails the schema, or if a declared dependency is missing (exit 2, "dependency missing"). For CI. |
-| `vmethod check --online` | Also fails if the live board lags the pinned `board/schema` version. Opt-in. |
-| `vmethod board check <project>` | Diffs a live GitHub Project against a board schema: missing or extra fields, option names, order, colours and descriptions. Read-only; exit 1 on drift. |
-| `vmethod board apply <project>` | Brings a board to the schema: creates missing fields, sets Status and Model options in schema order, links the repo. Idempotent, prints each change, `--dry-run` first. Additive by default; `--prune` removes, after the shared-board safety check (see below). |
+| `vmethod check --online` | Also fails if the board's version (README block) is below the release's `BOARD_VERSION`. Opt-in. |
+| `vmethod board status` / `migrate` | Shows the board's version and pending migrations / replays them, verifies, and bumps the version. See [Board schema and migrations](#board-schema-and-migrations). |
 
 **Wrappers.** `sync` writes `scripts/agent/<x>.sh` and `scripts/orchestrator/<x>.sh` as one-line
 `exec "$(dirname "$0")/../../.vmethod/scripts/..." "$@"` stubs (no git needed), each marked
@@ -78,64 +77,91 @@ sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TR
 need `--owner-approved`, enforced by `open-task` and `start-worker`). Its family names must come
 from `board/schema`'s Model options.
 
-### Board schema and board updates
+### Board schema and migrations
 
 The board's shape is part of the methodology: Status options, fields (Estimate as a number of
-points, Model options, Progress text), the Progress emoji table and the "Done keeps the last 6"
-policy. vmethod ships it as **`board/schema`**, versioned with each release. The tooling reads it
-too: the Progress parser, Model names in `models.tsv`, Status transitions.
+points, Model options, Progress text), the Progress emoji table, and the "Done keeps the last 6"
+policy. Boards change the way databases do, through **versioned migrations**. Nothing is
+destroyed and rebuilt.
 
-`vmethod.conf` names the board (`BOARD_OWNER`, `BOARD_NUMBER`). It also lists `BOARD_REPOS`,
-every repo whose cards live on it: just this repo for a dedicated board (vmethod: project 5), or
-several for a **shared board** (vecs and SpaceRocks: project 4).
+`vmethod.conf` names the board (`BOARD_OWNER`, `BOARD_NUMBER`) and lists `BOARD_REPOS`, every repo
+whose cards live on it. One repo means a dedicated board (vmethod: project 5); several mean a
+**shared board** (vecs and SpaceRocks: project 4).
 
-**Updating a board is a step of adopting every release.** After `vmethod sync <tag>`, the
-orchestrator runs:
+**Board version, stored on the board.** Each board carries its version in its Project README, in
+a machine-readable block that `migrate` owns:
 
-1. `vmethod board check`: shows the diff between the live board and the new schema.
-2. `vmethod board apply`: applies it. The adoption checklist and `sync`'s closing message both
-   say so, and `vmethod check --online` fails while the board lags its pinned schema.
+```text
+<!-- vmethod-board -->
+version: 3
+migrated: 2026-11-02T10:14Z by spacerocks79 (vmethod v1.1.0)
+<!-- /vmethod-board -->
+```
 
-`apply` records the schema version it applied in the board's README (a
-`vmethod-board-schema: vX.Y.Z` line) and refuses to downgrade.
+A board with no block is version 0 (unmanaged).
 
-**Shared boards are the special case.** The projects on one board can be pinned to different
-vmethod versions, and every one of them must keep working. Therefore:
+**Migrations ship with vmethod** as an ordered, append-only list: `board/migrations/0001-baseline.json`,
+`0002-…`. Each one holds:
+- `up`: a list of operations, e.g. `add_field`, `add_option`, `rename_option` (moves cards),
+  `set_option_meta`, `add_progress_alias`, `rewrite_progress`, `remove_option`, `remove_field`;
+- `expect`: the board shape after it;
+- for a destructive step, `requires`: the minimum vmethod version every `BOARD_REPOS` repo must
+  have adopted.
 
-- **`apply` is additive by default.** It adds fields and options, and updates descriptions and
-  colours. It never renames or removes. A board shaped for vX therefore still works for every
-  project on an older version with the same major board schema.
-- **Renames and removals** are breaking board changes (a major `board/schema` version) and need
-  `apply --prune`. Before pruning on a shared board, `apply` reads each `BOARD_REPOS` repo's
-  `.vmethod/VERSION` on its base branch through the API. It refuses unless every repo is already
-  on a version whose schema no longer needs the old field or option. In practice, the last
-  project to adopt runs the prune.
-- **Prune safety:**
-  - **Migrate before deleting.** Deleting a single-select option clears it on every card. For a
-    rename, `--prune` first moves each card from the old option to the new one, then deletes the
-    old option.
-  - **Progress aliases.** Progress is free text. The schema keeps an `aliases` list per Progress
-    state, so newer scripts still parse old emoji until `--prune` rewrites the texts and drops the
-    aliases.
-  - **Read `VERSION` from the right branch.** `VERSION` is read from each repo's configured
-    **base branch** (not GitHub's default branch). Open track and pack branches must also have
-    synced, or the prune refuses and names them.
-  - **Quiet watchers.** Before migrating, a prune announces `[vmethod] board migration <version>`
-    and stamps every move it makes. Watchers stay silent on stamped moves, so the other project's
-    orchestrator is not woken once per card.
-  - **GraphQL budget.** Mutations are batched (aliases in one request) and paced on the
-    rate-limit response headers. The prune stops above a reserve with a resumable "N cards left"
-    message, rather than draining the budget shared by every session on the account.
-  - **Tests:** a fake board with cards on the old options, watched by two watchers.
-- **Who runs `apply` on a shared board:** whichever orchestrator adopts the release first runs
-  the additive part, and the last to adopt runs the prune. `apply` is idempotent, so running it
-  twice is harmless.
-- **Cross-repo scope rule.** On a shared board, every script acts only on cards from its own
-  `REPO_SLUG`: Done capping, archiving, `GRADE`, `NEXT` / `LAUNCH`, and Progress writes. This is
-  one generic rule with tests, not a per-copy hard-code.
+A published migration is never edited; a fix is a new migration. Each vmethod release declares
+the board version it needs (`BOARD_VERSION` in the manifest). `board/schema` is the shape after
+the latest migration, generated from the migrations and used by the scripts.
 
-On a dedicated board none of this coordination applies: `apply --prune` right after `sync` is
-safe.
+**`vmethod board migrate`**, run after every `vmethod sync <tag>` (the adoption checklist and
+`sync`'s closing message say so):
+
+1. **Read** the board's version N from the README block, and the target version from the release.
+   If the board is already at or above the target, do nothing; it never downgrades.
+2. **Lock.** Write a `migrating: N+1 by <login> since <time>` line into the block. Another run
+   that sees a fresh lock stops; a stale lock (older than 1 h) needs `--steal`.
+3. **Replay** migrations N+1 … target in order. Every operation is idempotent (it checks before it
+   acts), so a run interrupted by an error or the GraphQL budget resumes where it stopped.
+4. **Verify** the live board against the migration's `expect` after each migration.
+5. **Bump** the version in the README, and only then move on. If a verification fails, it stops
+   at the last verified version, leaves the lock with the error, and exits non-zero.
+
+`vmethod board status` shows the version, the pending migrations and the diff against `expect`.
+`--dry-run` prints the operations without running them. `vmethod check --online` fails while
+the board's version is below the release's `BOARD_VERSION`.
+
+**Adopting existing boards.** `0001-baseline` makes no changes. It verifies that the board matches
+today's shape (projects 4 and 5 already do) and stamps version 1, as Flyway's baseline does.
+
+**Shared boards: expand, then contract.** The projects on one board can be pinned to different
+vmethod versions, and every one of them must keep working. So a breaking change (a rename or
+removal) is always split into two migrations, shipped in different releases:
+
+- **Expand.** Add the new field or option, move the cards (`rename_option` migrates each card
+  before anything is deleted), and add Progress aliases so that both old and new scripts parse
+  every card. Safe for everyone.
+- **Contract.** Remove the old option or alias. It carries `requires`. `migrate` reads each
+  `BOARD_REPOS` repo's `.vmethod/VERSION` from that repo's configured base branch, and checks
+  that open track and pack branches have synced. Until all of them qualify, it stops cleanly
+  before the contract ("waiting for vworlds/vecs to adopt ≥ v1.2.0"). In practice, the last
+  project to adopt applies the contract.
+
+On a dedicated board, `requires` is trivially met, so expand and contract run back to back.
+
+**Running migrations safely:**
+- **Quiet watchers.** `migrate` posts `[vmethod] board migration <N>→<M>` on the release issue,
+  and stamps every card move it makes. Watchers stay silent on stamped moves, so the other
+  project's orchestrator is not woken once per card.
+- **GraphQL budget.** Mutations are batched (aliases in one request) and paced on the rate-limit
+  response headers. A run stops above a reserve with "N cards left", and resumes with the next
+  run.
+- **Tests.** A fake board runs every migration from 0 and from each intermediate version, with
+  cards on the old options, two watchers, an interruption mid-migration, and a concurrent run
+  against the lock.
+
+**Cross-repo scope rule.** On a shared board, every script acts only on cards from its own
+`REPO_SLUG`: Done capping, archiving, `GRADE`, `NEXT` / `LAUNCH`, and Progress writes. This is one
+generic rule with tests, not a per-copy hard-code. (`migrate` is the one exception: it acts on the
+board as a whole.)
 
 ### Hooks (behaviour that differs)
 
@@ -150,7 +176,7 @@ project tools (`drift-report.sh`, `update-vecs`) stay project scripts.
 bin/vmethod                         sync | check | version
 scripts/{agent,orchestrator,lib}/   the merged tooling
 tests/                              bash, offline fakes for gh/git/npm, every test under `timeout`
-board/schema                        board shape, versioned with the release
+board/migrations/, board/schema    ordered board migrations; shape after the latest one
 docs/                               the methodology (see below)
 templates/                          AGENTS.md routing template, vmethod.conf.example,
                                     models.tsv.example, task-PR prompt, check ignores
@@ -345,7 +371,7 @@ orchestrator's credentials: GitHub token, SSH key, opencode password.
 ## Road to 1.0 (parity first)
 
 1. **Baseline import:** the tooling and vecs' bash test harness, with every entry point wrapped in
-   `main "$@"; exit`. Add `vmethod.conf`, the schemas, `sync`, `check` and `board check|apply`.
+   `main "$@"; exit`. Add `vmethod.conf`, the schemas, `sync`, `check` and `board status|migrate` with `0001-baseline`.
 2. **Convergence, test-first, one worker task per script or group.**
    - vecs ahead: `wait-checks`, the test harness, changelog.
    - SpaceRocks ahead: `verify.sh`'s generic part (test-merge several PR heads onto their base
