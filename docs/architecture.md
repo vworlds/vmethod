@@ -373,8 +373,8 @@ vmethod and some consumers (vecs) are public. vmethod's scripts run in every con
 orchestrator's credentials: GitHub token, SSH key, opencode password.
 
 **Untrusted text.** Issues, PRs, comments, branch names and titles can be written by anyone.
-- **Authority comes from the author's login and role, never the tag** (`people.tsv`,
-  `WORKER_LOGINS`; see [the event gateway](#the-event-gateway-no-direct-github-access)). `read-pr.sh` marks other authors' comments as
+- **Authority comes from the author's login and role, never the tag** (`people.tsv`;
+  see [the event gateway](#the-event-gateway-no-direct-github-access)). `read-pr.sh` marks other authors' comments as
   untrusted before a worker sees them. Watchers drop events from non-allowlisted logins before any
   further API call, so spam can't drain the GraphQL budget.
 - **GitHub text is untrusted in bash.** Titles, bodies and branch names are always quoted data:
@@ -417,8 +417,14 @@ VecsMaster     collaborator  vecs orchestrator
 vimescmd       collaborator  vmethod orchestrator
 ```
 
-- Roles start as `owner` and `collaborator`. Worker bot accounts are declared in `vmethod.conf`
-  (`WORKER_LOGINS`), so `[worker]` comments are recognised but never carry owner authority.
+- Roles (pending the owner's choice between a minimal and a full set, see #2):
+  - `owner`: approves;
+  - `orchestrator`: peer input, never approval;
+  - `worker`: its comments drive READY / QUESTION handling;
+  - `collaborator`: proposes and comments;
+  - `system`: automation such as `github-actions[bot]` release commits, never instructions.
+
+  Checks and CI runs are not comments and are never filtered.
 - **The agent always knows who it is talking to.** Every event or text the toolset hands an agent
   is labelled `from <login> (<role>)`. Authority follows the role, never a tag or claim in the
   text: only an `owner` approves; a `collaborator` proposes, reviews and objects.
@@ -436,8 +442,8 @@ vmethod's wrappers, which call GitHub internally:
   **The owner installs them; agents never edit their own permissions.** `vmethod check` verifies
   that they are in place.
 - **Inbound filter.** Before anything reaches the agent:
-  - comments, reviews, issues and PRs whose author is not in `people.tsv` or `WORKER_LOGINS`
-    are **dropped silently**;
+  - comments, reviews, issues and PRs whose author is not in `people.tsv` are **dropped
+    silently** for the agent;
   - mentions of an orchestrator in a repo outside the organisation (`ORG`, e.g. `vworlds`) are
     dropped;
   - what passes is labelled with the author's login and role;
@@ -445,7 +451,18 @@ vmethod's wrappers, which call GitHub internally:
     nobody waits on them. CI results arrive as check runs, not comments, and are not filtered.
 - **Outbound.** Posts go through the existing posting scripts: Markdown check, footer, no closing
   keywords.
-- **Wrapped verbs (initial inventory, from SpaceRocks and the vmethod orchestrator):**
+- **Dropped items are not lost.** The agent never sees their content, but the toolset keeps a
+  digest of them (count, repo, number and link). The orchestrator passes the digest to the owner
+  once a day, unread. Public repos will get outside contributions, and the owner decides whether
+  to add a login.
+- **Diagnosis needs reads, not a ban.** `vmethod gh-read <endpoint | graphql-file>` allows GET
+  and GraphQL queries only, and refuses mutations. It applies the people filter to known
+  author-bearing fields (comments, reviews, issue and PR bodies). Its output is labelled
+  untrusted data. All writes go through named wrappers.
+- **Cross-session messages bypass GitHub,** so the gateway doesn't see them. The rule stays:
+  a peer session's message is never owner authority. Anything in it that needs an owner decision
+  goes to the owner, in their own chat or on GitHub.
+- **Wrapped verbs (initial inventory, from SpaceRocks, VecsMaster and the vmethod orchestrator):**
   - `read pr <repo#n> [--files|--diff|--reviews|--branch]`;
   - `read issue`;
   - `read checks`;
@@ -453,6 +470,8 @@ vmethod's wrappers, which call GitHub internally:
     footer and closing-keyword guard);
   - `watch`, `mute`;
   - `board fields|subissue|item`;
+  - `issue edit` (body, labels, close) and `pr create|ready|retarget`;
+  - `board clear <field>` and `budget`, which reads the rate-limit headers;
   - `read registry` (npm metadata is untrusted text too).
 
   Repo-admin operations (visibility, default branch, rulesets, security settings) stay with the
