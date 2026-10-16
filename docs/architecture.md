@@ -153,8 +153,22 @@ the latest migration, generated from the migrations and used by the scripts.
 `--dry-run` prints the operations without running them. `vmethod check --online` fails while
 the board's version is below the release's `BOARD_VERSION`.
 
-**Adopting existing boards.** `0001-baseline` makes no changes. It verifies that the board matches
-today's shape (projects 4 and 5 already do) and stamps version 1, as Flyway's baseline does.
+**Baseline (version 1)** is the shared board, project 4, exactly as it is on 2026-10-16. It is
+stamped by hand into the README block, as Flyway's baseline is, and `0001-baseline.json` makes no
+changes. Its `expect` lists only the fields vmethod owns, with their exact option order:
+
+- **Status:** Backlog, Ready, In progress, In review, Approved, Done.
+- **Model:** sol, luna, astra, sonnet, opus, glm, big-pickle, glm-flash, other.
+- **Estimate:** a number, by convention 0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999.
+- **Progress:** text. Its states are hold ⛔, working 🤖🔨, question 🤖❓, design 🤖📐,
+  blocked 🤖🚫, ready 🤖👍, verifying 🧭🔍, owner-review 👤🔍, owner-question 👤❓, conflict 💥,
+  silent ⏳, permission 🔑, failed 🪫, idle 💤. A round is `🔁` plus keycap digits, and red CI is
+  🔴. The stuck states are silent, permission, failed, idle and conflict. vecs and SpaceRocks
+  have identical tables today.
+
+GitHub's built-in fields and unused template fields (Priority, Effort, Start date, Target date)
+are outside `expect`, so adding or removing them is never "drift". Project 5 (vmethod) is brought
+to the same owned shape by hand, then stamped at version 1.
 
 **Shared boards: expand, then contract.** The projects on one board can be pinned to different
 vmethod versions, and every one of them must keep working. So a breaking change (a rename or
