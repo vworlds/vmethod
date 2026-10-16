@@ -29,6 +29,8 @@ We chose this over a git submodule because:
 | `.vmethod/bin/vmethod sync <tag>` | Replaces `.vmethod/` with the tag's tree, writes `.vmethod/VERSION` (tag + tree hash) and regenerates the wrappers. The adoption PR is an ordinary, reviewable diff. |
 | `vmethod check` | Offline, needs no git. Fails if `.vmethod/` differs from the manifest of hashes in `VERSION`, if `vmethod.conf` fails the schema, or if a declared dependency is missing (exit 2, "dependency missing"). For CI. |
 | `vmethod check --online` | Also compares the live board's fields and options against the shared board schema. Opt-in. |
+| `vmethod board check <project>` | Diffs a live GitHub Project against a board schema: missing or extra fields, option names, order, colours and descriptions. Read-only; exit 1 on drift. |
+| `vmethod board apply <project>` | Brings a board to the schema: creates missing fields, sets Status and Model options in schema order, links the repo. Idempotent, prints each change, `--dry-run` first. Never deletes a field or option that has values without `--prune`. |
 
 **Wrappers.** `sync` writes `scripts/agent/<x>.sh` and `scripts/orchestrator/<x>.sh` as one-line
 `exec "$(dirname "$0")/../../.vmethod/scripts/..." "$@"` stubs (no git needed), each marked
@@ -81,7 +83,9 @@ from the shared board schema's Model options.
 Several projects share a GitHub Project (today vecs and SpaceRocks share vworlds #4), so its schema
 is one definition, versioned in vmethod as `board/<name>.schema`. It holds the Status options, the
 fields (Estimate as a number of points, Model options, Progress text), the Progress emoji table, and the "Done
-keeps the last 6" policy. `vmethod.conf` only names the board. A schema change is a vmethod
+keeps the last 6" policy. `vmethod.conf` only names the board.
+`vmethod board apply` creates and updates boards from the schema (new projects, schema releases),
+so nobody shapes a board by hand. A schema change is a vmethod
 release, adopted by every project on that board.
 
 **Cross-repo scope rule.** On a shared board, every script acts only on cards from its own
@@ -170,7 +174,7 @@ keys ("run the verify steps, `VERIFY_STEPS`").
 ## Road to 1.0 (parity first)
 
 1. **Baseline import:** the tooling and vecs' bash test harness, with every entry point wrapped in
-   `main "$@"; exit`. Add `vmethod.conf`, the schemas, `sync` and `check`.
+   `main "$@"; exit`. Add `vmethod.conf`, the schemas, `sync`, `check` and `board check|apply`.
 2. **Convergence, test-first, one worker task per script or group.**
    - vecs ahead: `wait-checks`, the test harness, changelog.
    - SpaceRocks ahead: `verify.sh`'s generic part (test-merge several PR heads onto their base
