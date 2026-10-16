@@ -65,7 +65,7 @@ sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TR
 | Group | Keys (indicative) |
 |---|---|
 | Identity | repo slug, base branch, release branch, owner / orchestrator / worker logins, worker OS user |
-| Board | `BOARD_OWNER`, `BOARD_NUMBER`, `BOARD_REPOS`, `BOARD_LOCK_REPO` (all repos on the board; >1 = shared). The shape comes from `board/schema` |
+| Board | `BOARD_OWNER`, `BOARD_NUMBER`, `BOARD_REPOS`, `BOARD_ORCHESTRATORS`, `BOARD_LOCK_ISSUE` (all repos on the board; >1 = shared). The shape comes from `board/schema` |
 | Branches | task-branch pattern, worktree root, main checkout path, pack and track prefixes |
 | Checks | verify steps, release pre-check steps, docs Markdown glob, CI check names |
 | Post-merge | dependency install command and its trigger file (e.g. `npm ci` / `package-lock.json`) |
@@ -131,18 +131,24 @@ the latest migration, generated from the migrations and used by the scripts.
 
 1. **Read** the board's version N from the README block, and the target version from the release.
    If the board is already at or above the target, do nothing; it never downgrades.
-2. **Lock.** A Project README has no compare-and-set, so the lock is taken atomically elsewhere:
-   - Create the git ref `refs/vmethod-locks/board-<owner>-<number>` in `BOARD_LOCK_REPO` (a repo
-     every orchestrator on the board can push to; default `vworlds/vmethod`). `POST /git/refs`
-     fails if the ref exists, so exactly one run wins.
-   - The ref's commit message carries the run id, login and expiry. A
-     `lock: <run-id> <login> expires <time>` line in the README block mirrors it for humans.
-   - The lock is re-checked and extended before each migration and each version bump, and the
-     ref is deleted on success.
-   - **A budget stop is not a crash.** A run that stops above the GraphQL reserve releases the
-     lock and records `paused at <migration>/<op>`, so the next `migrate` by any adopter resumes
-     without `--steal`. Only an expired lock (a crashed run, after 1 h) needs `--steal`.
-   - Tests cover two concurrent runs.
+2. **Lock.** A Project README has no compare-and-set, and orchestrators get no write access to
+   vmethod. So the lock is an **append-only queue of issue comments**, which needs only read
+   access to the public vmethod repo. GitHub assigns comment ids in one increasing order, and
+   that order decides who holds the lock:
+   - Each board has one pinned lock issue in vmethod, "board lock: `<owner>/<number>`"
+     (`BOARD_LOCK_ISSUE` in `vmethod.conf`).
+   - **Acquire.** Post `LOCK <run-id> expires <time+15min>`. Then list the issue's comments and
+     keep only `LOCK` and `RELEASE` lines whose author is in `BOARD_ORCHESTRATORS`; anyone else's
+     comment is ignored. The first unreleased, unexpired `LOCK` by id holds the lock. If it is
+     ours, proceed. If not, post `RELEASE <run-id>` and stop with "board locked by <login>".
+   - **Hold.** Before each migration and each version bump, re-read the queue and confirm we
+     still hold the lock. Extend it by editing our own comment's expiry.
+   - **Release.** Post `RELEASE <run-id>` on success. **A budget stop is not a crash:** it
+     releases and records `paused at <migration>/<op>` in the README block, so the next
+     `migrate` by any adopter resumes. A crashed run's lock expires, and nobody needs `--steal`.
+   - The README `lock:` line mirrors the holder, for humans.
+   - Tests cover two concurrent acquirers, a forged `LOCK` from a non-allowlisted login, expiry,
+     and release.
 3. **Replay** migrations N+1 … target in order. Every operation is idempotent (it checks before it
    acts), so a run interrupted by an error or the GraphQL budget resumes where it stopped.
 4. **Verify** the live board against the migration's `expect` after each migration.
