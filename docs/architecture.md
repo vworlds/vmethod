@@ -528,7 +528,7 @@ vmethod's wrappers, which call GitHub internally:
 
 - **Enforced, not just documented.** The hard stop is a permission rule: Claude Code
   `.claude/settings.json` denies `Bash(gh *)`, `curl`/`wget` to GitHub, and `git push` outside
-  `push.sh`, and allows `npx vmethod`. opencode gets the equivalent config. `templates/` ships both.
+  `push.sh`, and allows the `vmethod` stubs and `npm exec --no -- vmethod`. opencode gets the equivalent config. `templates/` ships both.
   **The owner installs them; agents never edit their own permissions.** `vmethod check` verifies
   that they are in place.
 - **Inbound filter.** Before anything reaches the agent:
