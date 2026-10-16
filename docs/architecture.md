@@ -28,9 +28,9 @@ We chose this over a git submodule because:
 |---|---|
 | `.vmethod/bin/vmethod sync <tag>` | Replaces `.vmethod/` with the tag's tree, writes `.vmethod/VERSION` (tag + tree hash) and regenerates the wrappers. The adoption PR is an ordinary, reviewable diff. |
 | `vmethod check` | Offline, needs no git. Fails if `.vmethod/` differs from the manifest of hashes in `VERSION`, if `vmethod.conf` fails the schema, or if a declared dependency is missing (exit 2, "dependency missing"). For CI. |
-| `vmethod check --online` | Also compares the live board's fields and options against the shared board schema. Opt-in. |
+| `vmethod check --online` | Also fails if the live board lags the pinned `board/schema` version. Opt-in. |
 | `vmethod board check <project>` | Diffs a live GitHub Project against a board schema: missing or extra fields, option names, order, colours and descriptions. Read-only; exit 1 on drift. |
-| `vmethod board apply <project>` | Brings a board to the schema: creates missing fields, sets Status and Model options in schema order, links the repo. Idempotent, prints each change, `--dry-run` first. Never deletes a field or option that has values without `--prune`. |
+| `vmethod board apply <project>` | Brings a board to the schema: creates missing fields, sets Status and Model options in schema order, links the repo. Idempotent, prints each change, `--dry-run` first. Additive by default; `--prune` removes, after the shared-board safety check (see below). |
 
 **Wrappers.** `sync` writes `scripts/agent/<x>.sh` and `scripts/orchestrator/<x>.sh` as one-line
 `exec "$(dirname "$0")/../../.vmethod/scripts/..." "$@"` stubs (no git needed), each marked
@@ -66,7 +66,7 @@ sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TR
 | Group | Keys (indicative) |
 |---|---|
 | Identity | repo slug, base branch, release branch, owner / orchestrator / worker logins, worker OS user |
-| Board | board **name** only (see shared board schema) |
+| Board | `BOARD_OWNER`, `BOARD_NUMBER`, `BOARD_REPOS` (all repos on the board; >1 = shared). The shape comes from `board/schema` |
 | Branches | task-branch pattern, worktree root, main checkout path, pack and track prefixes |
 | Checks | verify steps, release pre-check steps, docs Markdown glob, CI check names |
 | Post-merge | dependency install command and its trigger file (e.g. `npm ci` / `package-lock.json`) |
@@ -78,19 +78,47 @@ sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TR
 need `--owner-approved`, enforced by `open-task` and `start-worker`). Its family names must come
 from the shared board schema's Model options.
 
-### Shared board schema (in vmethod)
+### Board schema and board updates
 
-Several projects share a GitHub Project (today vecs and SpaceRocks share vworlds #4), so its schema
-is one definition, versioned in vmethod as `board/<name>.schema`. It holds the Status options, the
-fields (Estimate as a number of points, Model options, Progress text), the Progress emoji table, and the "Done
-keeps the last 6" policy. `vmethod.conf` only names the board.
-`vmethod board apply` creates and updates boards from the schema (new projects, schema releases),
-so nobody shapes a board by hand. A schema change is a vmethod
-release, adopted by every project on that board.
+The board's shape is part of the methodology: Status options, fields (Estimate as a number of
+points, Model options, Progress text), the Progress emoji table and the "Done keeps the last 6"
+policy. vmethod ships it as **`board/schema`**, versioned with each release. The tooling reads it
+too: the Progress parser, Model names in `models.tsv`, Status transitions.
 
-**Cross-repo scope rule.** On a shared board, every script acts only on cards from its own
-`REPO_SLUG`: Done capping, archiving, `GRADE`, `NEXT` / `LAUNCH`, and Progress writes. This is one
-generic rule with tests, not a per-copy hard-code.
+`vmethod.conf` names the board (`BOARD_OWNER`, `BOARD_NUMBER`). It also lists `BOARD_REPOS`,
+every repo whose cards live on it: just this repo for a dedicated board (vmethod: project 5), or
+several for a **shared board** (vecs and SpaceRocks: project 4).
+
+**Updating a board is a step of adopting every release.** After `vmethod sync <tag>`, the
+orchestrator runs:
+
+1. `vmethod board check`: shows the diff between the live board and the new schema.
+2. `vmethod board apply`: applies it. The adoption checklist and `sync`'s closing message both
+   say so, and `vmethod check --online` fails while the board lags its pinned schema.
+
+`apply` records the schema version it applied in the board's README (a
+`vmethod-board-schema: vX.Y.Z` line) and refuses to downgrade.
+
+**Shared boards are the special case.** The projects on one board can be pinned to different
+vmethod versions, and every one of them must keep working. Therefore:
+
+- **`apply` is additive by default.** It adds fields and options, and updates descriptions and
+  colours. It never renames or removes. A board shaped for vX therefore still works for every
+  project on an older version with the same major board schema.
+- **Renames and removals** are breaking board changes (a major `board/schema` version) and need
+  `apply --prune`. Before pruning on a shared board, `apply` reads each `BOARD_REPOS` repo's
+  `.vmethod/VERSION` on its base branch through the API. It refuses unless every repo is already
+  on a version whose schema no longer needs the old field or option. In practice, the last
+  project to adopt runs the prune.
+- **Who runs `apply` on a shared board:** whichever orchestrator adopts the release first runs
+  the additive part, and the last to adopt runs the prune. `apply` is idempotent, so running it
+  twice is harmless.
+- **Cross-repo scope rule.** On a shared board, every script acts only on cards from its own
+  `REPO_SLUG`: Done capping, archiving, `GRADE`, `NEXT` / `LAUNCH`, and Progress writes. This is
+  one generic rule with tests, not a per-copy hard-code.
+
+On a dedicated board none of this coordination applies: `apply --prune` right after `sync` is
+safe.
 
 ### Hooks (behaviour that differs)
 
@@ -105,7 +133,7 @@ project tools (`drift-report.sh`, `update-vecs`) stay project scripts.
 bin/vmethod                         sync | check | version
 scripts/{agent,orchestrator,lib}/   the merged tooling
 tests/                              bash, offline fakes for gh/git/npm, every test under `timeout`
-board/                              shared board schemas
+board/schema                        board shape, versioned with the release
 docs/                               the methodology (see below)
 templates/                          AGENTS.md routing template, vmethod.conf.example,
                                     models.tsv.example, task-PR prompt, check ignores
