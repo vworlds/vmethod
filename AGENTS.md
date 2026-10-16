@@ -35,6 +35,11 @@ release (see `docs/architecture.md`, Shared learnings).
 vmethod follows its own methodology (dogfooding): this repo is run with the same process and
 tools it ships.
 
+## Branches
+
+- `dev`: default branch. All work merges here.
+- `master`: releases only. It moves when a release is cut from `dev`, and release tags live on it.
+
 ## Layout
 
 - `docs/architecture.md`: the vmethod design (mounting, config, layout, roadmap).
