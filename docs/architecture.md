@@ -197,12 +197,13 @@ keys ("run the verify steps, `VERIFY_STEPS`").
 state-machine table shared by every script; JSON instead of TSV between scripts; one event poller
 per account, or webhooks, instead of a GraphQL poller per session.
 
-## Open decisions
+## Owner decisions (#1)
 
-For the owner:
-
-1. ~~Make vmethod public?~~ **Decided: public** (owner, #1).
-2. Which worker identity or OS user does vmethod use?
-3. Is 1.0 = parity + config + sync, with the redesign after 1.0?
-4. May the vmethod orchestrator merge reviewed tooling and doc PRs, with the owner approving
-   releases?
+1. **vmethod is public.**
+2. **Workers** are opencode sessions reached through the `OPENCODE_*` environment variables
+   loaded into the orchestrator's session (base URL, server username and password). They act on
+   GitHub as `alfredjpr79`. Today they share the orchestrator's machine and repo, but scripts
+   must reach opencode only through those variables, never by assuming a local host.
+3. **Scope of 1.0** is parity + config + sync. The rest comes later, step by step.
+4. **Merging:** the orchestrator merges with the owner's approval. The orchestrator may merge
+   unimportant PRs on its own review.
