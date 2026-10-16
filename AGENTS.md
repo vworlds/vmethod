@@ -29,4 +29,5 @@ tools it ships.
 
 ## Layout
 
+- `docs/architecture.md`: the vmethod design (mounting, config, layout, roadmap).
 - `scripts/`: temporary helper scripts while bootstrapping (e.g. `watch-issue.sh`).
