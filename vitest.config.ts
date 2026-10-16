@@ -6,5 +6,6 @@ export default defineConfig({
     hookTimeout: 15000,
     teardownTimeout: 15000,
     include: ['test/**/*.test.ts'],
+    setupFiles: ['test/offline.ts'],
   },
 });

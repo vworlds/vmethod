@@ -1,5 +1,6 @@
 {
   "entry": ["src/cli/main.ts", "scripts/*.mjs", "test/**/*.test.ts"],
   "project": ["src/**/*.ts", "scripts/*.mjs", "test/**/*.ts"],
-  "ignoreDependencies": []
+  "ignoreDependencies": [],
+  "rules": { "optionalPeerDependencies": "off" }
 }

@@ -5,17 +5,35 @@
   "items": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["login", "id", "role"],
+    "required": ["login", "id", "type", "role"],
     "properties": {
       "login": { "type": "string", "minLength": 1 },
       "id": { "type": "integer", "minimum": 1 },
+      "type": { "enum": ["User", "Bot"] },
+      "appIds": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": { "type": "integer", "minimum": 1 }
+      },
       "role": {
         "enum": ["owner", "orchestrator", "worker", "collaborator", "system"]
       },
       "events": {
         "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
         "items": { "enum": ["check_run", "status", "workflow_run"] }
       }
-    }
+    },
+    "allOf": [
+      {
+        "if": { "properties": { "role": { "const": "system" } } },
+        "then": {
+          "properties": { "appIds": {}, "events": {} },
+          "required": ["appIds", "events"]
+        }
+      }
+    ]
   }
 }

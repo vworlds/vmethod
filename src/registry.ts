@@ -3,6 +3,10 @@ export const verbs = [
   { name: 'config', stub: 'scripts/agent/config.sh' },
   { name: 'check', stub: 'scripts/agent/check.sh' },
   { name: 'init', stub: 'scripts/agent/init.sh' },
+  { name: 'read', stub: 'scripts/agent/read.sh' },
+  { name: 'post', stub: 'scripts/agent/post.sh' },
+  { name: 'gh-read', stub: 'scripts/agent/gh-read.sh' },
+  { name: 'dropped', stub: 'scripts/agent/dropped.sh' },
 ] as const;
 
 export function stub(verb: string): string {

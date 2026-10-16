@@ -1,17 +1,24 @@
-# Replace this example with owner-approved GitHub logins and numeric ids.
+# All numbers below are placeholders, not trusted real identities or applications.
+# The owner must fill in real login/id/type pins and system application ids.
 - login: example-owner
   id: 1
+  type: User
   role: owner
 - login: example-orchestrator
   id: 2
+  type: User
   role: orchestrator
 - login: example-worker
   id: 3
+  type: User
   role: worker
 - login: example-collaborator
   id: 4
+  type: User
   role: collaborator
 - login: example-system
   id: 5
+  type: Bot
   role: system
+  appIds: [1]
   events: [check_run, status, workflow_run]

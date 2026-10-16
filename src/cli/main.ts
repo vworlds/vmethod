@@ -5,6 +5,10 @@ import { check } from '../check.js';
 import { configValue, getConfig } from '../config.js';
 import { init } from '../init.js';
 import { verbs } from '../registry.js';
+import { createGateway } from '../gateway/server.js';
+import { gatewayVerb } from './gateway.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 declare const __VERSION__: string;
 declare const __BOARD_VERSION__: number;
@@ -13,6 +17,22 @@ const [verb, ...args] = process.argv.slice(2);
 const root = process.cwd();
 try {
   switch (verb) {
+    case 'read':
+    case 'post':
+    case 'gh-read':
+    case 'dropped': {
+      const transport = createGateway(root, process.env, {
+        fetch,
+        exec: async (file, args) =>
+          (await promisify(execFile)(file, [...args], { timeout: 30000 }))
+            .stdout,
+        now: Date.now,
+        sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        report: (message) => console.error(message),
+      });
+      console.log(await gatewayVerb(transport, verb, args));
+      break;
+    }
     case 'version':
       console.log(
         `vmethod ${__VERSION__}\nboard ${__BOARD_VERSION__}\nNode ${process.version}`,
