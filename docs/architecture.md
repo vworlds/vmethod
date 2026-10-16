@@ -94,11 +94,21 @@ a machine-readable block that `migrate` owns:
 ```text
 <!-- vmethod-board -->
 version: 3
+min_compatible: 2
 migrated: 2026-11-02T10:14Z by spacerocks79 (vmethod v1.1.0)
 <!-- /vmethod-board -->
 ```
 
-A board with no block is version 0 (unmanaged).
+A board with no block is version 0 (unmanaged). `min_compatible` is the lowest `BOARD_VERSION`
+whose scripts still work on this board. Expand migrations leave it alone; a contract migration
+raises it.
+
+**Scripts on a board that is ahead of them.** Every script reads the block once per run, from
+the same poll it already makes.
+- If `BOARD_VERSION < version` but `≥ min_compatible` (the board was only expanded), the script
+  keeps working and prints one `BOARD AHEAD: sync vmethod` notice per run.
+- If `BOARD_VERSION < min_compatible` (a contract it doesn't know about), it refuses every board
+  write with `BOARD INCOMPATIBLE: sync vmethod ≥ <release>`. Reads still work.
 
 **Migrations ship with vmethod** as an ordered, append-only list: `board/migrations/0001-baseline.json`,
 `0002-…`. Each one holds:
@@ -117,8 +127,14 @@ the latest migration, generated from the migrations and used by the scripts.
 
 1. **Read** the board's version N from the README block, and the target version from the release.
    If the board is already at or above the target, do nothing; it never downgrades.
-2. **Lock.** Write a `migrating: N+1 by <login> since <time>` line into the block. Another run
-   that sees a fresh lock stops; a stale lock (older than 1 h) needs `--steal`.
+2. **Lock.** A Project README has no compare-and-set, so the lock is optimistic:
+   - Write `lock: <run-id> <login> expires <time+15min>` into the block.
+   - Wait a few seconds, then re-read. Proceed only if the line still carries this run's id.
+     Otherwise another run won, and this one exits.
+   - Re-read the lock before each migration and before each version bump, and extend the expiry
+     as the run goes.
+   - Another run that finds an unexpired lock stops. An expired one can be taken over.
+   - Tests cover two concurrent `migrate` runs.
 3. **Replay** migrations N+1 … target in order. Every operation is idempotent (it checks before it
    acts), so a run interrupted by an error or the GraphQL budget resumes where it stopped.
 4. **Verify** the live board against the migration's `expect` after each migration.
@@ -155,8 +171,8 @@ On a dedicated board, `requires` is trivially met, so expand and contract run ba
   response headers. A run stops above a reserve with "N cards left", and resumes with the next
   run.
 - **Tests.** A fake board runs every migration from 0 and from each intermediate version, with
-  cards on the old options, two watchers, an interruption mid-migration, and a concurrent run
-  against the lock.
+  cards on the old options, two watchers, an interruption mid-migration, two concurrent runs
+  against the lock, and old scripts against an expanded and a contracted board.
 
 **Cross-repo scope rule.** On a shared board, every script acts only on cards from its own
 `REPO_SLUG`: Done capping, archiving, `GRADE`, `NEXT` / `LAUNCH`, and Progress writes. This is one
