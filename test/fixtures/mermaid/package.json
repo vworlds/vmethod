@@ -1,0 +1,6 @@
+{
+  "name": "mermaid",
+  "version": "12.1.0",
+  "private": true,
+  "main": "index.cjs"
+}

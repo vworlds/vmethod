@@ -1,0 +1,46 @@
+name: Publish
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vmethod-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Validate release branch
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            test "$REF" = refs/heads/dev || { echo 'RC publication requires dev'; exit 1; }
+          else
+            test "$REF" = refs/heads/master || exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+        timeout-minutes: 5
+      - run: npm run build
+      - run: npm run knip
+      - run: npm run smoke
+      - name: Publish with OIDC and provenance, then tag (no bump commit)
+        run: node scripts/publish.mjs

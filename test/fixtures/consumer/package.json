@@ -1,0 +1,8 @@
+{
+  "name": "vmethod-fixture-consumer",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "mermaid": "file:../mermaid"
+  }
+}
