@@ -201,7 +201,7 @@ per account, or webhooks, instead of a GraphQL poller per session.
 
 For the owner:
 
-1. Make vmethod public? vecs is public and will vendor `.vmethod/`.
+1. ~~Make vmethod public?~~ **Decided: public** (owner, #1).
 2. Which worker identity or OS user does vmethod use?
 3. Is 1.0 = parity + config + sync, with the redesign after 1.0?
 4. May the vmethod orchestrator merge reviewed tooling and doc PRs, with the owner approving
