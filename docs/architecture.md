@@ -325,7 +325,8 @@ engineering docs. Generic docs never name project files or commands. They refer 
   approval → `merge-task`. Shortcuts: `--direct` (the owner's "go" in chat) and `--unapproved`
   (opened before Approved, with the reason stated on the issue, e.g. a bug with a reproducer). Also tracks, packs, and Blocked-by relations.
 - **Board:** Status Backlog → Ready → In progress → In review → Approved → Done. Assignee = whose
-  move it is. Estimate, Model, Progress.
+  move it is. Estimate, Model, Progress. Every script that changes Status or Assignee also sets
+  Progress.
 - **Estimates belong to issues, never to PRs** (owner rule, 2026-10-16):
   - Every issue gets an Estimate while it is in Backlog, so the owner knows what is being taken
     in before moving it to Ready.
@@ -333,8 +334,7 @@ engineering docs. Generic docs never name project files or commands. They refer 
     developed, when a design question changes the scope, or at grading.
   - A task PR carries no Estimate. Its Model and Progress fields are about the delivery.
   - Grading writes `points_final` back to the issue's Estimate. The model log keeps
-    `points_open` (the Estimate when the task PR opened) and `points_final`. Every script that changes Status or Assignee also sets
-  Progress.
+    `points_open` (the Estimate when the task PR opened) and `points_final`.
 - **Comment protocol:** `[worker] ACK | DESIGN | QUESTION | BLOCKED | READY FOR REVIEW (round n)`;
   `[orchestrator] REVIEW round n | OWNER REVIEW | ANSWER | AMENDMENT | GO | APPROVED`
   (`OWNER REVIEW`: handed to the owner, saying what to playtest and which decisions are theirs). The first line is the key.
