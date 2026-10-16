@@ -28,6 +28,10 @@ locally.
 2. The vmethod orchestrator elaborates it and agrees acceptance with the owner.
 3. Accepted changes ship in a tagged release. Consumers bump their pinned version when ready.
 
+Shared learnings (model performance, traps, practices) flow faster: orchestrators submit them as
+`learning` PRs, which the vmethod orchestrator merges and distils into `learnings/` without a
+release (see `docs/architecture.md`, Shared learnings).
+
 vmethod follows its own methodology (dogfooding): this repo is run with the same process and
 tools it ships.
 

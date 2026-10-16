@@ -110,6 +110,23 @@ vmethod versions, and every one of them must keep working. Therefore:
   `.vmethod/VERSION` on its base branch through the API. It refuses unless every repo is already
   on a version whose schema no longer needs the old field or option. In practice, the last
   project to adopt runs the prune.
+- **Prune safety:**
+  - **Migrate before deleting.** Deleting a single-select option clears it on every card. For a
+    rename, `--prune` first moves each card from the old option to the new one, then deletes the
+    old option.
+  - **Progress aliases.** Progress is free text. The schema keeps an `aliases` list per Progress
+    state, so newer scripts still parse old emoji until `--prune` rewrites the texts and drops the
+    aliases.
+  - **Read `VERSION` from the right branch.** `VERSION` is read from each repo's configured
+    **base branch** (not GitHub's default branch). Open track and pack branches must also have
+    synced, or the prune refuses and names them.
+  - **Quiet watchers.** Before migrating, a prune announces `[vmethod] board migration <version>`
+    and stamps every move it makes. Watchers stay silent on stamped moves, so the other project's
+    orchestrator is not woken once per card.
+  - **GraphQL budget.** Mutations are batched (aliases in one request) and paced on the
+    rate-limit response headers. The prune stops above a reserve with a resumable "N cards left"
+    message, rather than draining the budget shared by every session on the account.
+  - **Tests:** a fake board with cards on the old options, watched by two watchers.
 - **Who runs `apply` on a shared board:** whichever orchestrator adopts the release first runs
   the additive part, and the last to adopt runs the prune. `apply` is idempotent, so running it
   twice is harmless.
@@ -179,10 +196,64 @@ keys ("run the verify steps, `VERIFY_STEPS`").
   - Credentials only from the wrapper's env, never global git config or command lines.
 - **Changelog fragments** (vecs' mechanism, per-PR files collected at release) for vmethod itself,
   offered to consumers.
-- **Model log:** one shared format for model selection and grading (PR, family, points, rounds,
-  findings).
 - **Verification kit slot:** a documented place for project verification patterns (oracles,
   headless-browser checks, quiet-host benchmarks).
+
+## Shared learnings
+
+Every orchestrator learns things that would help the others. Above all, how each LLM model
+performs on which kind of task, and also traps, prompt patterns and verification habits. vmethod
+pools these, so a lesson paid for in one project is free in the others.
+
+### The model log (per project, shared format)
+
+Each project keeps its raw log at `.vmethod-data/model-log.jsonl`. It is project data, written by
+`grade.sh` after every merge. One record per delivery, in a format vmethod defines and validates:
+
+```json
+{"date":"2026-10-15","repo":"vworlds/vecs","pr":321,"task":"Markdown/Mermaid validator in posting scripts",
+ "kind":"tooling","family":"luna","model":"<provider>/<id>","points":3,"rounds":1,
+ "round_causes":[],"outcome":"merged","findings":["clean"],"notes":"reproduces GitHub error exactly"}
+```
+
+- `round_causes` separates worker defects from rounds the worker didn't cause, e.g.
+  `design-change`, `owner-question`, `new-requirement`, `integration`.
+- `findings` uses a shared tag vocabulary, e.g. `clean`, `weak-tests`, `duplication`,
+  `scope-creep`, `stalled-silently`, `security-catch`, `good-questions`, `could-use-cheaper`.
+- `points` follow the shared estimate scale.
+
+The model is graded on the outcome, not on the size of the task.
+
+vecs' `.agents/model-log.md` table and SpaceRocks' `grade.sh` output are converted once, at
+adoption.
+
+### Contributing back
+
+- **Mechanical, continuous.** `vmethod learnings submit` sends the log records added since the
+  last submission (and the project's distilled notes) to vmethod as a PR labelled `learning`. Its
+  target is `learnings/models/<repo>.jsonl`. Orchestrators run it after each grading round, or at
+  least once a week.
+- **Distilled, by the vmethod orchestrator.** After merging submissions, the vmethod orchestrator
+  updates `learnings/models/<family>.md`: strengths, failure modes, which task kinds and sizes
+  suit it, prompt tips, cost notes, each with evidence links (repo#PR). Also
+  `learnings/lessons.md`, for project-independent traps and practices, like the pain points
+  gathered in #1. `vmethod learnings report` produces the aggregate statistics (rounds per point,
+  findings rate, by family and task kind) that these pages cite.
+- **Lighter than methodology changes.** A learning is advice, not an interface. `learning` PRs
+  merge on the vmethod orchestrator's review, without owner approval. A learning becomes a
+  **change-request** (owner approval, release) only when it should change a rule, a script, or a
+  default such as the recommended family in `models.tsv.example` or `suggest-model.sh`'s
+  heuristics.
+
+### Consuming learnings
+
+- Learnings are not pinned to a release. They change faster than releases and are not an
+  interface. `vmethod learnings show [<family>]` reads the latest pages from vmethod's default
+  branch, and releases bundle a snapshot under `.vmethod/learnings/` for offline use.
+- The orchestrator guide makes this part of model selection: before choosing a family for a task,
+  `suggest-model.sh` prints the relevant learnings line and the aggregate for that task kind.
+- Owner-gated models stay gated per project (`models.tsv` `gate`). Learnings inform the choice;
+  they don't override a gate.
 
 ## Versioning and change process
 
@@ -216,6 +287,7 @@ keys ("run the verify steps, `VERIFY_STEPS`").
      install after a lockfile fast-forward, empty-title board rows, GraphQL brace balance, watcher
      lock.
    - Each project's orchestrator reviews the scripts its side knows.
+   - `grade.sh` writes the shared model-log format; `vmethod learnings submit|show|report`.
 3. **Docs:** merge vecs `.agents/workflows/*` and SpaceRocks `docs/agents/*` into `docs/`.
 4. **Pilot:** vecs adopts `v1.0.0-rc.N`. The rc exits when vecs has run on it:
    - one `open-task` → worker → `review.sh` round → `merge-task` cycle;
