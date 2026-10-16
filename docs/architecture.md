@@ -76,7 +76,7 @@ sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TR
 
 `models.tsv` stays a project file: provider/id, kind and `gate` column (e.g. owner-gated models
 need `--owner-approved`, enforced by `open-task` and `start-worker`). Its family names must come
-from the shared board schema's Model options.
+from `board/schema`'s Model options.
 
 ### Board schema and board updates
 
