@@ -165,10 +165,11 @@ changes. Its `expect` lists only the fields vmethod owns, with their exact optio
   silent ⏳, permission 🔑, failed 🪫, idle 💤. A round is `🔁` plus keycap digits, and red CI is
   🔴. The stuck states are silent, permission, failed, idle and conflict. vecs and SpaceRocks
   have identical tables today.
+- **Policy:** Done keeps the 6 most recently closed cards across repos; each repo archives only
+  its own cards.
 
 GitHub's built-in fields and unused template fields (Priority, Effort, Start date, Target date)
-are outside `expect`, so adding or removing them is never "drift". Project 5 (vmethod) is brought
-to the same owned shape by hand, then stamped at version 1.
+are outside `expect`, so adding or removing them is never "drift". Projects 4 and 5 were stamped at version 1 on 2026-10-16.
 
 **Shared boards: expand, then contract.** The projects on one board can be pinned to different
 vmethod versions, and every one of them must keep working. So a breaking change (a rename or
