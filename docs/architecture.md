@@ -1,6 +1,6 @@
 # vmethod architecture
 
-Status: **draft 3**, under review in [#1](https://github.com/vworlds/vmethod/issues/1). The
+Status: **draft 4**, under review in [#1](https://github.com/vworlds/vmethod/issues/1). The
 inputs were the SpaceRocks and vecs answers plus their reviews of drafts 1 and 2. The owner's decisions
 are recorded under [Owner decisions](#owner-decisions-1).
 
@@ -12,70 +12,78 @@ are recorded under [Owner decisions](#owner-decisions-1).
   project-specific settings locally. Nothing is copied by hand, so nothing drifts.
 - vmethod runs on vmethod (dogfooding).
 
-## Mounting: vendored copy pinned to a tag
+## Distribution: an npm package
 
-A consumer repo holds **`.vmethod/`**, a plain copy of one vmethod release. Nobody edits it locally.
-We chose this over a git submodule because:
+vmethod is published as **`@vworlds/vmethod`**, a public npm package, and each consumer adds it as
+an exactly pinned devDependency (`"@vworlds/vmethod": "1.2.0"`). Both current consumers are Node
+≥ 24 projects with npm workspaces, so the package uses the tooling they already run every day.
 
-- consumers run a dozen or more `git worktree`s, and each would need a submodule init;
-- in some projects workers run as another OS user (vecs: `jm` for workers, `vecsmaster` for the
-  orchestrator), and sharing `.git/modules` across users is risky;
-- CI copies the repo without git (SpaceRocks' `Dockerfile.verify`);
-- `merge-task.sh` fast-forwards the main checkout, which would leave a bumped submodule silently
-  stale.
+- **Built from TypeScript** into one **readable, unminified** ESM bundle with sourcemaps, plus the
+  source. Orchestrators and workers debug these tools, so readability matters more than size.
+- **Zero runtime dependencies.** The few libraries needed (e.g. `yaml`) are bundled into the build,
+  so nothing transitive enters the consumer's tree. The Markdown/Mermaid check needs `mermaid` and
+  `jsdom`, which both consumers already have as devDependencies. They are optional
+  `peerDependencies`, loaded on demand, and their absence is a clear "dependency missing" exit (2).
+- **Commands through `bin`:** `npx vmethod <verb>`, e.g. `watch`, `board migrate`, `open-task`,
+  `read pr`, `post`, `learnings submit`. `vmethod init` writes thin stubs
+  (`scripts/agent/<x>.sh` → `exec npx vmethod <verb> "$@"`, each marked `# vmethod stub`), so the
+  paths in existing prompts, docs and habits keep working. It never overwrites a file without the
+  marker. Renamed verbs keep a one-release alias.
+- **Docs, board migrations and templates ship in the package.** A consumer's `AGENTS.md` routes to
+  `node_modules/@vworlds/vmethod/docs/…`; `vmethod docs <topic>` prints them. The human-readable
+  copy is the vmethod repo at the pinned tag.
+- **Worktrees:** every worktree runs `npm ci` before using `vmethod`, which workers already do to
+  run tests. `start-task` and `open-task` guarantee it.
 
-| Command | Effect |
+**What npm gives us for free** (it replaces the vendored-copy design of earlier drafts):
+
+| Need | How |
 |---|---|
-| `.vmethod/bin/vmethod sync <tag>` | Replaces `.vmethod/` with the tag's tree, writes `.vmethod/VERSION` (tag + tree hash) and regenerates the wrappers. The adoption PR is an ordinary, reviewable diff. |
-| `vmethod check` | Offline, needs no git. Fails if `.vmethod/` differs from the manifest of hashes in `VERSION`, if `vmethod.conf` fails the schema, or if a declared dependency is missing (exit 2, "dependency missing"). For CI. |
-| `vmethod check --online` | Also fails if the board's version (README block) is below the release's `BOARD_VERSION`. Opt-in. |
-| `vmethod board status` / `migrate` | Shows the board's version and pending migrations / replays them, verifies, and bumps the version. See [Board schema and migrations](#board-schema-and-migrations). |
+| Pin a version | exact version in `package.json`; integrity hash in the lockfile |
+| Detect tampering or drift | `npm ci` refuses code that doesn't match the lockfile's `integrity` |
+| Tie a release to its source | **npm provenance**: each version is attested to the vmethod commit and workflow that built it (`npm audit signatures`) |
+| Immutable releases | npm versions can't be overwritten |
+| Release candidates | `1.0.0-rc.N` on the `next` dist-tag; betas on a branch dist-tag, as vecs does |
+| Keep consumer checks off vmethod | `node_modules` is already ignored by prettier, eslint, knip, jscpd, `tsc` |
+| A script changed under itself mid-run | Node loads modules at start, and consumers already run `npm ci` after a fast-forward that changes the lockfile |
 
-**Wrappers.** `sync` writes `scripts/agent/<x>.sh` and `scripts/orchestrator/<x>.sh` as one-line
-`exec "$(dirname "$0")/../../.vmethod/scripts/..." "$@"` stubs (no git needed), each marked
-`# vmethod wrapper`. The paths workers already know keep working. Because of `exec`, `$0` is the
-real `.vmethod/...` path, so `$(dirname "$0")/../lib` still works. Scripts must therefore derive
-the **repo root** from `git rev-parse --show-toplevel` (or `VMETHOD_ROOT` in git-less CI), never
-from `$0`. A test runs every wrapper from a fixture consumer tree. `sync` never overwrites a file
-that lacks the marker, so project scripts can sit next to the wrappers. A script that vmethod
-renames keeps a one-release alias.
+**Reviewing an upgrade.** An adoption PR only bumps `package.json` and the lockfile, so the
+adoption checklist adds the evidence:
+- the release notes (from changelog fragments);
+- `npm diff --diff=@vworlds/vmethod@<old> --diff=@vworlds/vmethod@<new>`, linked in the PR;
+- `vmethod board status`, showing the pending board migrations.
 
-**Dependencies.** The release manifest declares the external tools and packages its scripts
-need, and marks each required or optional:
+**Non-Node consumers** (vworlds has had C++ and Lua repos) can run `npx @vworlds/vmethod@<version>`
+with a minimal tooling-only `package.json`. That is out of scope for 1.0.
 
-- required: `gh`, `jq`, `flock`, `timeout`, `setsid`, `sha256sum`, `python3`, `node`, and the npm
-  packages `mermaid` (pinned to GitHub's renderer version) and `jsdom`;
-- optional, per worker backend: `opencode`, `claude`.
-
-The consumer provides them. `check` verifies the required ones, so CI without workers still passes.
-
-**Consumer checks ignore `.vmethod/`.** That covers Prettier, ESLint, knip, jscpd,
-dependency-cruiser, `tsc` and similar. The `AGENTS.md` template and `vmethod.conf.example` list the
-ignores to add. vmethod tests and formats itself in its own CI.
+**Dogfooding.** The vmethod repo runs its own operations on the **last released** version, pinned as
+a devDependency, like a compiler bootstrapping itself: unreleased code is tested, not used to run
+the project. A release is adopted by vmethod exactly as by any consumer.
 
 ## Parameterisation
 
-### `vmethod.conf` (per project)
+### `vmethod.yaml` (per project)
 
-Shell-sourceable bash at the repo root, with arrays allowed. It is validated against
-`.vmethod/config.schema`, which is versioned. Environment variables override it, so track
-sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TRACK` and
-`VMETHOD_BASE` with the old names accepted as aliases.
+YAML at the repo root, validated against a JSON Schema shipped in the package (`vmethod check`).
+The parser follows YAML 1.2, so `no` stays a string and `1.10` stays `1.10`. Environment variables
+override any key, so track sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`. These become
+`VMETHOD_TRACK` / `VMETHOD_BASE`, with the old names accepted as aliases.
 
 | Group | Keys (indicative) |
 |---|---|
-| Identity | repo slug, base branch, release branch, owner / orchestrator / worker logins, worker OS user |
-| Board | `BOARD_OWNER`, `BOARD_NUMBER`, `BOARD_REPOS` (all repos on the board; >1 = shared). The shape comes from `board/schema` |
+| Identity | `repo`, `org`, `baseBranch`, `releaseBranch`, worker OS user |
+| Board | `board.owner`, `board.number`, `board.repos` (all repos on the board; more than one = shared). The shape comes from the package's board migrations |
 | Branches | task-branch pattern, worktree root, main checkout path, pack and track prefixes |
 | Checks | verify steps, release pre-check steps, docs Markdown glob, CI check names |
 | Post-merge | dependency install command and its trigger file (e.g. `npm ci` / `package-lock.json`) |
 | Changelog | fragment directory (e.g. `architecture/unreleased/`), tag vocabulary |
-| State | `STATE_NAME`: watcher state directory name (vecs: `vecs`), so existing `once`/`graded`/`merged` markers and the lock survive adoption without replaying old events (SpaceRocks: `spacerocks`). The merged watcher must read both projects' marker names (e.g. vecs `graded-<n>`, SpaceRocks `grade-<n>`) |
+| State | `stateName`: watcher state directory name (vecs: `vecs`, SpaceRocks: `spacerocks`), so existing `once` / `graded` / `merged` markers and the lock survive adoption without replaying old events. The merged watcher reads both projects' marker names (vecs `graded-<n>`, SpaceRocks `grade-<n>`) |
 | Credentials | env var **names** only (GH token, SSH key, opencode server password). Never values |
+| Learnings | `learningsPrivacy`: `public` or `private` |
 
-`models.tsv` stays a project file: provider/id, kind and `gate` column (e.g. owner-gated models
-need `--owner-approved`, enforced by `open-task` and `start-worker`). Its family names must come
-from `board/schema`'s Model options.
+`models.yaml` stays a project file (today's `models.tsv`): provider/id, kind and `gate` (e.g.
+owner-gated models need `--owner-approved`, enforced by `open-task` and `start-worker`). Its family
+names must come from the board's Model options.
 
 ### Board schema and migrations
 
@@ -84,7 +92,7 @@ points, Model options, Progress text), the Progress emoji table, and the "Done k
 policy. Boards change the way databases do, through **versioned migrations**. Nothing is
 destroyed and rebuilt.
 
-`vmethod.conf` names the board (`BOARD_OWNER`, `BOARD_NUMBER`) and lists `BOARD_REPOS`, every repo
+`vmethod.yaml` names the board (`board.owner`, `board.number`) and lists `board.repos`, every repo
 whose cards live on it. One repo means a dedicated board (vmethod: project 5); several mean a
 **shared board** (vecs and SpaceRocks: project 4).
 
@@ -103,31 +111,31 @@ The README is also human-edited (board notes). `migrate` rewrites only the text 
 markers, re-reads the README just before each write, and refuses to write if the markers are
 missing (except on the first `migrate`, which appends the block) or duplicated.
 
-A board with no block is version 0 (unmanaged). `min_compatible` is the lowest `BOARD_VERSION`
+A board with no block is version 0 (unmanaged). `min_compatible` is the lowest `boardVersion`
 whose scripts still work on this board. Expand migrations leave it alone; a contract migration
 raises it.
 
 **Scripts on a board that is ahead of them.** Every script reads the block once per run, from
 the same poll it already makes.
-- If `BOARD_VERSION < version` but `≥ min_compatible` (the board was only expanded), the script
-  keeps working and prints one `BOARD AHEAD: sync vmethod` notice per run.
-- If `BOARD_VERSION < min_compatible` (a contract it doesn't know about), it refuses every board
-  write with `BOARD INCOMPATIBLE: sync vmethod ≥ <release>`. Reads still work.
+- If the package's `boardVersion` < version` but `≥ min_compatible` (the board was only expanded), the script
+  keeps working and prints one `BOARD AHEAD: upgrade @vworlds/vmethod` notice per run.
+- If the package's `boardVersion` < min_compatible` (a contract it doesn't know about), it refuses every board
+  write with `BOARD INCOMPATIBLE: upgrade @vworlds/vmethod to ≥ <version>`. Reads still work.
 
 **Migrations ship with vmethod** as an ordered, append-only list: `board/migrations/0001-baseline.json`,
 `0002-…`. Each one holds:
 - `up`: a list of operations, e.g. `add_field`, `add_option`, `rename_option` (moves cards),
   `set_option_meta`, `add_progress_alias`, `rewrite_progress`, `remove_option`, `remove_field`;
 - `expect`: the board shape after it;
-- for a destructive step, `requires`: the minimum vmethod version every `BOARD_REPOS` repo must
+- for a destructive step, `requires`: the minimum vmethod version every `board.repos` repo must
   have adopted.
 
 A published migration is never edited; a fix is a new migration. Each vmethod release declares
-the board version it needs (`BOARD_VERSION` in the manifest). `board/schema` is the shape after
+the board version it needs (`boardVersion` in its `package.json`). `board/schema` is the shape after
 the latest migration, generated from the migrations and used by the scripts.
 
-**`vmethod board migrate`**, run after every `vmethod sync <tag>` (the adoption checklist and
-`sync`'s closing message say so):
+**`vmethod board migrate`**, run after every upgrade of `@vworlds/vmethod` (the adoption checklist
+says so, and `vmethod check --online` fails until it has run):
 
 1. **Read** the board's version N from the README block, and the target version from the release.
    If the board is already at or above the target, do nothing; it never downgrades.
@@ -159,7 +167,7 @@ the latest migration, generated from the migrations and used by the scripts.
 
 `vmethod board status` shows the version, the pending migrations and the diff against `expect`.
 `--dry-run` prints the operations without running them. `vmethod check --online` fails while
-the board's version is below the release's `BOARD_VERSION`.
+the board's version is below the release's `boardVersion`.
 
 **Baseline (version 1)** is the shared board, project 4, exactly as it is on 2026-10-16. It is
 stamped by hand into the README block, as Flyway's baseline is, and `0001-baseline.json` makes no
@@ -187,8 +195,8 @@ removal) is always split into two migrations, shipped in different releases:
   before anything is deleted), and add Progress aliases so that both old and new scripts parse
   every card. Safe for everyone.
 - **Contract.** Remove the old option or alias. It carries `requires`. `migrate` reads each
-  `BOARD_REPOS` repo's `.vmethod/VERSION` from that repo's configured base branch, and checks
-  that open track and pack branches have synced. Until all of them qualify, it stops cleanly
+  `board.repos` repo's pinned `@vworlds/vmethod` version from the lockfile on that repo's configured base branch, and checks
+  that open track and pack branches have upgraded too. Until all of them qualify, it stops cleanly
   before the contract ("waiting for vworlds/vecs to adopt ≥ v1.2.0"). In practice, the last
   project to adopt applies the contract.
 
@@ -215,28 +223,68 @@ board as a whole.)
 
 ### Hooks (behaviour that differs)
 
-Where behaviour differs, not just data, the generic script calls an optional project hook,
-`scripts/vmethod-hooks/<name>.sh`. Examples: the verify recipe (SpaceRocks' `Dockerfile.verify`
-stages), release and beta publishing (vecs' npm flow, `published-packages.txt`), post-merge. Purely
-project tools (`drift-report.sh`, `update-vecs`) stay project scripts.
+Where behaviour differs, not just data, a generic command calls an optional project hook, an
+executable at `scripts/vmethod-hooks/<name>` (any language). Examples: the verify recipe
+(SpaceRocks' `Dockerfile.verify` stages), release and beta publishing (vecs' npm flow,
+`published-packages.txt`), post-merge. Purely project tools (`drift-report.sh`, `update-vecs`)
+stay project scripts.
 
-## vmethod repository layout
+## vmethod repository layout and toolchain
 
 ```text
-bin/vmethod                         sync | check | version
-scripts/{agent,orchestrator,lib}/   the merged tooling
-tests/                              bash, offline fakes for gh/git/npm, every test under `timeout`
-board/migrations/, board/schema    ordered board migrations; shape after the latest one
-docs/                               the methodology (see below)
-templates/                          AGENTS.md routing template, vmethod.conf.example,
-                                    models.tsv.example, task-PR prompt, check ignores
-config.schema                       vmethod.conf schema
+src/cli/            the `vmethod` command and its verbs
+src/gateway/        the only code that talks to GitHub and opencode (fetch), with the people filter
+src/board/          board client, migrations runner, lock
+src/...             watch, tasks, review, merge, learnings, config
+legacy/             existing bash scripts shipped as-is during the transition (see Road to 1.0)
+board/migrations/   ordered board migrations (0001-baseline.yaml, …)
+docs/               the methodology
+templates/          AGENTS.md routing template, vmethod.yaml / people.yaml / models.yaml examples,
+                    task-PR prompt, permission settings for Claude Code and opencode
+test/               vitest suites, fakes, fixtures (a fixture consumer repo)
+testing/            exported test kit (`@vworlds/vmethod/testing`) for consumers' hooks
 ```
 
+**The toolchain is the consumers' own**, so any orchestrator or worker can work on vmethod
+without learning anything new:
+- TypeScript (strict), built with `tsc` plus a bundler step for the single readable bundle;
+- **vitest** for tests;
+- **eslint** with `typescript-eslint`;
+- **prettier**, with `prettier-plugin-sh` for the remaining bash;
+- **husky** and **lint-staged** pre-commit hooks;
+- **knip** for unused code and exports;
+- **CI**: `format:check`, `lint`, `typecheck`, `test`, `build`, and a pack-and-install smoke test
+  that installs the built tarball into a fixture consumer and runs `vmethod check` there;
+- **Publishing** follows vecs' `publish.yml` pattern: a push to `master` publishes with OIDC
+  trusted publishing and provenance (no npm token anywhere), and `workflow_dispatch` publishes
+  betas on a branch dist-tag;
+- **Changelog fragments** per PR, collected at release (vecs' mechanism).
+
+**The testing methodology is the one both projects converged on:**
+- **Offline only, through fakes.** The gateway takes injectable `fetch` and `exec`, so tests run
+  in-process against a fake GitHub (REST and GraphQL), a fake board, a fake opencode server and a
+  fake `git`. Bash scripts in `legacy/` are tested by running them as child processes with fake
+  `gh`, `git` and `npm` on `PATH` (SpaceRocks' `executable()` pattern). No test needs network or
+  real git; SpaceRocks' CI image has neither.
+- **Fakes fail loudly.** Any request a fake doesn't expect fails the test (vecs' rule); there is
+  no silent default.
+- **Behavioural tests only.** No test that greps source. Patchers and fixture rewriters assert
+  their anchors.
+- **Every test runs under a timeout**, and the suite under a global one.
+- **Hostile input in every gateway test:** titles, bodies and branch names with shell
+  metacharacters, closing keywords, fake protocol tags, and authors outside `people.yaml`.
+- **Ported cases:**
+  - vecs' `scripts/tests/*`: wait-checks verdicts, changelog, release-publish, estimate-model,
+    markdown;
+  - SpaceRocks' `orchestratorScripts.test.ts`: Done cap, Markdown before posts, install after a
+    lockfile fast-forward, empty-title rows, GraphQL brace balance, watcher lock.
+- **`@vworlds/vmethod/testing`** exports the fakes, so consumers can test their own hooks the same
+  way.
+
 A consumer's `AGENTS.md` (with `CLAUDE.md` symlinked to it) stays a project file. Built from the
-template, it routes to `.vmethod/docs/*` for the generic process and to the project's own domain
-and engineering docs. Generic docs never name project files or commands. They refer to config
-keys ("run the verify steps, `VERIFY_STEPS`").
+template, it routes to vmethod's docs for the generic process and to the project's own domain and
+engineering docs. Generic docs never name project files or commands. They refer to config keys
+("run the verify steps, `checks.verify`").
 
 ## Methodology content for 1.0
 
@@ -266,7 +314,7 @@ keys ("run the verify steps, `VERIFY_STEPS`").
     anchors.
   - Guard against closing keywords (`Close/Fix/Resolve/Part of #n`) in orchestrator text, and run
     `check-markdown` before every post.
-  - Every bash entry point is wrapped as `main "$@"; exit`, so a fast-forward or `sync` can't
+  - Every remaining bash entry point is wrapped as `main "$@"; exit`, so a fast-forward can't
     change a script while it runs.
   - Merges only via `merge-task.sh`. Peer-session relays are never owner approval; process
     changes arrive as vmethod releases.
@@ -284,7 +332,7 @@ pools these, so a lesson paid for in one project is free in the others.
 
 ### The model log (per project, shared format)
 
-Each project keeps its raw log at `.vmethod-data/model-log.jsonl`. It is project data, written by
+Each project keeps its raw log at `.vmethod/model-log.jsonl`. It is project data, written by
 `grade.sh` after every closed delivery (merged or not). One record per delivery, in a format
 vmethod defines and validates:
 
@@ -354,17 +402,17 @@ today only writes the board's Estimate, gains the log writing.
 - **Lighter than methodology changes.** A learning is advice, not an interface. `learning` PRs
   merge on the vmethod orchestrator's review, without owner approval. A learning becomes a
   **change-request** (owner approval, release) only when it should change a rule, a script, or a
-  default such as the recommended family in `models.tsv.example` or `suggest-model.sh`'s
+  default such as the recommended family in `models.yaml` example or `suggest-model.sh`'s
   heuristics.
 
 ### Consuming learnings
 
 - Learnings are not pinned to a release. They change faster than releases and are not an
   interface. `vmethod learnings show [<family>]` reads the latest pages from vmethod's default
-  branch, and releases bundle a snapshot under `.vmethod/learnings/` for offline use.
+  branch, and releases bundle a snapshot in the package for offline use.
 - The orchestrator guide makes this part of model selection: before choosing a family for a task,
   `suggest-model.sh` prints the relevant learnings line and the aggregate for that task kind.
-- Owner-gated models stay gated per project (`models.tsv` `gate`). Learnings inform the choice;
+- Owner-gated models stay gated per project (`models.yaml` `gate`). Learnings inform the choice;
   they don't override a gate.
 
 ## Security
@@ -373,7 +421,7 @@ vmethod and some consumers (vecs) are public. vmethod's scripts run in every con
 orchestrator's credentials: GitHub token, SSH key, opencode password.
 
 **Untrusted text.** Issues, PRs, comments, branch names and titles can be written by anyone.
-- **Authority comes from the author's login and role, never the tag** (`people.tsv`;
+- **Authority comes from the author's login and role, never the tag** (`people.yaml`;
   see [the event gateway](#the-event-gateway-no-direct-github-access)). `read-pr.sh` marks other authors' comments as
   untrusted before a worker sees them. Watchers drop events from non-allowlisted logins before any
   further API call, so spam can't drain the GraphQL budget.
@@ -384,29 +432,31 @@ orchestrator's credentials: GitHub token, SSH key, opencode password.
 
 **Supply chain.**
 - `dev` and `master` are protected: PR only, one approval, CODEOWNERS review by the owner for
-  `bin/`, `scripts/`, `board/` and `.github/`, no force-push, no deletion
+  `src/`, `legacy/`, `board/`, `package.json` and `.github/`, no force-push, no deletion
   (`.github/rulesets/branches.json`).
 - Release tags `v*` are immutable (`.github/rulesets/tags.json`).
-- `VERSION` records the tag's commit SHA and tree hash. `sync` refuses a tag that moved.
-- The consumer's adoption PR is a real diff and gets a real review.
+- npm: OIDC trusted publishing only (no npm token exists), provenance on every version, and 2FA on
+  the `@vworlds` npm org. Publishing runs only from `master`, which needs the owner's approval.
+- Consumers pin the exact version, `npm ci` checks lockfile integrity, and the adoption PR links
+  `npm diff` and the release notes for review.
 
 **Leaks.**
 - vmethod's docs stay generic. Paths, OS users, hosts and logins live in each consumer's
-  `vmethod.conf`.
+  `vmethod.yaml`.
 - Records from private repos (`LEARNINGS_PRIVACY=private`, e.g. SpaceRocks) are submitted
   reduced: tags, numbers and outcomes only, with no task titles or notes unless cleared.
   `learnings submit` enforces this. Only allowlisted orchestrator accounts may open `learning` PRs.
 - Secret scanning and push protection are on. `vmethod check` rejects anything in
-  `vmethod.conf` that looks like a secret.
+  `vmethod.yaml` that looks like a secret.
 
 **CI.** The default `GITHUB_TOKEN` is read-only. Fork PRs need approval to run workflows. No
 `pull_request_target`, and no secrets in workflows that fork PRs can trigger.
 
 ## Collaboration, people and the event gateway
 
-### Who is who: `people.tsv` (per consumer repo)
+### Who is who: `people.yaml` (per consumer repo)
 
-Each consumer repo has a `people.tsv` (project file, owner-approved) listing every GitHub login the
+Each consumer repo has a `people.yaml` (project file, owner-approved) listing every GitHub login the
 agents may hear from, with a role:
 
 ```text
@@ -433,11 +483,11 @@ github-actions[bot] system        CI and release automation
 - **The agent always knows who it is talking to.** Every event or text the toolset hands an agent
   is labelled `from <login> (<role>)`. Authority follows the role, never a tag or claim in the
   text: only an `owner` approves; a `collaborator` proposes, reviews and objects.
-- `people.tsv` also stores each login's numeric GitHub id. `vmethod check` resolves the ids and
+- `people.yaml` also stores each login's numeric GitHub id. `vmethod check` resolves the ids and
   pins them, and refuses on a mismatch, because a renamed login can be re-registered by someone
   else. Changes to the file go through the owner (CODEOWNERS).
 - **Filter fields:**
-  - `author.databaseId` and `__typename` (User or Bot) are matched against `people.tsv`;
+  - `author.databaseId` and `__typename` (User or Bot) are matched against `people.yaml`;
   - `editor` / `lastEditedAt`: a comment last edited by someone other than its author counts as
     the editor's;
   - `authorAssociation` is a secondary check only;
@@ -446,7 +496,7 @@ github-actions[bot] system        CI and release automation
     can create a check called `e2e`;
   - never the body (a protocol tag only classifies a comment after its author passed the id
     check), the display name, or git commit author and committer metadata, which are free text.
-- `system` entries in `people.tsv` list the event kinds they may produce (for
+- `system` entries in `people.yaml` list the event kinds they may produce (for
   `github-actions[bot]`: check runs, statuses and workflow-run conclusions). Their comments are
   dropped, or at most shown as quoted untrusted text.
 - **Approval comes only from an `owner` id:**
@@ -465,11 +515,11 @@ vmethod's wrappers, which call GitHub internally:
 
 - **Enforced, not just documented.** The hard stop is a permission rule: Claude Code
   `.claude/settings.json` denies `Bash(gh *)`, `curl`/`wget` to GitHub, and `git push` outside
-  `push.sh`, and allows the wrappers. opencode gets the equivalent config. `templates/` ships both.
+  `push.sh`, and allows `npx vmethod`. opencode gets the equivalent config. `templates/` ships both.
   **The owner installs them; agents never edit their own permissions.** `vmethod check` verifies
   that they are in place.
 - **Inbound filter.** Before anything reaches the agent:
-  - comments, reviews, issues and PRs whose author is not in `people.tsv` are **dropped
+  - comments, reviews, issues and PRs whose author is not in `people.yaml` are **dropped
     silently** for the agent;
   - mentions of an orchestrator in a repo outside the organisation (`ORG`, e.g. `vworlds`) are
     dropped;
@@ -533,7 +583,7 @@ interested party in methodology changes.
 3. **Agreement.** The vmethod orchestrator elaborates the proposal until every orchestrator's
    concerns are resolved or explicitly overruled, and puts it to the owner.
 4. **Decision and release.** The owner approves (Approved on the vmethod board, and an approving
-   review on the PR). It ships in a release, and consumers adopt it with `sync` and
+   review on the PR). It ships in a release, and consumers adopt it with an `npm install` upgrade and
    `board migrate`.
 
 ## Versioning and change process
@@ -546,41 +596,51 @@ interested party in methodology changes.
   2. The vmethod orchestrator elaborates it.
   3. The owner accepts it (Approved).
   4. A worker implements it, and it ships in the next release.
-  5. Consumers run `vmethod sync <tag>` when they choose.
+  5. Consumers upgrade the pinned `@vworlds/vmethod` version when they choose, then run
+     `vmethod board migrate`.
 - **Freeze rule (until both projects have adopted 1.0).** From the day the baseline import lands,
   every tooling fix made in a consumer's local copy also gets a `change-request` issue in vmethod,
   linked from that PR. Convergence picks it up.
 
-## Road to 1.0 (parity first)
+## Road to 1.0 (parity first, behind a stable interface)
 
-1. **Baseline import:** the tooling and vecs' bash test harness, with every entry point wrapped in
-   `main "$@"; exit`. Add `vmethod.conf`, the schemas, `sync`, `check` and `board status|migrate` with `0001-baseline`.
-2. **Convergence, test-first, one worker task per script or group.**
+1. **Package skeleton:**
+   - the TypeScript, vitest, eslint and prettier setup, and the CI and publish workflows;
+   - `vmethod.yaml` / `people.yaml` loading and the schema, `vmethod check`, `vmethod init`;
+   - the **gateway** (GitHub and opencode access, people filter);
+   - `board status|migrate` with `0001-baseline`.
+
+   The first `rc` is published to `next`.
+2. **Ship the existing tooling inside the package.** The converged bash scripts go into `legacy/`,
+   reached through `vmethod <verb>`, with their config read through `vmethod config get`.
+   Consumers can adopt the package early, and the interface (`vmethod <verb>`, the stubs) is
+   stable from then on.
+3. **Convergence, test-first, one worker task per verb or group.** Each verb is either merged in
+   bash first or ported straight to TypeScript, whichever is cheaper:
    - vecs ahead: `wait-checks`, the test harness, changelog.
-   - SpaceRocks ahead: `verify.sh`'s generic part (test-merge several PR heads onto their base
-     in the orchestrator's review worktree; the recipe becomes the `verify` hook),
-     `refresh-checks`, `check-task-ci`, `start-worker`, `claude-worker`, the
-     Estimate / Model / Progress handling.
-   - Three-way merges: `board.sh`, `watch-prs.sh`, `merge-task.sh` (vecs: track base,
-     `--merge-commit`, pack keep, owner button-merge follow-up; SpaceRocks: partial re-run,
-     CI-tested-base guard; both: the post-fast-forward install, take the better-tested one), `open-task.sh`, `review.sh`.
-   - Port SpaceRocks' vitest cases into the bash harness: Done cap, Markdown check before posts,
-     install after a lockfile fast-forward, empty-title board rows, GraphQL brace balance, watcher
-     lock.
-   - Each project's orchestrator reviews the scripts its side knows.
-   - `grade.sh` writes the shared model-log format; `vmethod learnings submit|show|report`.
-3. **Docs:** merge vecs `.agents/workflows/*` and SpaceRocks `docs/agents/*` into `docs/`.
-4. **Pilot:** vecs adopts `v1.0.0-rc.N`. The rc exits when vecs has run on it:
-   - one `open-task` → worker → `review.sh` round → `merge-task` cycle;
+   - SpaceRocks ahead: `verify`'s generic part (test-merge several PR heads onto their base in the
+     orchestrator's review worktree; the recipe becomes the `verify` hook), `refresh-checks`,
+     `check-task-ci`, `start-worker`, `claude-worker`, the Estimate / Model / Progress handling.
+   - Three-way merges: `board`, `watch-prs` (which becomes `vmethod watch`), `merge-task` (vecs:
+     track base, `--merge-commit`, pack keep, owner button-merge follow-up; SpaceRocks: partial
+     re-run, CI-tested-base guard; both: post-fast-forward install), `open-task`, `review`.
+   - The gateway-facing verbs (`watch`, `read`, `post`, `board`) go to TypeScript first, since
+     they carry the security rules.
+   - `grade` writes the shared model log; `vmethod learnings submit|show|report`.
+   - Each project's orchestrator reviews the verbs its side knows.
+4. **Docs:** merge vecs `.agents/workflows/*` and SpaceRocks `docs/agents/*` into `docs/`.
+5. **Pilot:** vecs adopts `1.0.0-rc.N`. The rc exits when vecs has run on it:
+   - one `open-task` → worker → `review` round → `merge-task` cycle;
    - an owner button merge;
    - a track session (`VMETHOD_TRACK`);
    - a release with `vmethod check` in CI.
 
-   SpaceRocks then adopts, and `v1.0.0` ships.
+   SpaceRocks then adopts, and `1.0.0` ships.
 
-**After 1.0** (redesigns that must not block adoption): one Status × Assignee × Progress × draft
-state-machine table shared by every script; JSON instead of TSV between scripts; one event poller
-per account, or webhooks, instead of a GraphQL poller per session.
+**After 1.0:**
+- port the remaining `legacy/` bash to TypeScript, behind the same verbs;
+- one Status × Assignee × Progress × draft state-machine table;
+- one event poller per account, or webhooks, instead of one per session.
 
 ## Owner decisions (#1)
 
@@ -589,6 +649,9 @@ per account, or webhooks, instead of a GraphQL poller per session.
    loaded into the orchestrator's session (base URL, server username and password). They act on
    GitHub as `alfredjpr79`. Today they share the orchestrator's machine and repo, but scripts
    must reach opencode only through those variables, never by assuming a local host.
-3. **Scope of 1.0** is parity + config + sync. The rest comes later, step by step.
+3. **Scope of 1.0** is parity + config + distribution. The rest comes later, step by step.
 4. **Merging:** the orchestrator merges with the owner's approval. The orchestrator may merge
    unimportant PRs on its own review.
+5. **Roles:** `owner`, `orchestrator`, `worker`, `collaborator` and `system` (#2).
+6. **Distribution:** an npm package written in TypeScript, using the consumers' existing tooling
+   and testing methodology (#2).

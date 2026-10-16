@@ -2,7 +2,7 @@
 
 vmethod is VWorlds' shared development methodology: process docs, roles, and the tooling that
 project orchestrators and worker agents use. Projects (e.g. `vworlds/spacerocks`,
-`vworlds/vecs`) mount a pinned vmethod release and keep only their project-specific settings
+`vworlds/vecs`) add a pinned `@vworlds/vmethod` npm devDependency and keep only their project-specific settings
 locally.
 
 > Status: pre-1.0, bootstrapping. The methodology is being gathered in
@@ -42,7 +42,7 @@ tools it ships.
 
 ## Layout
 
-- `docs/architecture.md`: the vmethod design (mounting, config, layout, roadmap).
+- `docs/architecture.md`: the vmethod design (distribution, config, toolchain, roadmap).
 - `people.tsv`: who the agents may hear from: login, numeric id and role.
 - `scripts/bootstrap/`: temporary tools until vmethod 1.0 ships its own. `watch.sh` is the
   orchestrator's event watcher, filtered through `people.tsv`.
