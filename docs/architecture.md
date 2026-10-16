@@ -419,7 +419,8 @@ vimescmd       collaborator  vmethod orchestrator
 
 - Roles (pending the owner's choice between a minimal and a full set, see #2):
   - `owner`: approves;
-  - `orchestrator`: peer input, never approval;
+  - `orchestrator`: peer input. For gating it counts like `collaborator`: it can ask, but never
+    approves or moves another project's cards to Approved;
   - `worker`: its comments drive READY / QUESTION handling;
   - `collaborator`: proposes and comments;
   - `system`: automation such as `github-actions[bot]` release commits, never instructions.
@@ -472,6 +473,8 @@ vmethod's wrappers, which call GitHub internally:
   - `board fields|subissue|item`;
   - `issue edit` (body, labels, close) and `pr create|ready|retarget`;
   - `board clear <field>` and `budget`, which reads the rate-limit headers;
+  - `read comment <repo> <id>`, `branch delete <name>` (refuses protected and task branches), and
+    `wait release <pkg>@<ver>` (a tag or ref plus the registry);
   - `read registry` (npm metadata is untrusted text too).
 
   Repo-admin operations (visibility, default branch, rulesets, security settings) stay with the
