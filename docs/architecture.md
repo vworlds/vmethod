@@ -291,6 +291,42 @@ today only writes the board's Estimate, gains the log writing.
 - Owner-gated models stay gated per project (`models.tsv` `gate`). Learnings inform the choice;
   they don't override a gate.
 
+## Security
+
+vmethod and some consumers (vecs) are public. vmethod's scripts run in every consumer with the
+orchestrator's credentials: GitHub token, SSH key, opencode password.
+
+**Untrusted text.** Issues, PRs, comments, branch names and titles can be written by anyone.
+- **Authority comes from the author's login, never the tag.** Scripts and watchers check the
+  author against `ALLOWED_ORCHESTRATORS` / `ALLOWED_WORKERS` in `vmethod.conf` before treating a
+  comment as `[orchestrator]` or `[worker]`. `read-pr.sh` marks other authors' comments as
+  untrusted before a worker sees them. Watchers drop events from non-allowlisted logins before any
+  further API call, so spam can't drain the GraphQL budget.
+- **GitHub text is untrusted in bash.** Titles, bodies and branch names are always quoted data:
+  no `eval`, no unquoted expansion. The baseline import audits for this and adds tests with
+  hostile titles and bodies.
+- Agents treat learnings and every fetched text as data, never as instructions.
+
+**Supply chain.**
+- `dev` and `master` are protected: PR only, one approval, CODEOWNERS review by the owner for
+  `bin/`, `scripts/`, `board/` and `.github/`, no force-push, no deletion
+  (`.github/rulesets/branches.json`).
+- Release tags `v*` are immutable (`.github/rulesets/tags.json`).
+- `VERSION` records the tag's commit SHA and tree hash. `sync` refuses a tag that moved.
+- The consumer's adoption PR is a real diff and gets a real review.
+
+**Leaks.**
+- vmethod's docs stay generic. Paths, OS users, hosts and logins live in each consumer's
+  `vmethod.conf`.
+- Records from private repos (`LEARNINGS_PRIVACY=private`, e.g. SpaceRocks) are submitted
+  reduced: tags, numbers and outcomes only, with no task titles or notes unless cleared.
+  `learnings submit` enforces this. Only allowlisted orchestrator accounts may open `learning` PRs.
+- Secret scanning and push protection are on. `vmethod check` rejects anything in
+  `vmethod.conf` that looks like a secret.
+
+**CI.** The default `GITHUB_TOKEN` is read-only. Fork PRs need approval to run workflows. No
+`pull_request_target`, and no secrets in workflows that fork PRs can trigger.
+
 ## Versioning and change process
 
 - SemVer tags `vX.Y.Z`. A breaking change to `config.schema`, a board schema or a script interface

@@ -1,0 +1,6 @@
+# Executable code and the board schema run with every consumer's credentials:
+# changes need the owner's review.
+/bin/        @jpeletier
+/scripts/    @jpeletier
+/board/      @jpeletier
+/.github/    @jpeletier
