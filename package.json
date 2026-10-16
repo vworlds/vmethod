@@ -1,0 +1,73 @@
+{
+  "name": "@vworlds/vmethod",
+  "version": "0.0.0-dev",
+  "description": "VWorlds development methodology and tooling",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vworlds/vmethod.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "vmethod": "dist/vmethod.mjs"
+  },
+  "boardVersion": 1,
+  "files": [
+    "dist/",
+    "src/",
+    "docs/",
+    "board/",
+    "schema/",
+    "templates/",
+    "legacy/"
+  ],
+  "peerDependencies": {
+    "jsdom": "^27.0.0",
+    "mermaid": "12.1.0"
+  },
+  "peerDependenciesMeta": {
+    "mermaid": {
+      "optional": true
+    },
+    "jsdom": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "knip": "knip",
+    "smoke": "node scripts/smoke.mjs",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,js,mjs}": [
+      "prettier --write",
+      "eslint --fix"
+    ],
+    "*.{json,yaml,yml,md,sh}": "prettier --write"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.5",
+    "ajv": "8.20.0",
+    "esbuild": "0.28.2",
+    "eslint": "10.13.0",
+    "husky": "9.1.7",
+    "knip": "6.41.0",
+    "lint-staged": "17.6.0",
+    "prettier": "3.9.10",
+    "prettier-plugin-sh": "0.20.2",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.2",
+    "vitest": "5.0.5",
+    "yaml": "2.9.1"
+  }
+}

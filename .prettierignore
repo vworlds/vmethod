@@ -1,0 +1,8 @@
+dist/
+.tmp/
+package-lock.json
+.husky/_/
+scripts/bootstrap/
+docs/architecture.md
+AGENTS.md
+.github/rulesets/
