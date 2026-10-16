@@ -24,11 +24,24 @@ an exactly pinned devDependency (`"@vworlds/vmethod": "1.2.0"`). Both current co
   so nothing transitive enters the consumer's tree. The Markdown/Mermaid check needs `mermaid` and
   `jsdom`, which both consumers already have as devDependencies. They are optional
   `peerDependencies`, loaded on demand, and their absence is a clear "dependency missing" exit (2).
-- **Commands through `bin`:** `npx vmethod <verb>`, e.g. `watch`, `board migrate`, `open-task`,
-  `read pr`, `post`, `learnings submit`. `vmethod init` writes thin stubs
-  (`scripts/agent/<x>.sh` → `exec npx vmethod <verb> "$@"`, each marked `# vmethod stub`), so the
-  paths in existing prompts, docs and habits keep working. It never overwrites a file without the
-  marker. Renamed verbs keep a one-release alias.
+- **Commands through `bin`:** `vmethod <verb>`, e.g. `watch`, `board migrate`, `open-task`,
+  `read pr`, `post`, `learnings submit`.
+  - **Never `npx vmethod`.** With `node_modules` missing (a fresh worktree, a failed `npm ci`),
+    `npx` silently downloads the *latest* package from the registry, unpinned. That is exactly
+    the hole the pin closes.
+  - Docs say `npm exec --no -- vmethod <verb>`, which refuses to download.
+  - `vmethod init` writes thin stubs (`scripts/agent/<x>.sh`, each marked `# vmethod stub`) that
+    `exec "$(git rev-parse --show-toplevel)/node_modules/.bin/vmethod" <verb> "$@"`, and fail
+    with "run npm ci" if it is absent. The paths in existing prompts, docs and habits keep
+    working.
+  - `init` never overwrites a file without the marker. Renamed verbs keep a one-release alias.
+- **Bash inside the package is launched as `bash <file>`, never executed directly,** because npm
+  normalises file modes and only `bin` targets come out executable. The packed-tarball smoke
+  test covers this.
+- **State and caches live per OS user**, under `$XDG_STATE_HOME` / `$XDG_CACHE_HOME`, never
+  inside `node_modules`. Workers and the orchestrator can be different OS users (vecs: `jm` and
+  `vecsmaster`). Each user runs vmethod from the `node_modules` of its own checkout, never from
+  another user's tree.
 - **Docs, board migrations and templates ship in the package.** A consumer's `AGENTS.md` routes to
   `node_modules/@vworlds/vmethod/docs/…`; `vmethod docs <topic>` prints them. The human-readable
   copy is the vmethod repo at the pinned tag.
@@ -629,7 +642,12 @@ interested party in methodology changes.
    - `grade` writes the shared model log; `vmethod learnings submit|show|report`.
    - Each project's orchestrator reviews the verbs its side knows.
 4. **Docs:** merge vecs `.agents/workflows/*` and SpaceRocks `docs/agents/*` into `docs/`.
-5. **Pilot:** vecs adopts `1.0.0-rc.N`. The rc exits when vecs has run on it:
+5. **Pilot:** vecs adopts `1.0.0-rc.N` in **one PR**:
+   - add the devDependency;
+   - replace `scripts/{agent,orchestrator}` with stubs;
+   - move its config to `vmethod.yaml`, `people.yaml` and `models.yaml`.
+
+   Its current tooling keeps working until that PR merges. The rc exits when vecs has run on it:
    - one `open-task` → worker → `review` round → `merge-task` cycle;
    - an owner button merge;
    - a track session (`VMETHOD_TRACK`);
