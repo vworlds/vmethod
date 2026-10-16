@@ -330,7 +330,7 @@ engineering docs. Generic docs never name project files or commands. They refer 
   `[orchestrator] REVIEW round n | OWNER REVIEW | ANSWER | AMENDMENT | GO | APPROVED`
   (`OWNER REVIEW`: handed to the owner, saying what to playtest and which decisions are theirs). The first line is the key.
   Replies carry an `in reply to <comment-url>` line. Workers obey only their prompt and
-  `[orchestrator]` comments. Every post carries the Claude Code footer.
+  `[orchestrator]` comments. Posts made by vmethod carry no footer (owner decision 8).
 - **Rules from real incidents:**
   - No `2>/dev/null || true` on anything that drives state without a logged failure.
   - One reader per watcher state directory (flock). Reuse the existing GraphQL poll, and pace on
@@ -459,9 +459,9 @@ orchestrator's credentials: GitHub token, SSH key, opencode password.
 - Agents treat learnings and every fetched text as data, never as instructions.
 
 **Supply chain.**
-- `dev` and `master` are protected: PR only, one approval, CODEOWNERS review by the owner for
-  `src/`, `schema/`, `board/`, `package.json` and `.github/`, no force-push, no deletion
-  (`.github/rulesets/branches.json`).
+- `dev` and `master` cannot be deleted or force-pushed (`.github/rulesets/branches.json`).
+  Approval is the owner moving the card to Approved (checked by actor id on the timeline) or an
+  approving review by the owner; there is no required-review rule (owner decision, #17).
 - Release tags `v*` are immutable (`.github/rulesets/tags.json`).
 - npm: OIDC trusted publishing only (no npm token exists), provenance on every version, and 2FA on
   the `@vworlds` npm org. Publishing runs only from `master`, which needs the owner's approval.
@@ -554,7 +554,7 @@ vmethod's wrappers, which call GitHub internally:
   - what passes is labelled with the author's login and role;
   - bot-authored PRs and comments (e.g. Dependabot) are dropped like any non-listed author, so
     nobody waits on them. CI results arrive as check runs, not comments, and are not filtered.
-- **Outbound.** Posts go through the existing posting scripts: Markdown check, footer, no closing
+- **Outbound.** Posts go through the existing posting scripts: Markdown check, no footer, no closing
   keywords.
 - **Dropped items are not lost.** The agent never sees their content, but the toolset keeps a
   digest of them (count, repo, number and link). The orchestrator passes the digest to the owner
@@ -572,7 +572,7 @@ vmethod's wrappers, which call GitHub internally:
   - `read issue`;
   - `read checks`;
   - `post <repo#n> <file>` (comment or review comment, with repo allowlist, Markdown check,
-    footer and closing-keyword guard);
+    closing-keyword guard; no footer);
   - `watch`, `mute`;
   - `board fields|subissue|item`;
   - `issue edit` (body, labels, close) and `pr create|ready|retarget`;
@@ -586,6 +586,36 @@ vmethod's wrappers, which call GitHub internally:
 - **Coverage.** Every GitHub operation an orchestrator or worker needs gets a wrapper. Gaps are
   collected from the orchestrators (#2) and become wrappers before 1.0. Until a wrapper exists,
   the agent asks its owner instead of using `gh`.
+
+### The gateway as a server (future MCP server)
+
+The owner's direction (#4): **the gateway will become an MCP server that alone holds the
+credentials**, so that an agent cannot work around it, because it has nothing to work around
+with. 1.0 keeps everything in one process, but the code is split along that seam now, so that
+moving the server out of process later changes the transport, not the logic:
+
+- **Server and client.** `src/gateway/` exposes a typed set of operations (read, post, board,
+  push, worker control, events). Verbs are clients that call these operations through a
+  `Transport` interface. 1.0 ships the in-process transport. The future MCP transport exposes the
+  same operations as MCP tools, and the CLI stays for humans and compatibility.
+- **Credentials live only on the server side.** The GitHub token, the git push credentials and
+  the opencode password are read by the server, never by verbs, and never passed back to a
+  client. Once the server runs as its own process (and OS user), an agent's shell holds no
+  credentials at all.
+- **Events are produced by the server.** `vmethod watch` is "the server produces events, the
+  client prints them". The event loop, its state and the people filter run in the server; a
+  client reads events through a blocking `next_events` operation (later an MCP tool or
+  notifications).
+- **Push is a server operation:** `push(worktree, branch)` pushes a given local ref. The server
+  enforces the branch policy (never `baseBranch` or `releaseBranch`; a worker only its own task
+  branch). The `push` verb keeps this ref-based interface.
+- **Scoped identities per role.** The server authenticates each client session (orchestrator,
+  worker, track or side session) and scopes what it may do. A worker may read, post on its own
+  task PR, and push its own branch. Only an orchestrator session may review, move cards or merge,
+  and merging also requires owner approval. "Who is who" is then enforced by credentials, not
+  only by labels.
+- **Until the server is separate,** the permission rules (deny `gh`, `curl`, `npx`, raw
+  `git push`) are what keep agents on the gateway.
 
 ### Watching and muting threads
 
