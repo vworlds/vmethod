@@ -441,10 +441,21 @@ github-actions[bot] system        CI and release automation
   - `editor` / `lastEditedAt`: a comment last edited by someone other than its author counts as
     the editor's;
   - `authorAssociation` is a secondary check only;
-  - the repo's owner must equal `ORG`.
-- **Approval is a GitHub review, never a board move or a comment.** `merge-task.sh` requires an
-  APPROVED review by an `owner`-role id on the current head. A card in Approved is a convenience
-  signal that is cross-checked against that review.
+  - the repo's owner must equal `ORG`;
+  - check runs are matched by `app.id` (e.g. GitHub Actions = 15368), never by check name. Anyone
+    can create a check called `e2e`;
+  - never the body (a protocol tag only classifies a comment after its author passed the id
+    check), the display name, or git commit author and committer metadata, which are free text.
+- `system` entries in `people.tsv` list the event kinds they may produce (for
+  `github-actions[bot]`: check runs, statuses and workflow-run conclusions). Their comments are
+  dropped, or at most shown as quoted untrusted text.
+- **Approval comes only from an `owner` id:**
+  - an APPROVED review on the current head authored by that id (which the rulesets require for
+    merging anyway); or
+  - a move to Approved whose project-timeline event (`ProjectV2ItemStatusChangedEvent`) has that
+    id as `actor`.
+
+  A card's current Status alone is never approval: anyone with project write access can set it.
 
 ### The event gateway: no direct GitHub access
 
