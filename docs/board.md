@@ -101,7 +101,7 @@ operate on the whole `board.repos` set.
 
 ## Migrations: what adopters see
 
-`board status` and `board migrate` (vmethod 1.0, #1) report and apply ordered,
+`board status` and `board migrate` (vmethod 1.0, #5) report and apply ordered,
 append-only migrations. Review the pending diff and dry run, especially built-in
 Status automations, before applying it after every upgrade. The board README holds
 the managed version block; do not hand-edit it. Migration writes preserve human

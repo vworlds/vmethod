@@ -14,7 +14,7 @@ Develop an idea on an issue; build and check one delivery on a task PR.
    Resolve ambiguous readings explicitly with the owner before Approved.
 4. The owner approves the agreed specification. Preserve it in the issue body;
    earlier discussion remains in the edit history and comments.
-5. `open-task` (vmethod 1.0, #1) creates a draft task PR whose description is the
+5. `open-task` (vmethod 1.0, #8) creates a draft task PR whose description is the
    complete worker prompt. Record its issue relation through the wrapper, not
    closing phrases in agent-authored prose. Move the issue to In progress.
 6. One worker implements that PR in its own worktree. Questions stop work;
@@ -24,7 +24,7 @@ Develop an idea on an issue; build and check one delivery on a task PR.
 8. Hand the delivery to the owner with evidence, try-out instructions and explicit
    decisions. If feedback changes scope, update the issue as well as the PR prompt.
 9. After approval, verify the exact head against its current base, stop the worker,
-   then use `merge-task` (vmethod 1.0, #1). Complete board, grading and checkout
+   then use `merge-task` (vmethod 1.0, #8). Complete board, grading and checkout
    follow-up; act on newly unblocked work rather than waiting for another event.
 
 An issue can have several deliveries. Only its last completed delivery closes it;
@@ -33,10 +33,10 @@ branch does not close the issue until the integration reaches `baseBranch`.
 
 ## Shortcuts
 
-- `open-task --direct` (vmethod 1.0, #1): the owner explicitly settled the work and
+- `open-task --direct` (vmethod 1.0, #8): the owner explicitly settled the work and
   said go in their own chat. Capture the entire agreement in the PR description
   because there is no issue specification to consult. If go is ambiguous, ask.
-- `open-task --unapproved` (vmethod 1.0, #1): open before Approved only with the
+- `open-task --unapproved` (vmethod 1.0, #8): open before Approved only with the
   reason recorded on the issue, such as an evidenced bug with a reproducer or
   profile. It is an explicit exception, not a way to turn an investigation into
   an implementation task or to skip delivery approval.
@@ -66,4 +66,4 @@ A pack groups deliveries for integration. Test their combined heads, not just ea
 PR in isolation. Use the configured `branches.packPrefix` and `branches.trackPrefix`,
 not hard-coded branch names. Pack integration preserves history with a merge commit;
 say so in its task prompt and retain the pack head unless the owner requests deletion.
-Use `merge-task --merge-commit` (vmethod 1.0, #1), not an ad hoc merge.
+Use `merge-task --merge-commit` (vmethod 1.0, #8), not an ad hoc merge.

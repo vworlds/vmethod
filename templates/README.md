@@ -26,13 +26,18 @@ installation in the consumer, not in this template directory.
 ## Permission boundary
 
 Both backends prompt for unlisted shell operations and permit the local pinned CLI
-and reviewed compatibility stubs. Claude deny entries take precedence; OpenCode V2
-uses ordered rules with the last matching rule winning, so denies follow allows.
-The OpenCode shape follows its [V2 permissions reference](https://opencode.ai/v2/docs/permissions).
+and reviewed compatibility stubs. Claude deny entries take precedence. The OpenCode
+[V2 permissions reference, Configure](https://opencode.ai/v2/docs/permissions#configure)
+states: “The last matching rule wins, so the specific exceptions follow the broad rule.”
+Its [Matching section](https://opencode.ai/v2/docs/permissions#matching) repeats that
+ordering. Accordingly, the template puts the catch-all shell `ask` first, reviewed
+CLI/stub `allow` rules next, and explicit raw-access `deny` rules last. This denies
+`gh`, `npx` and raw pushes, allows the stubs and pinned CLI, and asks for every
+other shell command within this ruleset.
 Do not substitute the deprecated singular V1 `permission` / `bash` object.
 
 Direct `gh`, `npx`, HTTP clients targeting GitHub and `git push` are denied. The
-intended push route is the reviewed `push` verb (vmethod 1.0, #1), not a direct push
+intended push route is the reviewed `push` (vmethod 1.0, #7), not a direct push
 exception. Generic invocation/stub allows cover future verbs but do not implement
 them. Prompted commands are not permission to bypass the gateway.
 

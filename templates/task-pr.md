@@ -44,11 +44,11 @@ Every temporary exception has a reason and a removing issue.>
 - Run touched tests while iterating. Required extra/local verification:
   <actual configured commands and counts; explicitly say if a full local run is needed>.
 - Run configured formatting, hooks and guards, add the per-PR change fragment,
-  push through the wrapper and wait once per push using `wait-checks` (vmethod 1.0, #1).
+  push through the wrapper and wait once per push using `wait-checks` (vmethod 1.0, #10).
   Handle each documented exit outcome as in the worker guide. Red is not READY.
 - Use gateway wrappers only. Never bypass missing verbs with raw GitHub access.
-  Post from `.tmp/` body files after Markdown checks, with the standard footer
-  and no closing keywords. Permission changes belong to the owner.
+  Post from `.tmp/` body files after Markdown checks, without attribution boilerplate
+  or closing keywords. Permission changes belong to the owner.
 - Start with `[worker] ACK`. Use DESIGN, QUESTION (then stop), BLOCKED or
   READY FOR REVIEW (round n) as appropriate. Never go idle without a comment.
 

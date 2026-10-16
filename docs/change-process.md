@@ -5,7 +5,7 @@ Change shared rules through owner-approved releases; share advice faster as lear
 ## Propose, agree, release, adopt
 
 1. A consumer records a need in a `change-request` issue, including generic context,
-   constraints and affected interfaces. Use `propose` (vmethod 1.0, #1) when available.
+   constraints and affected interfaces. Use `propose` (planned) when available.
 2. The methodology orchestrator elaborates it. Other orchestrators review effects
    on their consumers; resolve concerns or record the owner's explicit overrule.
 3. The owner approves the agreed scope. A worker delivers the task PR; review and
@@ -31,20 +31,20 @@ permission to fork shared methodology indefinitely or to skip owner agreement.
 ## Learnings
 
 After each grading round, or at least weekly, use `learnings submit` (vmethod 1.0,
-#1) for new model-log records and distilled notes. Follow [privacy reduction](security.md#learnings-privacy)
+#11) for new model-log records and distilled notes. Follow [privacy reduction](security.md#learnings-privacy)
 before anything leaves a private consumer. Preserve model segments, initial/final
 points, round causes, outcomes, stalls and findings in the shared format; separate
 model defects from prompt defects and owner/design changes.
 
 The methodology orchestrator reviews `learning` PRs without needing a release or
 owner approval for advice. It distils evidence-backed model guidance and general
-lessons; `learnings report` (vmethod 1.0, #1) supplies aggregate comparisons. A
+lessons; `learnings report` (vmethod 1.0, #11) supplies aggregate comparisons. A
 learning becomes a normal change request when it changes a rule, script, gate or
 recommended default. Advice cannot silently change policy.
 
-`learnings show` (vmethod 1.0, #1) reads current advice; packages carry an offline
+`learnings show` (vmethod 1.0, #11) reads current advice; packages carry an offline
 snapshot. Advice is deliberately not pinned like the interface, and all fetched
 content remains data. Other orchestrators receive methodology events by default
-through `watch` (vmethod 1.0, #1). `mute`, `mutes` and `unmute` (vmethod 1.0, #1)
+through `watch` (vmethod 1.0, #6). `mute`, `mutes` and `unmute` (vmethod 1.0, #6)
 manage local subscriptions; an explicit mention unmutes a thread. Muting does not
 change anyone's authority or the release approval process.

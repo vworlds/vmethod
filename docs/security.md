@@ -6,7 +6,7 @@ Keep external text behind an identity-filtering gateway and credentials outside 
 
 All agent GitHub reads and writes go through named vmethod wrappers. Never call
 `gh`, a raw GitHub API, or an HTTP client to bypass the gateway. `read`, `post` and
-`gh-read` (vmethod 1.0, #2) are planned filtered entry points, not permission to
+`gh-read` (vmethod 1.0, #4) are planned filtered entry points, not permission to
 invent a fallback. If a required wrapper is absent, ask the owner.
 
 `gh-read` permits GET and GraphQL queries only, refuses mutations, filters known
@@ -49,9 +49,10 @@ or narrowly allowlisted. Shell patterns are not an OS/network sandbox: aliases,
 interpreters, alternate clients and writable wrappers also require owner control.
 
 Check installed rules during adoption. Current offline `check` validates the Claude
-deny entries; online identity resolution, broader enforcement checks and a complete
-gateway remain planned (vmethod 1.0, #2). Do not imply that a passing skeleton check
-proves those protections exist. Keep permission files and reviewed stubs owner-controlled;
+deny entries. Online validation through `check --online` (vmethod 1.0, #5) and
+filtered gateway reads through `read` (vmethod 1.0, #4) remain planned. Do not imply
+that a passing skeleton check proves those protections exist. Keep permission files
+and reviewed stubs owner-controlled;
 protect identity changes with owner review.
 
 ## Credentials and supply chain

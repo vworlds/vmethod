@@ -37,8 +37,8 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       dependencies. Run offline `check`; do not mistake skeleton validation for
       online identity, board or Markdown verification.
 - [ ] Review `board status` and `board migrate --dry-run`, then apply `board migrate`
-      (vmethod 1.0, #1). Coordinate shared-board consumers and Status automations.
-      Run `check --online` (vmethod 1.0, #1) after migration; do not claim these
+      (vmethod 1.0, #5). Coordinate shared-board consumers and Status automations.
+      Run `check --online` (vmethod 1.0, #5) after migration; do not claim these
       unimplemented verbs ran on the skeleton.
 - [ ] Exercise a task/review/merge cycle, owner button-merge follow-up, a track and
       a release with the project's hooks before considering rollout complete.

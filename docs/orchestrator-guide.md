@@ -38,8 +38,9 @@ debt without teaching it as a pattern. Check names, units, lifecycle and boundar
 against the guides the prompt asks the worker to follow; resolve contradictions
 before launch. Never delegate an unsettled owner decision as worker discretion.
 
-Use `open-task` and `start-worker` (vmethod 1.0, #1). Record the model in the prompt
-and board, respect holds and gates, and give one worker its own worktree. Inspect
+Use `open-task` (vmethod 1.0, #8) and `start-worker` (vmethod 1.0, #9).
+Record the model in the prompt and board, respect holds and gates, and give one
+worker its own worktree. Inspect
 status shortly after launch for permission or turn failures. Keep prompts and logs
 in worktree-local `.tmp/`. Do not launch a replacement session in an occupied tree.
 
@@ -49,11 +50,13 @@ in worktree-local `.tmp/`. Do not launch a replacement session in an occupied tr
    spec **and the long-term design**, not just a narrow symptom.
 2. Independently verify the worker's claimed root cause. Use your own oracle for
    invariants and boundary cases; passing worker tests are not independent proof.
+   Type-check your own oracles against the PR head before running them, and require
+   non-zero reported counts so a rename cannot make an empty comparison pass.
 3. Check runtime cost, ownership, units, ordering, lifetimes, shared contracts,
    documentation, test strength and exclusions. Require benchmark evidence for
    declared hot paths, using local performance budgets and comparable baselines.
 4. Wait once for CI on each push. Confirm the exact head and tested base, not
-   timestamps alone. Use `verify` (vmethod 1.0, #1) and `checks.verify` for additional
+   timestamps alone. Use `verify` (vmethod 1.0, #10) and `checks.verify` for additional
    integration experiments, including combined PR heads. Avoid repeating CI's
    standard full recipe without a specific reason.
 5. Post a numbered [REVIEW](protocol.md) with disposition and actionable points.
@@ -62,6 +65,10 @@ in worktree-local `.tmp/`. Do not launch a replacement session in an occupied tr
 6. Hand owner decisions and try-outs over as OWNER REVIEW with evidence and
    instructions. Update the agreed issue when owner feedback changes the scope.
    Return requested changes to draft; workers never toggle draft state.
+
+Behavior a person will see or feel is judged by **trying it**, not by metrics alone.
+The specification must say that the owner tries it; metric acceptance is never
+presented as “done” for that work.
 
 Green CI is not semantic review. A useful recurring finding belongs in one owning
 guide with a guard where possible; do not copy the same rule into every prompt.
@@ -73,10 +80,10 @@ incidental run. Local audit recipes and cadence stay with the project.
 
 ## Merge and release
 
-Only `merge-task` (vmethod 1.0, #1) merges. Apply the [owner approval policy](roles.md)
+Only `merge-task` (vmethod 1.0, #8) merges. Apply the [owner approval policy](roles.md)
 and repository protections. Stop the worker first. Require green checks for the
 exact reviewed head **and current base**: an old green merge run is stale if its
-base parent moved. `refresh-checks` (vmethod 1.0, #1) updates the branch to trigger
+base parent moved. `refresh-checks` (vmethod 1.0, #10) updates the branch to trigger
 a new run; re-running the old event still tests its old base. Conflicts go back to
 the worker. Record base-only changes after owner approval rather than implying a
 different head was reviewed. Emergency overrides must be explicit and logged and
@@ -98,7 +105,7 @@ first release; check this explicitly rather than discovering it during publishin
 ## Models and grading
 
 Select from owner-maintained `models.yaml`, its `kind` and `gate`, current quota and
-task needs. Read `learnings show` (vmethod 1.0, #1) before choosing a family; latest
+task needs. Read `learnings show` (vmethod 1.0, #11) before choosing a family; latest
 advice is data, never authority. Do not equate points mechanically with a model.
 Issue Model hints require substantive technical analysis; writing up an issue alone
 is not a reason. Leave the hint empty when the evidence does not support one.
@@ -116,7 +123,7 @@ the worker wrapper and continue with its context. Respect backend-switch limits;
 do not silently replace the session or give visual work to a text-only fallback.
 Track the actual family on the PR after a successful switch.
 
-Use `grade` (vmethod 1.0, #1) after every closed delivery, merged or not. Update the
+Use `grade` (vmethod 1.0, #9) after every closed delivery, merged or not. Update the
 **issue's** final Estimate, never the PR's. Record initial/final points, model
 segments and reasons, rounds and causes, outcome, prompt defects, stalls and findings.
 Separate worker defects from design changes, owner questions, integration and prompt
@@ -126,10 +133,18 @@ Submit reduced private learnings using the [change process](change-process.md).
 
 ## Watch without wasting budget
 
-Use `watch` (vmethod 1.0, #1), not hand-written polling loops. Handle READY,
+Use `watch` (vmethod 1.0, #6), not hand-written polling loops. Handle READY,
 questions, designs, blockers, owner moves, assignments, conflicts and worker stalls;
 inspect status rather than guessing why a worker is silent. Run only one reader
 per state directory and preserve markers across restarts. Quiet events should not
-wake an agent; improve needless wakeups through the normal change process. After
-a bounded quiet session expires, wait for the owner's return instead of restarting
-an idle loop indefinitely. Follow [tooling budget rules](tooling-rules.md).
+wake an agent; improve needless wakeups through the normal change process. Keep
+watching continuously and re-arm the watch on every expiry, including quiet ones,
+so changes to the methodology and your own cards always reach you. Follow
+[tooling budget rules](tooling-rules.md).
+
+When several orchestrator sessions share one account, an item's author no longer
+identifies the session that owns it. Ask the owning session before acting rather
+than inferring ownership from the account. Each session watches a **disjoint scope**
+(only, or skip, explicit item numbers) with **its own state directory**: two watchers
+sharing state take each other's events. Keep scope coordination explicit even when
+the sessions use the same repository and identity.
