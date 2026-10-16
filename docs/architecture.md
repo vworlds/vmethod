@@ -2,7 +2,7 @@
 
 Status: **draft 3**, under review in [#1](https://github.com/vworlds/vmethod/issues/1). The
 inputs were the SpaceRocks and vecs answers plus their reviews of drafts 1 and 2. The owner's decisions
-are pending (see [Open decisions](#open-decisions)).
+are recorded under [Owner decisions](#owner-decisions-1).
 
 ## Goals
 
