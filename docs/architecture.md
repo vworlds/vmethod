@@ -65,7 +65,7 @@ sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TR
 | Group | Keys (indicative) |
 |---|---|
 | Identity | repo slug, base branch, release branch, owner / orchestrator / worker logins, worker OS user |
-| Board | `BOARD_OWNER`, `BOARD_NUMBER`, `BOARD_REPOS`, `BOARD_ORCHESTRATORS`, `BOARD_LOCK_ISSUE` (all repos on the board; >1 = shared). The shape comes from `board/schema` |
+| Board | `BOARD_OWNER`, `BOARD_NUMBER`, `BOARD_REPOS` (all repos on the board; >1 = shared). The shape comes from `board/schema` |
 | Branches | task-branch pattern, worktree root, main checkout path, pack and track prefixes |
 | Checks | verify steps, release pre-check steps, docs Markdown glob, CI check names |
 | Post-merge | dependency install command and its trigger file (e.g. `npm ci` / `package-lock.json`) |
@@ -132,23 +132,25 @@ the latest migration, generated from the migrations and used by the scripts.
 1. **Read** the board's version N from the README block, and the target version from the release.
    If the board is already at or above the target, do nothing; it never downgrades.
 2. **Lock.** A Project README has no compare-and-set, and orchestrators get no write access to
-   vmethod. So the lock is an **append-only queue of issue comments**, which needs only read
-   access to the public vmethod repo. GitHub assigns comment ids in one increasing order, and
-   that order decides who holds the lock:
-   - Each board has one pinned lock issue in vmethod, "board lock: `<owner>/<number>`"
-     (`BOARD_LOCK_ISSUE` in `vmethod.conf`).
-   - **Acquire.** Post `LOCK <run-id> expires <time+15min>`. Then list the issue's comments and
-     keep only `LOCK` and `RELEASE` lines whose author is in `BOARD_ORCHESTRATORS`; anyone else's
-     comment is ignored. The first unreleased, unexpired `LOCK` by id holds the lock. If it is
-     ours, proceed. If not, post `RELEASE <run-id>` and stop with "board locked by <login>".
-   - **Hold.** Before each migration and each version bump, re-read the queue and confirm we
-     still hold the lock. Extend it by editing our own comment's expiry.
-   - **Release.** Post `RELEASE <run-id>` on success. **A budget stop is not a crash:** it
-     releases and records `paused at <migration>/<op>` in the README block, so the next
-     `migrate` by any adopter resumes. A crashed run's lock expires, and nobody needs `--steal`.
-   - The README `lock:` line mirrors the holder, for humans.
-   - Tests cover two concurrent acquirers, a forged `LOCK` from a non-allowlisted login, expiry,
-     and release.
+   vmethod. Instead the lock is a **field on the board itself**: field names are unique within a
+   project, and every orchestrator on a board can already create fields there.
+   - **Acquire.** `createProjectV2Field(name: "vmethod-migration-lock", dataType: TEXT)`. Exactly
+     one concurrent caller succeeds. The others get an error ("Name has already been taken", or
+     a generic error under a race), and any error means "not acquired". This was verified live on
+     project 5 on 2026-10-16: 6 rounds of 2–3 concurrent creates, exactly one winner and one
+     field each time.
+   - **Holder.** The winner writes `lock: <run-id> <login> since <time>` into the README block.
+     The field with no fresh README line, or a line older than 1 h, is stale (a crashed run, or
+     a winner whose success response was lost). `migrate --steal` then deletes the field and
+     re-creates it.
+   - **Hold.** Before each migration and each version bump, re-read and confirm both the field
+     and our `run-id`.
+   - **Release.** `deleteProjectV2Field` on success. **A budget stop is not a crash:** it
+     releases the lock and records `paused at <migration>/<op>` in the block, so any adopter
+     resumes without `--steal`.
+   - It costs two mutations per run and nothing on the poll path. While it exists, the field
+     tells humans a migration is in progress. Watchers ignore field-list changes for it.
+   - Offline tests use a fake board: concurrent acquirers, stale lock and steal, budget pause.
 3. **Replay** migrations N+1 … target in order. Every operation is idempotent (it checks before it
    acts), so a run interrupted by an error or the GraphQL budget resumes where it stopped.
 4. **Verify** the live board against the migration's `expect` after each migration.
