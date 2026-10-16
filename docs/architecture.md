@@ -1,7 +1,7 @@
 # vmethod architecture
 
-Status: **draft 2**, under review in [#1](https://github.com/vworlds/vmethod/issues/1). The
-inputs were the SpaceRocks and vecs answers plus their reviews of draft 1. The owner's decisions
+Status: **draft 3**, under review in [#1](https://github.com/vworlds/vmethod/issues/1). The
+inputs were the SpaceRocks and vecs answers plus their reviews of drafts 1 and 2. The owner's decisions
 are pending (see [Open decisions](#open-decisions)).
 
 ## Goals
@@ -18,7 +18,8 @@ A consumer repo holds **`.vmethod/`**, a plain copy of one vmethod release. Nobo
 We chose this over a git submodule because:
 
 - consumers run a dozen or more `git worktree`s, and each would need a submodule init;
-- workers run as other OS users, and sharing `.git/modules` across users is risky;
+- in some projects workers run as another OS user (vecs: `jm` for workers, `vecsmaster` for the
+  orchestrator), and sharing `.git/modules` across users is risky;
 - CI copies the repo without git (SpaceRocks' `Dockerfile.verify`);
 - `merge-task.sh` fast-forwards the main checkout, which would leave a bumped submodule silently
   stale.
@@ -31,13 +32,21 @@ We chose this over a git submodule because:
 
 **Wrappers.** `sync` writes `scripts/agent/<x>.sh` and `scripts/orchestrator/<x>.sh` as one-line
 `exec "$(dirname "$0")/../../.vmethod/scripts/..." "$@"` stubs (no git needed), each marked
-`# vmethod wrapper`. The paths workers already know keep working. `sync` never overwrites a file
+`# vmethod wrapper`. The paths workers already know keep working. Because of `exec`, `$0` is the
+real `.vmethod/...` path, so `$(dirname "$0")/../lib` still works. Scripts must therefore derive
+the **repo root** from `git rev-parse --show-toplevel` (or `VMETHOD_ROOT` in git-less CI), never
+from `$0`. A test runs every wrapper from a fixture consumer tree. `sync` never overwrites a file
 that lacks the marker, so project scripts can sit next to the wrappers. A script that vmethod
 renames keeps a one-release alias.
 
 **Dependencies.** The release manifest declares the external tools and packages its scripts
-need: `gh`, `jq`, `flock`, `node`, and the npm packages `mermaid` (pinned to GitHub's renderer
-version) and `jsdom`. The consumer provides them; `check` verifies them.
+need, and marks each required or optional:
+
+- required: `gh`, `jq`, `flock`, `timeout`, `setsid`, `sha256sum`, `python3`, `node`, and the npm
+  packages `mermaid` (pinned to GitHub's renderer version) and `jsdom`;
+- optional, per worker backend: `opencode`, `claude`.
+
+The consumer provides them. `check` verifies the required ones, so CI without workers still passes.
 
 **Consumer checks ignore `.vmethod/`.** That covers Prettier, ESLint, knip, jscpd,
 dependency-cruiser, `tsc` and similar. The `AGENTS.md` template and `vmethod.conf.example` list the
@@ -60,6 +69,7 @@ sessions can still set e.g. `VECS_TRACK` / `VECS_BASE`, which become `VMETHOD_TR
 | Checks | verify steps, release pre-check steps, docs Markdown glob, CI check names |
 | Post-merge | dependency install command and its trigger file (e.g. `npm ci` / `package-lock.json`) |
 | Changelog | fragment directory (e.g. `architecture/unreleased/`), tag vocabulary |
+| State | `STATE_NAME`: watcher state directory name (vecs: `vecs`), so existing `once`/`graded`/`merged` markers and the lock survive adoption without replaying old events |
 | Credentials | env var **names** only (GH token, SSH key, opencode server password). Never values |
 
 `models.tsv` stays a project file: provider/id, kind and `gate` column (e.g. owner-gated models
@@ -111,12 +121,13 @@ keys ("run the verify steps, `VERIFY_STEPS`").
 - **Lifecycle:** idea → issue developed until agreed → owner moves it to Approved → `open-task`
   writes the draft task PR, whose body is the worker's prompt → worker → review rounds → owner
   approval → `merge-task`. Shortcuts: `--direct` (the owner's "go" in chat) and `--unapproved`
-  (a bug with a reproducer). Also tracks, packs, and Blocked-by relations.
+  (opened before Approved, with the reason stated on the issue, e.g. a bug with a reproducer). Also tracks, packs, and Blocked-by relations.
 - **Board:** Status Backlog → Ready → In progress → In review → Approved → Done. Assignee = whose
   move it is. Estimate, Model, Progress. Every script that changes Status or Assignee also sets
   Progress.
 - **Comment protocol:** `[worker] ACK | DESIGN | QUESTION | BLOCKED | READY FOR REVIEW (round n)`;
-  `[orchestrator] REVIEW round n | ANSWER | AMENDMENT | GO | APPROVED`. The first line is the key.
+  `[orchestrator] REVIEW round n | OWNER REVIEW | ANSWER | AMENDMENT | GO | APPROVED`
+  (`OWNER REVIEW`: handed to the owner, saying what to playtest and which decisions are theirs). The first line is the key.
   Replies carry an `in reply to <comment-url>` line. Workers obey only their prompt and
   `[orchestrator]` comments. Every post carries the Claude Code footer.
 - **Rules from real incidents:**
@@ -162,18 +173,25 @@ keys ("run the verify steps, `VERIFY_STEPS`").
    `main "$@"; exit`. Add `vmethod.conf`, the schemas, `sync` and `check`.
 2. **Convergence, test-first, one worker task per script or group.**
    - vecs ahead: `wait-checks`, the test harness, changelog.
-   - SpaceRocks ahead: `refresh-checks`, `check-task-ci`, `start-worker`, `claude-worker`, the
+   - SpaceRocks ahead: `verify.sh`'s generic part (test-merge several PR heads onto their base
+     in the orchestrator's review worktree; the recipe becomes the `verify` hook),
+     `refresh-checks`, `check-task-ci`, `start-worker`, `claude-worker`, the
      Estimate / Model / Progress handling.
    - Three-way merges: `board.sh`, `watch-prs.sh`, `merge-task.sh` (vecs: track base,
-     `--merge-commit`, pack keep, install hook, owner button-merge follow-up; SpaceRocks: partial
-     re-run, CI-tested-base guard), `open-task.sh`, `review.sh`.
+     `--merge-commit`, pack keep, owner button-merge follow-up; SpaceRocks: partial re-run,
+     CI-tested-base guard; both: the post-fast-forward install, take the better-tested one), `open-task.sh`, `review.sh`.
    - Port SpaceRocks' vitest cases into the bash harness: Done cap, Markdown check before posts,
      install after a lockfile fast-forward, empty-title board rows, GraphQL brace balance, watcher
      lock.
    - Each project's orchestrator reviews the scripts its side knows.
 3. **Docs:** merge vecs `.agents/workflows/*` and SpaceRocks `docs/agents/*` into `docs/`.
-4. **Pilot:** vecs adopts `v1.0.0-rc.N`. SpaceRocks adopts once the rc has survived a few vecs
-   merges, including an owner button merge. Then `v1.0.0`.
+4. **Pilot:** vecs adopts `v1.0.0-rc.N`. The rc exits when vecs has run on it:
+   - one `open-task` → worker → `review.sh` round → `merge-task` cycle;
+   - an owner button merge;
+   - a track session (`VMETHOD_TRACK`);
+   - a release with `vmethod check` in CI.
+
+   SpaceRocks then adopts, and `v1.0.0` ships.
 
 **After 1.0** (redesigns that must not block adoption): one Status × Assignee × Progress × draft
 state-machine table shared by every script; JSON instead of TSV between scripts; one event poller
