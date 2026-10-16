@@ -430,18 +430,33 @@ Agents never call `gh`, `curl api.github.com` or any GitHub API directly. Raw ac
 people filter and exposes the agent to prompt injection. Every read and write goes through
 vmethod's wrappers, which call GitHub internally:
 
-- **Enforced, not just documented.** `templates/` ships agent permission settings for Claude Code
-  (`.claude/settings.json` deny rules for `gh`, `curl`/`wget` to GitHub, `git push` outside
-  `push.sh`) and the equivalent opencode config. `vmethod check` verifies that they are in
-  place.
+- **Enforced, not just documented.** The hard stop is a permission rule: Claude Code
+  `.claude/settings.json` denies `Bash(gh *)`, `curl`/`wget` to GitHub, and `git push` outside
+  `push.sh`, and allows the wrappers. opencode gets the equivalent config. `templates/` ships both.
+  **The owner installs them; agents never edit their own permissions.** `vmethod check` verifies
+  that they are in place.
 - **Inbound filter.** Before anything reaches the agent:
   - comments, reviews, issues and PRs whose author is not in `people.tsv` or `WORKER_LOGINS`
     are **dropped silently**;
   - mentions of an orchestrator in a repo outside the organisation (`ORG`, e.g. `vworlds`) are
     dropped;
-  - what passes is labelled with the author's login and role.
+  - what passes is labelled with the author's login and role;
+  - bot-authored PRs and comments (e.g. Dependabot) are dropped like any non-listed author, so
+    nobody waits on them. CI results arrive as check runs, not comments, and are not filtered.
 - **Outbound.** Posts go through the existing posting scripts: Markdown check, footer, no closing
   keywords.
+- **Wrapped verbs (initial inventory, from SpaceRocks and the vmethod orchestrator):**
+  - `read pr <repo#n> [--files|--diff|--reviews|--branch]`;
+  - `read issue`;
+  - `read checks`;
+  - `post <repo#n> <file>` (comment or review comment, with repo allowlist, Markdown check,
+    footer and closing-keyword guard);
+  - `watch`, `mute`;
+  - `board fields|subissue|item`;
+  - `read registry` (npm metadata is untrusted text too).
+
+  Repo-admin operations (visibility, default branch, rulesets, security settings) stay with the
+  owner.
 - **Coverage.** Every GitHub operation an orchestrator or worker needs gets a wrapper. Gaps are
   collected from the orchestrators (#2) and become wrappers before 1.0. Until a wrapper exists,
   the agent asks its owner instead of using `gh`.
