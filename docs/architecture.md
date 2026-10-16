@@ -410,14 +410,16 @@ Each consumer repo has a `people.tsv` (project file, owner-approved) listing eve
 agents may hear from, with a role:
 
 ```text
-# login        role          note
-jpeletier      owner         decides
-spacerocks79   collaborator  SpaceRocks orchestrator
-VecsMaster     collaborator  vecs orchestrator
-vimescmd       collaborator  vmethod orchestrator
+# login               role          note
+jpeletier           owner         decides
+spacerocks79        orchestrator  SpaceRocks orchestrator
+VecsMaster          orchestrator  vecs orchestrator
+vimescmd            orchestrator  vmethod orchestrator
+alfredjpr79         worker        opencode workers
+github-actions[bot] system        CI and release automation
 ```
 
-- Roles (pending the owner's choice between a minimal and a full set, see #2):
+- Roles (owner-approved in #2):
   - `owner`: approves;
   - `orchestrator`: peer input. For gating it counts like `collaborator`: it can ask, but never
     approves or moves another project's cards to Approved;
