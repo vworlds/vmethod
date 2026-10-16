@@ -184,7 +184,8 @@ keys ("run the verify steps, `VERIFY_STEPS`").
   - One reader per watcher state directory (flock). Reuse the existing GraphQL poll, and pace on
     the response headers, not the `rateLimit` field.
   - On a board-listing lag, read the issue side before "fixing" anything.
-  - Temp files go under the worktree's `.tmp/`.
+  - Temp files go under the worktree's `.tmp/`. Never commit test reports, logs or other
+    artefacts: `.gitignore` them, and `push.sh` refuses known artefact patterns.
   - Behavioural tests go through fakes. A fake's default case fails loudly; patchers assert their
     anchors.
   - Guard against closing keywords (`Close/Fix/Resolve/Part of #n`) in orchestrator text, and run
@@ -219,7 +220,9 @@ vmethod defines and validates:
  "points_open":5,"points_final":8,"rounds":3,
  "round_causes":["worker-defect","integration","prompt-defect"],
  "outcome":"merged",
- "findings":[{"tag":"fix-worsened-baseline","caught_by":"orchestrator-verify"}],
+ "prompt_defects":["scope-withdrawn"],
+ "stalls":[{"minutes":120,"cause":"unwritable tmp dir","detected_by":"watcher"}],
+ "findings":[{"tag":"fix-worsened-baseline","caught_by":"orchestrator-verify","root_cause_by":"worker"}],
  "notes":"…"}
 ```
 
@@ -230,17 +233,26 @@ vmethod defines and validates:
   gap is the calibration signal.
 - **`round_causes`**: separates worker defects from rounds the worker didn't cause:
   `worker-defect`, `design-change`, `playtest-design-change`, `owner-question`,
-  `new-requirement`, `integration`, `prompt-defect`. `prompt-defect` covers an under-specified
-  brief, so the model's record stays fair and the orchestrator's prompts get graded too.
+  `new-requirement`, `integration`, `prompt-defect`. A `prompt-defect` comes with
+  `prompt_defects` sub-causes (`under-specified`, `scope-withdrawn`, `wrong-premise`). The model's
+  record stays fair, and the orchestrator's briefs get graded too.
+- **`stalls`**: periods a worker sat silent, with minutes, cause and `detected_by`
+  (`watcher`, `orchestrator`, `owner`). Silence is a cost in its own right, and this measures how
+  well the watcher's SILENT detection works.
 - **`outcome`**: `merged`, `rejected-in-playtest`, `reassigned`, `abandoned`. A delivery whose
   metrics pass but which the owner rejects in playtest is among the most valuable records.
 - **`findings`**: each entry has a tag from the shared vocabulary and `caught_by`
   (`worker-tests`, `ci`, `orchestrator-verify`, `owner-playtest`, `post-merge`), which shows
-  which gate earns its cost. The vocabulary includes, among others:
-  - quality: `clean`, `weak-tests`, `duplication`, `scope-creep`, `fix-worsened-baseline`,
-    `metrics-pass-feel-fails`, `committed-artefacts`;
-  - conduct: `stalled-silently`, `ran-full-suite`, `crossed-messages`;
-  - credit: `security-catch`, `good-questions`, `stop-and-ask`, `could-use-cheaper`.
+  which gate earns its cost, and, for defects, `root_cause_by` (`worker`, `orchestrator`). The
+  latter separates implementing a brief from debugging. The vocabulary includes, among others:
+  - quality: `clean`, `weak-tests`, `test-reads-source`, `silent-patch-harness`, `duplication`,
+    `scope-creep`, `cheap-workaround`, `swallowed-failure`, `budget-regression`,
+    `fix-worsened-baseline`, `metrics-pass-feel-fails`, `missed-root-cause`, `doc-misplaced`,
+    `committed-artefacts`;
+  - conduct: `silent-stall`, `retry-reported-as-blocked`, `ran-full-suite`,
+    `crossed-messages`;
+  - credit: `found-root-cause`, `security-catch`, `good-design-question`, `stop-and-ask`,
+    `could-use-cheaper`.
 
   New tags are added through `learning` PRs.
 - `points` follow the shared estimate scale.
