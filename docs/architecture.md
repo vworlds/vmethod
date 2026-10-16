@@ -38,6 +38,14 @@ an exactly pinned devDependency (`"@vworlds/vmethod": "1.2.0"`). Both current co
 - **Bash inside the package is launched as `bash <file>`, never executed directly,** because npm
   normalises file modes and only `bin` targets come out executable. The packed-tarball smoke
   test covers this.
+- **The package replaces itself during a merge.** `merge-task` fast-forwards the main checkout
+  and runs `npm ci`, which rewrites `node_modules/@vworlds/vmethod` while `merge-task` runs from
+  it. The TS bundle is loaded once at start, so it is safe. Legacy bash is read as it runs, so the
+  CLI copies a legacy script to a temp file before running it, and every legacy script keeps
+  `main "$@"; exit`. A test replaces the package mid-run.
+- **`mermaid` is pinned to GitHub's renderer version exactly.** The release declares that version,
+  and `vmethod check` fails if the installed peer differs. A peer range would let consumers
+  drift, and the check is only useful if it parses as GitHub does.
 - **State and caches live per OS user**, under `$XDG_STATE_HOME` / `$XDG_CACHE_HOME`, never
   inside `node_modules`. Workers and the orchestrator can be different OS users (vecs: `jm` and
   `vecsmaster`). Each user runs vmethod from the `node_modules` of its own checkout, never from
@@ -645,7 +653,10 @@ interested party in methodology changes.
 5. **Pilot:** vecs adopts `1.0.0-rc.N` in **one PR**:
    - add the devDependency;
    - replace `scripts/{agent,orchestrator}` with stubs;
-   - move its config to `vmethod.yaml`, `people.yaml` and `models.yaml`.
+   - move its config to `vmethod.yaml`, `people.yaml` and `models.yaml` (`vmethod init` converts
+     `models.tsv` once; `gate` semantics are unchanged);
+   - tell knip about the `bin`-only dependency (a `package.json` script that names it, or
+     `ignoreDependencies`). This is in the adoption checklist.
 
    Its current tooling keeps working until that PR merges. The rc exits when vecs has run on it:
    - one `open-task` → worker → `review` round → `merge-task` cycle;
