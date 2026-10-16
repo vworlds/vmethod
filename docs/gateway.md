@@ -5,6 +5,15 @@ the shipped transport runs the server in process. Only server-side code reads
 credentials or handles unfiltered responses. This is not yet a separate credential
 sandbox: owner-installed permissions remain necessary.
 
+Every `Transport.call` carries `ctx: { role, taskPr? }`. The server's operation
+policy permits workers to read and to post only to their own `taskPr` in the
+configured repository. Diagnostic `ghRead`, the dropped digest and approval checks
+are orchestrator-only. The CLI reads `VMETHOD_ROLE` (default `worker`) and
+`VMETHOD_TASK_PR` (a positive PR number) from the launching wrapper's environment.
+Invalid roles or task numbers are refused. In-process context is not independent
+authentication: the owner-controlled wrapper/permissions must protect these
+environment values until the separate server authenticates clients itself.
+
 ## Identity pins (pre-1.0 migration)
 
 Every `people.yaml` entry now requires `login`, numeric `id`, `type` (`User` or
@@ -84,8 +93,14 @@ produce repeated drops; the counts are observations, not unique contributions.
 ## Approval and testing
 
 `isOwnerApproved` returns `true`, `false` or `'unknown'`. A verified owner review
-must be APPROVED on the current head. A Status-to-Approved project timeline event
-must identify the owner as its actor; missing actors yield unknown, not approval.
+must be APPROVED on the current head. For board approval, only events on the
+configured `board.number` count, and the latest status-change event must be
+Approved by an owner. It must occur strictly after the latest verified
+`[orchestrator] OWNER REVIEW` comment naming the full current head SHA. Without
+that handover, approval is false. A later move away from Approved or a new head
+invalidates the old board approval. Edited handovers use their edit time, not a
+backdated creation time. Missing actors on the latest Approved event yield unknown,
+not approval.
 Current card Status and peer-session relays never approve. Chat approvals remain
 the harness's responsibility and are never synthesized into GitHub records.
 
@@ -93,3 +108,5 @@ Tests inject strict fake fetch/exec, clock and sleep implementations. No test
 needs a real GitHub token, opencode server or git process. Mermaid tests use
 installed local peer fixtures. Optional peer usage is intentional, so Knip's
 referenced-optional-peer rule is disabled; other dependency checks remain enabled.
+A static syntax test guards the seam against fetch calls and credential reads
+outside `src/gateway/`.

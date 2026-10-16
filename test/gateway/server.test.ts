@@ -184,9 +184,11 @@ test('post validates first, sends exact Markdown without footer, and supports a 
   ]);
   const file = join(fixture.root, 'post.md');
   writeFileSync(file, body);
-  expect(await gatewayVerb(fixture.transport, 'post', ['3', file])).toBe(
-    'Posted to https://github.com/example/project/issues/3',
-  );
+  expect(
+    await gatewayVerb(fixture.transport, 'post', ['3', file], {
+      VMETHOD_TASK_PR: '3',
+    }),
+  ).toBe('Posted to https://github.com/example/project/issues/3');
   fixture.done();
 }, 15000);
 
@@ -261,7 +263,11 @@ test('dropped requires no token and persisted digest contains no hostile content
     { XDG_STATE_HOME: fixture.env.XDG_STATE_HOME },
     fixture.deps,
   );
-  expect(await gatewayVerb(transport, 'dropped', [])).toContain('Dropped: 1');
+  expect(
+    await gatewayVerb(transport, 'dropped', [], {
+      VMETHOD_ROLE: 'orchestrator',
+    }),
+  ).toContain('Dropped: 1');
   const text = readFileSync(
     join(fixture.env.XDG_STATE_HOME, 'vmethod/example-state/dropped.jsonl'),
     'utf8',
@@ -303,12 +309,31 @@ test.each([actor(), actor(2), null])(
       }),
       graph({
         node: item({
+          comments: {
+            nodes: [item({ id: 'handover', author: actor(2) })],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+      }),
+      graph({
+        node: item({
+          id: 'handover',
+          author: actor(2),
+          body: `[orchestrator] OWNER REVIEW\nHead ${sha}`,
+          createdAt: '2026-01-01T00:00:00Z',
+        }),
+      }),
+      graph({
+        node: item({
           timelineItems: {
             nodes: [
               {
                 __typename: 'ProjectV2ItemStatusChangedEvent',
                 status: 'Approved',
                 actor: eventActor,
+                createdAt: '2026-01-01T01:00:00Z',
+                previousStatus: 'In review',
+                project: { number: 1 },
               },
             ],
             pageInfo: { hasNextPage: false },
@@ -345,7 +370,11 @@ test('registry reads use the injected fetch without GitHub credentials and label
     },
   );
   expect(
-    await transport.call('read', { kind: 'registry', ref: '@example/package' }),
+    await transport.call(
+      'read',
+      { kind: 'registry', ref: '@example/package' },
+      { role: 'worker' },
+    ),
   ).toContain('UNTRUSTED DATA');
   fixture.done();
 }, 15000);
@@ -439,3 +468,90 @@ test('post refuses an unknown target author without issuing a write', async () =
   ).rejects.toThrow('unaccepted thread');
   fixture.done();
 }, 15000);
+
+test.each([
+  'new-head',
+  'moved-away',
+  'other-project',
+  'before-handover',
+  'old-sha',
+  'wrong-author',
+])(
+  'server rejects stale or unrelated board approval: %s',
+  async (scenario) => {
+    const head = scenario === 'new-head' ? 'b'.repeat(40) : sha;
+    const meta = item({ headRefOid: head });
+    const handoverMeta = item({
+      id: 'handover',
+      author: scenario === 'wrong-author' ? actor(1) : actor(2),
+    });
+    const events = [
+      {
+        __typename: 'ProjectV2ItemStatusChangedEvent',
+        status: 'Approved',
+        previousStatus: 'In review',
+        actor: actor(),
+        project: { number: scenario === 'other-project' ? 2 : 1 },
+        createdAt:
+          scenario === 'before-handover'
+            ? '2026-01-01T00:00:00Z'
+            : '2026-01-01T02:00:00Z',
+      },
+    ];
+    if (scenario === 'moved-away')
+      events.unshift({
+        ...events[0],
+        status: 'In progress',
+        previousStatus: 'Approved',
+        createdAt: '2026-01-01T03:00:00Z',
+      });
+    const fixture = fixtureServer([
+      graph({ repository: { pullRequest: meta } }),
+      graph({
+        node: {
+          ...meta,
+          reviews: { nodes: [], pageInfo: { hasNextPage: false } },
+        },
+      }),
+      graph({
+        node: {
+          ...meta,
+          comments: { nodes: [handoverMeta], pageInfo: { hasNextPage: false } },
+        },
+      }),
+      ...(scenario === 'wrong-author'
+        ? []
+        : [
+            graph({
+              node: {
+                ...handoverMeta,
+                body: `[orchestrator] OWNER REVIEW\nHead: ${scenario === 'old-sha' ? 'c'.repeat(40) : sha}`,
+                createdAt: '2026-01-01T01:00:00Z',
+              },
+            }),
+          ]),
+      {
+        ...graph({
+          node: {
+            ...meta,
+            timelineItems: { nodes: events, pageInfo: { hasNextPage: false } },
+          },
+        }),
+        checkQuery(query: string) {
+          // The live event fields must be requested, not merely present in the fake response.
+          for (const field of [
+            'createdAt',
+            'previousStatus',
+            'project { number }',
+          ])
+            expect(query).toContain(field);
+        },
+      },
+    ]);
+    expect(await fixture.transport.call('ownerApproved', { ref: '3' })).toBe(
+      false,
+    );
+    fixture.done();
+  },
+  15000,
+);

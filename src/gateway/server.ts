@@ -385,7 +385,13 @@ class GatewayServer {
     // A review is authoritative without needing a usable project timeline API.
     if (
       isOwnerApproved(
-        { headRefOid: String(item.headRefOid), reviews, timeline: [] },
+        {
+          headRefOid: String(item.headRefOid),
+          reviews,
+          timeline: [],
+          comments: [],
+          boardNumber: Number(object(this.config.board).number),
+        },
         this.filter,
       ) === true
     ) {
@@ -394,6 +400,30 @@ class GatewayServer {
         ? true
         : 'unknown';
     }
+    const comments: ObjectData[] = [];
+    const target = reference(ref, this.config);
+    for (const meta of await this.collection(
+      String(item.id),
+      'PullRequest',
+      'comments',
+    )) {
+      const person = this.filter.accept(meta, repoOf(meta).owner, target.link);
+      if (
+        person?.role !== 'orchestrator' ||
+        this.filter.identity(meta.author)?.role !== 'orchestrator'
+      )
+        continue;
+      const comment = await this.node(
+        String(meta.id),
+        'body createdAt',
+        'IssueComment',
+      );
+      if (
+        this.filter.accept(comment, repoOf(comment).owner, target.link)
+          ?.role === 'orchestrator'
+      )
+        comments.push(comment);
+    }
     // Timeline shape is normalized here; current card status is never queried.
     const timeline: ObjectData[] = [];
     let cursor: string | null = null;
@@ -401,7 +431,7 @@ class GatewayServer {
     for (;;) {
       const data = object(
         await this.github.graphql(
-          `query($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequest { ${identityFields} headRefOid timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status } } pageInfo { hasNextPage endCursor } } } } }`,
+          `query($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequest { ${identityFields} headRefOid timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } } } pageInfo { hasNextPage endCursor } } } } }`,
           { id: item.id, cursor },
         ),
       );
@@ -432,7 +462,13 @@ class GatewayServer {
       seen.add(cursor);
     }
     return isOwnerApproved(
-      { headRefOid: String(item.headRefOid), reviews, timeline },
+      {
+        headRefOid: String(item.headRefOid),
+        reviews,
+        timeline,
+        comments,
+        boardNumber: Number(object(this.config.board).number),
+      },
       this.filter,
     );
   };
@@ -444,6 +480,7 @@ export function createGateway(
   deps: Dependencies,
 ): Transport {
   const server = new GatewayServer(root, env, deps);
+  const config = getConfig(root, env);
   const handlers: Handlers = {
     read: server.read,
     post: server.post,
@@ -451,7 +488,36 @@ export function createGateway(
     dropped: server.dropped,
     ownerApproved: server.ownerApproved,
   };
-  return inProcess(handlers);
+  const policy = {
+    read: ['worker', 'orchestrator'],
+    post: ['worker', 'orchestrator'],
+    ghRead: ['orchestrator'],
+    dropped: ['orchestrator'],
+    ownerApproved: ['orchestrator'],
+  } as const;
+  return inProcess(handlers, (operation, input, ctx) => {
+    if (
+      !ctx ||
+      !Object.hasOwn(policy, operation) ||
+      !(policy[operation] as readonly string[]).includes(ctx.role)
+    )
+      throw new Error('Gateway operation denied for client role');
+    if (ctx.role === 'worker' && operation === 'post') {
+      const target = reference(
+        (input as Operations['post']['input']).ref,
+        config,
+      );
+      if (
+        !Number.isSafeInteger(ctx.taskPr) ||
+        Number(ctx.taskPr) < 1 ||
+        target.number !== ctx.taskPr ||
+        target.repo.toLowerCase() !== String(config.repo).toLowerCase()
+      )
+        throw new Error(
+          'Worker may post only to its own taskPr in the configured repository',
+        );
+    }
+  });
 }
 
 export type ReadInput = Operations['read']['input'];

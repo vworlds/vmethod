@@ -5,6 +5,7 @@ import { stringify } from 'yaml';
 import { parse, visit } from 'graphql';
 import type { Dependencies } from '../../src/gateway/client.js';
 import { createGateway } from '../../src/gateway/server.js';
+import type { CallContext, Operations } from '../../src/gateway/transport.js';
 import {
   object,
   type ObjectData,
@@ -135,13 +136,26 @@ export function fixtureServer(requests: Request[]) {
     EXAMPLE_GITHUB_TOKEN: 'fake-token',
     XDG_STATE_HOME: join(root, 'state'),
   };
+  const gateway = createGateway(root, env, deps);
+  // Existing operation tests explicitly run as an orchestrator. Policy tests use
+  // the raw gateway below, so they cannot accidentally inherit this test scope.
+  const transport = {
+    call<K extends keyof Operations>(
+      operation: K,
+      input: Operations[K]['input'],
+      ctx: CallContext = { role: 'orchestrator' },
+    ) {
+      return gateway.call(operation, input, ctx);
+    },
+  };
   return {
     root,
     env,
     deps,
     sleeps,
     reports,
-    transport: createGateway(root, env, deps),
+    transport,
+    gateway,
     done: fake.done,
   };
 }

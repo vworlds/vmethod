@@ -30,7 +30,7 @@ try {
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         report: (message) => console.error(message),
       });
-      console.log(await gatewayVerb(transport, verb, args));
+      console.log(await gatewayVerb(transport, verb, args, process.env));
       break;
     }
     case 'version':

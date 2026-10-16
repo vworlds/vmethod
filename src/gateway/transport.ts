@@ -13,10 +13,16 @@ export interface Operations {
   ownerApproved: { input: { ref: string }; output: boolean | 'unknown' };
 }
 
+export interface CallContext {
+  role: 'orchestrator' | 'worker';
+  taskPr?: number;
+}
+
 export interface Transport {
   call<K extends keyof Operations>(
     operation: K,
     input: Operations[K]['input'],
+    ctx: CallContext,
   ): Promise<Operations[K]['output']>;
 }
 
@@ -26,12 +32,21 @@ export type Handlers = {
   ) => Promise<Operations[K]['output']>;
 };
 
-export function inProcess(handlers: Handlers): Transport {
+export function inProcess(
+  handlers: Handlers,
+  authorize: <K extends keyof Operations>(
+    operation: K,
+    input: Operations[K]['input'],
+    ctx: CallContext,
+  ) => void,
+): Transport {
   return {
-    call<K extends keyof Operations>(
+    async call<K extends keyof Operations>(
       operation: K,
       input: Operations[K]['input'],
+      ctx: CallContext,
     ): Promise<Operations[K]['output']> {
+      authorize(operation, input, ctx);
       return (
         handlers[operation] as (
           input: Operations[K]['input'],
