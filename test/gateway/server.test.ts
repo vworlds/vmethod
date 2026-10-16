@@ -225,16 +225,18 @@ test("out-of-org posts, mentions in foreign endpoints, methods and malformed CLI
     "https://api.github.com/repos/example/project",
     "/repos/example/project/../outside",
     "/repos/example/project%2f..",
-  ])
+  ]) {
     await expect(fixture.transport.call("ghRead", { source })).rejects.toThrow("permits");
+  }
   for (const [verb, args] of [
     ["read", ["pr", "3", "--bad"]],
     ["read", ["issue", "3", "--diff"]],
     ["post", ["3"]],
     ["gh-read", []],
     ["dropped", ["--since"]],
-  ] as [string, string[]][])
+  ] as [string, string[]][]) {
     await expect(gatewayVerb(fixture.transport, verb, args)).rejects.toThrow("Usage");
+  }
   fixture.done();
 }, 15000);
 
@@ -393,11 +395,12 @@ test("comment pagination carries the cursor, filters before follow-up reads, and
   const fetch = fixture.deps.fetch;
   let count = 0;
   fixture.deps.fetch = async (url, init) => {
-    if (++count === 4)
+    if (++count === 4) {
       expect(JSON.parse(String(init?.body)).variables).toEqual({
         id: "node-1",
         cursor: "cursor-1",
       });
+    }
     return fetch(url, init);
   };
   const result = await fixture.transport.call("read", {
@@ -473,13 +476,14 @@ test.each([
         createdAt: scenario === "before-handover" ? "2026-01-01T00:00:00Z" : "2026-01-01T02:00:00Z",
       },
     ];
-    if (scenario === "moved-away")
+    if (scenario === "moved-away") {
       events.unshift({
         ...events[0],
         status: "In progress",
         previousStatus: "Approved",
         createdAt: "2026-01-01T03:00:00Z",
       });
+    }
     const fixture = fixtureServer([
       graph({ repository: { pullRequest: meta } }),
       graph({
@@ -514,8 +518,9 @@ test.each([
         }),
         checkQuery(query: string) {
           // The live event fields must be requested, not merely present in the fake response.
-          for (const field of ["createdAt", "previousStatus", "project { number }"])
+          for (const field of ["createdAt", "previousStatus", "project { number }"]) {
             expect(query).toContain(field);
+          }
         },
       },
     ]);

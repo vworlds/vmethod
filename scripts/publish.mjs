@@ -4,7 +4,9 @@ import { releasePlan } from "./release-plan.mjs";
 
 const candidate = process.env.GITHUB_EVENT_NAME === "workflow_dispatch";
 const requiredRef = candidate ? "refs/heads/dev" : "refs/heads/master";
-if (process.env.GITHUB_REF !== requiredRef) throw new Error(`Publishing requires ${requiredRef}`);
+if (process.env.GITHUB_REF !== requiredRef) {
+  throw new Error(`Publishing requires ${requiredRef}`);
+}
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 let metadata;
 try {
@@ -18,11 +20,15 @@ try {
 } catch (error) {
   // A package's first publication has no metadata; all other lookup failures are fatal.
   const text = `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
-  if (!text.includes("E404")) throw error;
+  if (!text.includes("E404")) {
+    throw error;
+  }
   metadata = { versions: [], "dist-tags": {} };
 }
 const latest = metadata?.["dist-tags"]?.latest ?? "0.0.0";
-if (!/^\d+\.\d+\.\d+$/.test(latest)) throw new Error(`Invalid latest stable version: ${latest}`);
+if (!/^\d+\.\d+\.\d+$/.test(latest)) {
+  throw new Error(`Invalid latest stable version: ${latest}`);
+}
 let hasPreviousTag = true;
 try {
   execFileSync("git", ["show-ref", "--verify", "--quiet", `refs/tags/v${latest}`], {
@@ -31,7 +37,9 @@ try {
   });
 } catch (error) {
   // show-ref returns 1 for an absent ref; other failures must not broaden a release.
-  if (error.status !== 1) throw error;
+  if (error.status !== 1) {
+    throw error;
+  }
   hasPreviousTag = false;
 }
 const paths = hasPreviousTag

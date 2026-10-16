@@ -46,7 +46,9 @@ test("all future-verb annotations in docs and templates name the implementation 
       recursive: true,
       withFileTypes: true,
     })) {
-      if (!entry.isFile()) continue;
+      if (!entry.isFile()) {
+        continue;
+      }
       const path = join(entry.parentPath, entry.name);
       references += validateReferences(readFileSync(path, "utf8"), path);
     }
@@ -81,17 +83,22 @@ function validateReferences(text: string, path = "example"): number {
     const commands = text
       .slice(0, match.index)
       .match(/(`[^`\n]+`(?:\s*(?:,\s*(?:and\s+)?|and\s+|or\s+)`[^`\n]+`)*)\s*$/);
-    if (!commands) throw new Error(`${path}: annotation must immediately follow command code`);
+    if (!commands) {
+      throw new Error(`${path}: annotation must immediately follow command code`);
+    }
     for (const command of commands[1].matchAll(/`([^`]+)`/g)) {
       const verb = [...verbIssues.keys()].find(
         (candidate) => command[1] === candidate || command[1].startsWith(`${candidate} `)
       );
-      if (!verb) throw new Error(`${path}: unknown verb ${command[1]}`);
+      if (!verb) {
+        throw new Error(`${path}: unknown verb ${command[1]}`);
+      }
       const issue = match[1] === undefined ? null : Number(match[1]);
-      if (issue !== verbIssues.get(verb))
+      if (issue !== verbIssues.get(verb)) {
         throw new Error(
           `${path}: ${command[1]} expected ${verbIssues.get(verb) ?? "planned"}, got ${issue}`
         );
+      }
       count++;
     }
   }

@@ -26,11 +26,12 @@ function publish({
     join(root, "changes/unreleased/14.md"),
     `kind: ${previousRelease ? "fix" : "feature"}\n\nPackage skeleton\n`
   );
-  if (previousRelease)
+  if (previousRelease) {
     writeFileSync(
       join(root, "changes/unreleased/1.md"),
       "kind: breaking\n\nAlready released breaking change\n"
     );
+  }
   const latest = previousRelease ? "1.2.3" : "0.0.0";
   const next = previousRelease ? "1.2.4" : candidate ? "0.1.0-rc.2" : "0.1.0";
   const calls = join(root, "calls.jsonl");

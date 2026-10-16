@@ -18,8 +18,9 @@ export class Digest {
     stateName: string,
     private now: () => number
   ) {
-    if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(stateName) || stateName === "..")
+    if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(stateName) || stateName === "..") {
       throw new Error("Invalid stateName");
+    }
     this.path = join(
       env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local/state"),
       "vmethod",
@@ -29,7 +30,9 @@ export class Digest {
   }
 
   drop(link: string): void {
-    if (!isDigestLink(link)) throw new Error("Invalid dropped-item link");
+    if (!isDigestLink(link)) {
+      throw new Error("Invalid dropped-item link");
+    }
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     appendFileSync(
       this.path,
@@ -40,20 +43,27 @@ export class Digest {
 
   read(since?: string): string {
     const after = since === undefined ? -Infinity : Date.parse(since);
-    if (Number.isNaN(after)) throw new Error("Invalid --since date");
+    if (Number.isNaN(after)) {
+      throw new Error("Invalid --since date");
+    }
     let text: string;
     try {
       text = readFileSync(this.path, "utf8");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "Dropped: 0";
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return "Dropped: 0";
+      }
       throw error;
     }
     const counts = new Map<string, number>();
     for (const line of text.split("\n").filter(Boolean)) {
       const item = JSON.parse(line) as { at: string; link: string };
-      if (!Number.isFinite(Date.parse(item.at)) || !isDigestLink(item.link))
+      if (!Number.isFinite(Date.parse(item.at)) || !isDigestLink(item.link)) {
         throw new Error("Invalid dropped digest record");
-      if (Date.parse(item.at) >= after) counts.set(item.link, (counts.get(item.link) ?? 0) + 1);
+      }
+      if (Date.parse(item.at) >= after) {
+        counts.set(item.link, (counts.get(item.link) ?? 0) + 1);
+      }
     }
     return [
       `Dropped: ${[...counts.values()].reduce((a, b) => a + b, 0)}`,

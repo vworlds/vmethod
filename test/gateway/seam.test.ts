@@ -16,8 +16,9 @@ function violations(source: string): string[] {
         (ts.isElementAccessExpression(callee) &&
           ts.isStringLiteral(callee.argumentExpression) &&
           callee.argumentExpression.text === "fetch")
-      )
+      ) {
         findings.push("fetch call");
+      }
     }
     if (
       (ts.isPropertyAccessExpression(node) && node.name.text === "credentials") ||
@@ -26,8 +27,9 @@ function violations(source: string): string[] {
         node.argumentExpression.text === "credentials") ||
       (ts.isBindingElement(node) &&
         (node.propertyName ?? node.name).getText(file) === "credentials")
-    )
+    ) {
       findings.push("credentials read");
+    }
     ts.forEachChild(node, visit);
   }
   visit(file);
@@ -39,11 +41,16 @@ test("only src/gateway may call fetch or read credentials", () => {
   function walk(directory: string): void {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
-      if (relative("src", path) === "gateway") continue;
-      if (entry.isDirectory()) walk(path);
-      else if (entry.name.endsWith(".ts"))
-        for (const violation of violations(readFileSync(path, "utf8")))
+      if (relative("src", path) === "gateway") {
+        continue;
+      }
+      if (entry.isDirectory()) {
+        walk(path);
+      } else if (entry.name.endsWith(".ts")) {
+        for (const violation of violations(readFileSync(path, "utf8"))) {
           findings.push(`${path}: ${violation}`);
+        }
+      }
     }
   }
   walk("src");

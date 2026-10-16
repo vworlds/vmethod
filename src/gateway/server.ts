@@ -29,12 +29,14 @@ function reference(
   config: Config
 ): { repo: string; number: number; owner: string; name: string; link: string } {
   const match = /^(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#)?([1-9]\d*)$/.exec(value);
-  if (!match || !Number.isSafeInteger(Number(match[2])))
+  if (!match || !Number.isSafeInteger(Number(match[2]))) {
     throw new Error("Expected <number> or <org/repo#number>");
+  }
   const repo = match[1] ?? String(config.repo);
   const [owner, name] = repo.split("/");
-  if (owner.toLowerCase() !== String(config.org).toLowerCase())
+  if (owner.toLowerCase() !== String(config.org).toLowerCase()) {
     throw new Error("Repository is outside configured org");
+  }
   return {
     repo,
     number: Number(match[2]),
@@ -100,7 +102,9 @@ class GatewayServer {
       )
     );
     const item = object(object(result.repository)[field]);
-    if (!item.id) throw new Error("GitHub thread not found");
+    if (!item.id) {
+      throw new Error("GitHub thread not found");
+    }
     const person = this.filter.accept(item, repoOf(item).owner, target.link);
     return { item, link: target.link, person };
   }
@@ -123,18 +127,27 @@ class GatewayServer {
       const parent = object(result.node);
       const scope = repoOf(parent);
       const link = `https://github.com/${scope.repo || String(this.config.repo)}`;
-      if (!this.filter.accept(parent, scope.owner, link)) return [];
+      if (!this.filter.accept(parent, scope.owner, link)) {
+        return [];
+      }
       const connection = object(parent[field]);
-      if (!Array.isArray(connection.nodes)) throw new Error("Missing GitHub connection nodes");
-      for (const node of connection.nodes) nodes.push(object(node));
+      if (!Array.isArray(connection.nodes)) {
+        throw new Error("Missing GitHub connection nodes");
+      }
+      for (const node of connection.nodes) {
+        nodes.push(object(node));
+      }
       const page = object(connection.pageInfo);
-      if (page.hasNextPage === false) return nodes;
+      if (page.hasNextPage === false) {
+        return nodes;
+      }
       if (
         page.hasNextPage !== true ||
         typeof page.endCursor !== "string" ||
         seen.has(page.endCursor)
-      )
+      ) {
         throw new Error("Invalid GitHub pagination cursor");
+      }
       cursor = page.endCursor;
       seen.add(cursor);
     }
@@ -143,7 +156,9 @@ class GatewayServer {
   private async checks(item: ObjectData, link: string): Promise<string> {
     const scope = repoOf(item);
     const sha = String(item.headRefOid);
-    if (!/^[a-f\d]{40}$/i.test(sha)) throw new Error("Invalid PR head SHA");
+    if (!/^[a-f\d]{40}$/i.test(sha)) {
+      throw new Error("Invalid PR head SHA");
+    }
     const output: string[] = [];
     for (let page = 1; ; page++) {
       const result = object(
@@ -151,14 +166,20 @@ class GatewayServer {
           `/repos/${scope.repo}/commits/${sha}/check-runs?per_page=100&page=${page}`
         )
       );
-      if (!Array.isArray(result.check_runs)) throw new Error("Missing check runs");
+      if (!Array.isArray(result.check_runs)) {
+        throw new Error("Missing check runs");
+      }
       for (const value of result.check_runs) {
         const run = object(value);
         const person = this.filter.check(run, scope.owner, link);
-        if (!person) continue;
+        if (!person) {
+          continue;
+        }
         output.push(labelled(person, JSON.stringify(checkFacts({ ...run, head_sha: sha }))));
       }
-      if (result.check_runs.length < 100) break;
+      if (result.check_runs.length < 100) {
+        break;
+      }
     }
     return output.join("\n\n") || "No accepted check runs";
   }
@@ -168,21 +189,26 @@ class GatewayServer {
       !["pr", "issue", "comment", "checks", "registry"].includes(kind) ||
       (option !== undefined &&
         (kind !== "pr" || !["--files", "--diff", "--reviews", "--checks"].includes(option)))
-    )
+    ) {
       throw new Error("Unsupported read kind or option");
+    }
     if (kind === "registry") {
-      if (option || !/^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/.test(ref) || [".", ".."].includes(ref))
+      if (option || !/^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/.test(ref) || [".", ".."].includes(ref)) {
         throw new Error("Invalid npm package name");
+      }
       const response = await this.deps.fetch(
         `https://registry.npmjs.org/${encodeURIComponent(ref)}`,
         { redirect: "error", signal: AbortSignal.timeout(30000) }
       );
-      if (!response.ok) throw new Error(`Registry HTTP ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`Registry HTTP ${response.status}`);
+      }
       return untrusted(JSON.stringify(await response.json(), null, 2));
     }
     if (kind === "comment") {
-      if (option || !/^[1-9]\d*$/.test(ref) || !Number.isSafeInteger(Number(ref)))
+      if (option || !/^[1-9]\d*$/.test(ref) || !Number.isSafeInteger(Number(ref))) {
         throw new Error("Expected numeric comment id");
+      }
       const target = reference("1", this.config);
       const item = object(await this.github.rest(`/repos/${target.repo}/issues/comments/${ref}`));
       const author = this.filter.identity(restActor(item.user));
@@ -191,32 +217,45 @@ class GatewayServer {
         this.filter.accept({ author: restActor(item.user) }, target.owner, link);
         return "No accepted comment";
       }
-      if (typeof item.node_id !== "string") throw new Error("Comment has no node id");
+      if (typeof item.node_id !== "string") {
+        throw new Error("Comment has no node id");
+      }
       const meta = await this.node(item.node_id, "", "IssueComment");
-      if (!this.filter.accept(meta, repoOf(meta).owner, link)) return "No accepted comment";
+      if (!this.filter.accept(meta, repoOf(meta).owner, link)) {
+        return "No accepted comment";
+      }
       return (
         renderItem(await this.node(item.node_id, "body", "IssueComment"), this.filter, link) ??
         "No accepted comment"
       );
     }
     const { item, person, link } = await this.thread(ref, kind === "issue" ? "issue" : "pr");
-    if (!person) return "No accepted thread";
-    if (kind === "checks" || option === "--checks") return this.checks(item, link);
+    if (!person) {
+      return "No accepted thread";
+    }
+    if (kind === "checks" || option === "--checks") {
+      return this.checks(item, link);
+    }
     const type = kind === "issue" ? "Issue" : "PullRequest";
     if (option === "--files" || option === "--diff") {
-      if (kind !== "pr") throw new Error("Files and diff require a PR");
+      if (kind !== "pr") {
+        throw new Error("Files and diff require a PR");
+      }
       const target = reference(ref, this.config);
-      if (option === "--diff")
+      if (option === "--diff") {
         return labelled(
           person,
           await this.github.diff(`/repos/${target.repo}/pulls/${target.number}`)
         );
+      }
       const files: unknown[] = [];
       for (let page = 1; ; page++) {
         const result = await this.github.rest(
           `/repos/${target.repo}/pulls/${target.number}/files?per_page=100&page=${page}`
         );
-        if (!Array.isArray(result)) throw new Error("Missing PR files");
+        if (!Array.isArray(result)) {
+          throw new Error("Missing PR files");
+        }
         files.push(
           ...result.map((value) => {
             const file = object(value);
@@ -229,7 +268,9 @@ class GatewayServer {
             };
           })
         );
-        if (result.length < 100) break;
+        if (result.length < 100) {
+          break;
+        }
       }
       return labelled(person, JSON.stringify(files, null, 2));
     }
@@ -240,13 +281,19 @@ class GatewayServer {
         this.filter,
         link
       );
-      if (!body) return "No accepted thread";
+      if (!body) {
+        return "No accepted thread";
+      }
       output.push(body);
     }
     const field = option === "--reviews" ? "reviews" : "comments";
-    if (field === "reviews" && kind !== "pr") throw new Error("Reviews require a PR");
+    if (field === "reviews" && kind !== "pr") {
+      throw new Error("Reviews require a PR");
+    }
     for (const meta of await this.collection(String(item.id), type, field)) {
-      if (!this.filter.accept(meta, repoOf(meta).owner, link)) continue;
+      if (!this.filter.accept(meta, repoOf(meta).owner, link)) {
+        continue;
+      }
       const body = renderItem(
         await this.node(
           String(meta.id),
@@ -256,7 +303,9 @@ class GatewayServer {
         this.filter,
         link
       );
-      if (body) output.push(body);
+      if (body) {
+        output.push(body);
+      }
     }
     return output.join("\n\n") || "No accepted content";
   };
@@ -268,7 +317,9 @@ class GatewayServer {
     await checkMarkdown(this.root, body);
     const { person } = await this.thread(ref, "any");
     // REST issue comments also support PRs, but the metadata query must accept both.
-    if (!person) throw new Error("Refusing to post on an unaccepted thread");
+    if (!person) {
+      throw new Error("Refusing to post on an unaccepted thread");
+    }
     await this.github.rest(`/repos/${target.repo}/issues/${target.number}/comments`, "POST", {
       body,
     });
@@ -301,10 +352,11 @@ class GatewayServer {
       !match ||
       source.includes("..") ||
       match[1].toLowerCase() !== String(this.config.org).toLowerCase()
-    )
+    ) {
       throw new Error(
         "gh-read permits scoped repository GET endpoints or a query .graphql file only"
       );
+    }
     const repo = `${match[1]}/${match[2]}`;
     const data = await this.github.rest(source.startsWith("/") ? source : `/${source}`);
     return untrusted(
@@ -320,7 +372,9 @@ class GatewayServer {
 
   ownerApproved: Handlers["ownerApproved"] = async ({ ref }) => {
     const { item, person } = await this.thread(ref, "pr");
-    if (!person) return false;
+    if (!person) {
+      return false;
+    }
     const reviews = await this.collection(String(item.id), "PullRequest", "reviews");
     // A review is authoritative without needing a usable project timeline API.
     if (
@@ -345,11 +399,15 @@ class GatewayServer {
       if (
         person?.role !== "orchestrator" ||
         this.filter.identity(meta.author)?.role !== "orchestrator"
-      )
+      ) {
         continue;
+      }
       const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
-      if (this.filter.accept(comment, repoOf(comment).owner, target.link)?.role === "orchestrator")
+      if (
+        this.filter.accept(comment, repoOf(comment).owner, target.link)?.role === "orchestrator"
+      ) {
         comments.push(comment);
+      }
     }
     // Timeline shape is normalized here; current card status is never queried.
     const timeline: ObjectData[] = [];
@@ -363,20 +421,30 @@ class GatewayServer {
         )
       );
       const parent = object(data.node);
-      if (!this.filter.accept(parent, repoOf(parent).owner, reference(ref, this.config).link))
+      if (!this.filter.accept(parent, repoOf(parent).owner, reference(ref, this.config).link)) {
         return false;
-      if (parent.headRefOid !== item.headRefOid) return "unknown";
+      }
+      if (parent.headRefOid !== item.headRefOid) {
+        return "unknown";
+      }
       const connection = object(parent.timelineItems);
-      if (!Array.isArray(connection.nodes)) throw new Error("Missing timeline nodes");
-      for (const node of connection.nodes) timeline.push({ ...object(node), field: "Status" });
+      if (!Array.isArray(connection.nodes)) {
+        throw new Error("Missing timeline nodes");
+      }
+      for (const node of connection.nodes) {
+        timeline.push({ ...object(node), field: "Status" });
+      }
       const page = object(connection.pageInfo);
-      if (page.hasNextPage === false) break;
+      if (page.hasNextPage === false) {
+        break;
+      }
       if (
         page.hasNextPage !== true ||
         typeof page.endCursor !== "string" ||
         seen.has(page.endCursor)
-      )
+      ) {
         throw new Error("Invalid timeline pagination cursor");
+      }
       cursor = page.endCursor;
       seen.add(cursor);
     }
@@ -415,8 +483,9 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
       !ctx ||
       !Object.hasOwn(policy, operation) ||
       !(policy[operation] as readonly string[]).includes(ctx.role)
-    )
+    ) {
       throw new Error("Gateway operation denied for client role");
+    }
     if (ctx.role === "worker" && operation === "post") {
       const target = reference((input as Operations["post"]["input"]).ref, config);
       if (
@@ -424,8 +493,9 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
         Number(ctx.taskPr) < 1 ||
         target.number !== ctx.taskPr ||
         target.repo.toLowerCase() !== String(config.repo).toLowerCase()
-      )
+      ) {
         throw new Error("Worker may post only to its own taskPr in the configured repository");
+      }
     }
   });
 }

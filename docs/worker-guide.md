@@ -65,6 +65,10 @@ only to generate a commit message, return only that message. Add the configured
 per-PR changelog fragment under `changelog.directory`; release collection owns the
 versioned changelog.
 
+Task PR titles use the same `<type>: <subject>` form (without a scope), because the
+squash-merge subject comes from the PR title. `open-task` must create conforming titles,
+and `merge-task` must reject a title or resulting squash subject that does not conform.
+
 ## Checks and submission
 
 While iterating, **test only what you touched**. CI supplies the standard full run;

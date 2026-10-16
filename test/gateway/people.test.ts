@@ -23,7 +23,7 @@ test("identity requires pinned numeric id, login and account type, never display
     { ...actor(), login: "renamed" },
     { login: "owner", name: "owner" },
     { databaseId: 101, __typename: "User", login: "re-registered-owner" },
-  ])
+  ]) {
     expect(
       filter.accept(
         item({
@@ -36,6 +36,7 @@ test("identity requires pinned numeric id, login and account type, never display
         link
       )
     ).toBeUndefined();
+  }
   expect(
     filter.accept(item({ author: { ...actor(), login: "OWNER" } }), "EXAMPLE", link)?.role
   ).toBe("owner");

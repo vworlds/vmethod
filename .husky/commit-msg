@@ -1,0 +1,1 @@
+node .husky/commit-msg.mjs "$1"

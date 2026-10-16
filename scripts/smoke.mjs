@@ -16,10 +16,11 @@ export function smoke() {
       encoding: "utf8",
       timeout: 60000,
     });
-    if (result.error || result.status !== 0)
+    if (result.error || result.status !== 0) {
       throw new Error(
         `${command} ${args.join(" ")} failed: ${result.error ?? ""}\n${result.stdout}\n${result.stderr}`
       );
+    }
     return result.stdout;
   }
   const packed = JSON.parse(
@@ -49,24 +50,28 @@ export function smoke() {
     const env = { PATH: bin, VMETHOD_ROOT: consumer };
     const cli = join(consumer, "node_modules/.bin/vmethod");
     const initOutput = run(cli, ["init"], consumer, env);
-    if (!initOutput.includes("Owner: install templates/claude-settings.json"))
+    if (!initOutput.includes("Owner: install templates/claude-settings.json")) {
       throw new Error("Init omitted owner permission instructions");
+    }
     mkdirSync(join(consumer, ".claude"), { recursive: true });
     copyFileSync(
       join(consumer, "node_modules/@vworlds/vmethod/templates/claude-settings.json"),
       join(consumer, ".claude/settings.json")
     );
     const output = run(cli, ["check"], consumer, env);
-    if (!output.includes("vmethod check: ok"))
+    if (!output.includes("vmethod check: ok")) {
       throw new Error(`Unexpected check output: ${output}`);
+    }
     const pkg = JSON.parse(
       readFileSync(join(consumer, "node_modules/@vworlds/vmethod/package.json"), "utf8")
     );
     const version = run(cli, ["version"], consumer, env);
-    if (!version.includes(`vmethod ${pkg.version}`))
+    if (!version.includes(`vmethod ${pkg.version}`)) {
       throw new Error("Bundled version differs from packed package");
-    if (!readFileSync(join(consumer, "package.json")).equals(originalPackage))
+    }
+    if (!readFileSync(join(consumer, "package.json")).equals(originalPackage)) {
       throw new Error("Smoke unexpectedly modified consumer package.json");
+    }
     console.log("Tarball smoke passed (metadata-only Mermaid fixture; no git/gh).");
     return output;
   } finally {
@@ -78,10 +83,13 @@ export function smoke() {
       "models.yaml",
       "scripts",
       ".claude",
-    ])
+    ]) {
       rmSync(join(consumer, path), { recursive: true, force: true });
+    }
     rmSync(temp, { recursive: true, force: true });
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) smoke();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  smoke();
+}

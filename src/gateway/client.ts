@@ -22,7 +22,9 @@ export class GitHubClient {
   ) {
     const credentials = config.credentials as Record<string, string> | undefined;
     this.token = env[credentials?.githubToken ?? ""] ?? "";
-    if (!this.token) throw new Error("Missing configured GitHub token environment variable");
+    if (!this.token) {
+      throw new Error("Missing configured GitHub token environment variable");
+    }
     const budget = config.gateway as { reserve?: number; maxRetries?: number } | undefined;
     this.reserve = budget?.reserve ?? 100;
     this.retries = budget?.maxRetries ?? 3;
@@ -38,13 +40,18 @@ export class GitHubClient {
     body?: unknown,
     accept?: string
   ): Promise<Response> {
-    if (!path.startsWith("/") || path.startsWith("//") || /[\\\r\n]/.test(path))
+    if (!path.startsWith("/") || path.startsWith("//") || /[\\\r\n]/.test(path)) {
       throw new Error("Invalid GitHub endpoint");
+    }
     const url = new URL(path, "https://api.github.com");
-    if (url.origin !== "https://api.github.com") throw new Error("Invalid GitHub origin");
+    if (url.origin !== "https://api.github.com") {
+      throw new Error("Invalid GitHub origin");
+    }
     for (let attempt = 0; ; attempt++) {
       const wait = this.pauseUntil - this.deps.now();
-      if (wait > 0) await this.deps.sleep(wait);
+      if (wait > 0) {
+        await this.deps.sleep(wait);
+      }
       this.pauseUntil = 0;
       let response: Response;
       try {
@@ -61,8 +68,9 @@ export class GitHubClient {
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
       } catch {
-        if (attempt >= this.retries)
+        if (attempt >= this.retries) {
           throw new Error("GitHub network request failed (retry limit reached)");
+        }
         this.deps.report("GitHub network failure; retrying");
         await this.deps.sleep(1000 * 2 ** attempt);
         continue;
@@ -74,8 +82,9 @@ export class GitHubClient {
         Number.isFinite(Number(remaining)) &&
         Number(remaining) <= this.reserve + 1
       ) {
-        if (!reset || !Number.isFinite(Number(reset)))
+        if (!reset || !Number.isFinite(Number(reset))) {
           throw new Error("BUDGET: missing valid reset header");
+        }
         this.pauseUntil = Math.max(this.pauseUntil, Number(reset) * 1000);
         this.deps.report("BUDGET: paused before reserve");
       }
@@ -84,11 +93,15 @@ export class GitHubClient {
         const delay = /^\d+(?:\.\d+)?$/.test(retryAfter)
           ? Number(retryAfter) * 1000
           : Date.parse(retryAfter) - this.deps.now();
-        if (!Number.isFinite(delay)) throw new Error("BUDGET (secondary): invalid retry-after");
+        if (!Number.isFinite(delay)) {
+          throw new Error("BUDGET (secondary): invalid retry-after");
+        }
         this.deps.report("BUDGET (secondary): honoring retry-after");
         this.pauseUntil = Math.max(this.pauseUntil, this.deps.now() + Math.max(0, delay));
         await response.body?.cancel();
-        if (attempt >= this.retries) throw new Error("BUDGET (secondary): retry limit reached");
+        if (attempt >= this.retries) {
+          throw new Error("BUDGET (secondary): retry limit reached");
+        }
         continue;
       }
       if (response.status >= 500 && attempt < this.retries) {
@@ -97,7 +110,9 @@ export class GitHubClient {
         await this.deps.sleep(1000 * 2 ** attempt);
         continue;
       }
-      if (!response.ok) throw new Error(`GitHub HTTP ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`GitHub HTTP ${response.status}`);
+      }
       return response;
     }
   }
@@ -120,10 +135,12 @@ export class GitHubClient {
       query,
       variables,
     })) as { data?: unknown; errors?: unknown };
-    if (result === null || typeof result !== "object" || Array.isArray(result))
+    if (result === null || typeof result !== "object" || Array.isArray(result)) {
       throw new Error("GitHub GraphQL: invalid response");
-    if (result.errors !== undefined && !Array.isArray(result.errors))
+    }
+    if (result.errors !== undefined && !Array.isArray(result.errors)) {
       throw new Error("GitHub GraphQL: invalid errors response; refusing partial data");
+    }
     if (Array.isArray(result.errors) && result.errors.length) {
       const messages = result.errors.map((error: unknown) =>
         error &&
@@ -142,8 +159,9 @@ export class GitHubClient {
       result.data === null ||
       typeof result.data !== "object" ||
       Array.isArray(result.data)
-    )
+    ) {
       throw new Error("GitHub GraphQL: missing data");
+    }
     return result.data;
   }
 }
@@ -156,10 +174,11 @@ export class OpencodeClient {
     env: NodeJS.ProcessEnv,
     private fetcher: typeof fetch
   ) {
-    if (!env.OPENCODE_BASE_URL || !env.OPENCODE_SERVER_USERNAME || !env.OPENCODE_SERVER_PASSWORD)
+    if (!env.OPENCODE_BASE_URL || !env.OPENCODE_SERVER_USERNAME || !env.OPENCODE_SERVER_PASSWORD) {
       throw new Error(
         "Missing OPENCODE_BASE_URL / OPENCODE_SERVER_USERNAME / OPENCODE_SERVER_PASSWORD"
       );
+    }
     this.url = new URL(env.OPENCODE_BASE_URL);
     if (
       !["http:", "https:"].includes(this.url.protocol) ||
@@ -167,14 +186,16 @@ export class OpencodeClient {
       this.url.password ||
       this.url.search ||
       this.url.hash
-    )
+    ) {
       throw new Error("Invalid opencode base URL");
+    }
     this.authorization = `Basic ${Buffer.from(`${env.OPENCODE_SERVER_USERNAME}:${env.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`;
   }
 
   async request(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
-    if (!/^\/[A-Za-z0-9_/?=&%.-]*$/.test(path) || path.startsWith("//") || path.includes(".."))
+    if (!/^\/[A-Za-z0-9_/?=&%.-]*$/.test(path) || path.startsWith("//") || path.includes("..")) {
       throw new Error("Invalid opencode path");
+    }
     const url = new URL(`${this.url.toString().replace(/\/$/, "")}${path}`);
     let response: Response;
     try {
@@ -191,7 +212,9 @@ export class OpencodeClient {
     } catch {
       throw new Error("opencode network request failed");
     }
-    if (!response.ok) throw new Error(`opencode HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`opencode HTTP ${response.status}`);
+    }
     try {
       return await response.json();
     } catch {

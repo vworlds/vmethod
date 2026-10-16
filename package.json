@@ -48,11 +48,12 @@
     "prepare": "husky"
   },
   "lint-staged": {
-    "*.{ts,js,mjs}": [
+    "*.{ts,js,mjs,cjs}": [
       "prettier --write",
       "eslint --fix"
     ],
-    "*.{json,yaml,yml,md,sh}": "prettier --write"
+    "*.{json,yaml,yml,md}": "prettier --write",
+    "*.sh": "prettier --write --plugin=prettier-plugin-sh"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -60,6 +61,7 @@
     "ajv": "8.20.0",
     "esbuild": "0.28.2",
     "eslint": "10.13.0",
+    "eslint-plugin-unused-imports": "^4.4.1",
     "graphql": "16.11.0",
     "husky": "9.1.7",
     "knip": "6.41.0",

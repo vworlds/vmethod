@@ -123,7 +123,9 @@ test("opencode fake server receives Basic auth only in a header and errors are s
       expect(new Headers(init?.headers).get("authorization")).toBe(
         `Basic ${Buffer.from("worker:secret-only-in-header").toString("base64")}`
       );
-      if (count++ === 0) return Response.json({ version: "fake" });
+      if (count++ === 0) {
+        return Response.json({ version: "fake" });
+      }
       return new Response("", { status: 500 });
     }
   );

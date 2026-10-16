@@ -38,9 +38,13 @@ const contentConnections = new Set([
 ]);
 function selections(document: DocumentNode): readonly SelectionNode[] {
   const operation = document.definitions[0];
-  if (operation.kind !== Kind.OPERATION_DEFINITION) throw new Error("Invalid internal query");
+  if (operation.kind !== Kind.OPERATION_DEFINITION) {
+    throw new Error("Invalid internal query");
+  }
   const field = operation.selectionSet.selections[0];
-  if (field.kind !== Kind.FIELD || !field.selectionSet) throw new Error("Invalid internal query");
+  if (field.kind !== Kind.FIELD || !field.selectionSet) {
+    throw new Error("Invalid internal query");
+  }
   return field.selectionSet.selections;
 }
 
@@ -59,19 +63,23 @@ export function readQuery(source: string): string {
           definition.kind as typeof Kind.OPERATION_DEFINITION
         )
     )
-  )
+  ) {
     throw new Error(
       "gh-read permits one GraphQL query only; mutations and subscriptions are refused"
     );
+  }
   visit(document, {
     Field(node) {
-      if (node.alias?.value.startsWith("__vm_") || node.name.value.startsWith("__vm_"))
+      if (node.alias?.value.startsWith("__vm_") || node.name.value.startsWith("__vm_")) {
         throw new Error("Reserved gateway field alias");
+      }
     },
   });
   const enriched = visit(document, {
     SelectionSet(node, _key, parent, _path, ancestors) {
-      if (!parent || !("kind" in parent)) return;
+      if (!parent || !("kind" in parent)) {
+        return;
+      }
       let extra: readonly SelectionNode[] = [];
       const container = [...ancestors]
         .reverse()
@@ -92,16 +100,16 @@ export function readQuery(source: string): string {
         (parent.kind === Kind.FIELD && parent.name.value === "repository") ||
         ((parent.kind === Kind.INLINE_FRAGMENT || parent.kind === Kind.FRAGMENT_DEFINITION) &&
           parent.typeCondition?.name.value === "Repository")
-      )
+      ) {
         extra = selections(repoInjection);
-      else if (
+      } else if (
         (parent.kind === Kind.FIELD && parent.name.value === "checkRun") ||
         ((parent.kind === Kind.INLINE_FRAGMENT || parent.kind === Kind.FRAGMENT_DEFINITION) &&
           parent.typeCondition?.name.value === "CheckRun") ||
         (connectionNode && connection === "checkRuns")
-      )
+      ) {
         extra = selections(checkInjection);
-      else if (
+      } else if (
         ((parent.kind === Kind.INLINE_FRAGMENT || parent.kind === Kind.FRAGMENT_DEFINITION) &&
           parent.typeCondition?.name.value === "StatusContext") ||
         (node.selections.some(
@@ -110,9 +118,9 @@ export function readQuery(source: string): string {
           node.selections.some(
             (selection) => selection.kind === Kind.FIELD && selection.name.value === "context"
           ))
-      )
+      ) {
         extra = selections(statusInjection);
-      else if (
+      } else if (
         (parent.kind === Kind.FIELD && contentFields.has(parent.name.value)) ||
         (connectionNode && contentConnections.has(connection)) ||
         ((parent.kind === Kind.INLINE_FRAGMENT || parent.kind === Kind.FRAGMENT_DEFINITION) &&
@@ -121,9 +129,12 @@ export function readQuery(source: string): string {
         node.selections.some(
           (selection) => selection.kind === Kind.FIELD && contentNames.has(selection.name.value)
         )
-      )
+      ) {
         extra = selections(injection);
-      if (extra.length) return { ...node, selections: [...node.selections, ...extra] };
+      }
+      if (extra.length) {
+        return { ...node, selections: [...node.selections, ...extra] };
+      }
     },
   });
   return print(enriched);
@@ -149,20 +160,25 @@ export function filterDiagnostic(
   repo: string,
   link: string
 ): unknown {
-  if (Array.isArray(value))
+  if (Array.isArray(value)) {
     return value
       .map((child) => filterDiagnostic(child, filter, repo, link))
       .filter((child) => child !== undefined);
-  if (value === null || typeof value !== "object") return value;
+  }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
   const item = object(value);
-  if (isDigestLink(item.__vm_url ?? item.html_url)) link = String(item.__vm_url ?? item.html_url);
-  else if (
+  if (isDigestLink(item.__vm_url ?? item.html_url)) {
+    link = String(item.__vm_url ?? item.html_url);
+  } else if (
     typeof item.__vm_repo === "string" &&
     isDigestLink(`https://github.com/${item.__vm_repo}`)
-  )
+  ) {
     link = `https://github.com/${item.__vm_repo}`;
-  else if (isDigestLink(`https://github.com/${repoOf(item).repo}`))
+  } else if (isDigestLink(`https://github.com/${repoOf(item).repo}`)) {
     link = `https://github.com/${repoOf(item).repo}`;
+  }
   if ("__vm_statusActor" in item) {
     const owner = repoOf(object(item.__vm_statusCommit)).owner;
     const person = filter.accept({ author: item.__vm_statusActor }, owner, link, "status");
@@ -227,7 +243,9 @@ export function filterDiagnostic(
       link,
       systemKind
     );
-    if (!person) return undefined;
+    if (!person) {
+      return undefined;
+    }
     return {
       attribution: `from ${person.login} (${person.role})`,
       ...checkFacts(item),
@@ -274,16 +292,24 @@ export function filterDiagnostic(
       owner,
       link
     );
-    if (!person) return undefined;
+    if (!person) {
+      return undefined;
+    }
     attribution = `from ${person.login} (${person.role})`;
   }
   const output: ObjectData = {};
   for (const [key, child] of Object.entries(item)) {
-    if (key.startsWith("__vm_")) continue;
+    if (key.startsWith("__vm_")) {
+      continue;
+    }
     const filtered = filterDiagnostic(child, filter, repo, link);
-    if (filtered !== undefined) output[key] = filtered;
+    if (filtered !== undefined) {
+      output[key] = filtered;
+    }
   }
-  if (attribution) output.attribution = attribution;
+  if (attribution) {
+    output.attribution = attribution;
+  }
   return output;
 }
 

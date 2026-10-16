@@ -10,7 +10,9 @@ export const verbs = [
 ] as const;
 
 export function stub(verb: string): string {
-  if (!/^[a-z][a-z-]*( [a-z][a-z-]*)*$/.test(verb)) throw new Error("Unsafe registered verb");
+  if (!/^[a-z][a-z-]*( [a-z][a-z-]*)*$/.test(verb)) {
+    throw new Error("Unsafe registered verb");
+  }
   return `#!/bin/sh
 # vmethod stub
 root=\${VMETHOD_ROOT:-}

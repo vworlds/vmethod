@@ -35,7 +35,9 @@ function envName(key: string): string {
 function overrides(value: Config, schema: Schema, env: NodeJS.ProcessEnv, path = ""): void {
   const properties = { ...(schema.properties ?? {}) } as Record<string, Schema>;
   if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
-    for (const key of Object.keys(value)) properties[key] ??= schema.additionalProperties as Schema;
+    for (const key of Object.keys(value)) {
+      properties[key] ??= schema.additionalProperties as Schema;
+    }
   }
   for (const [key, field] of Object.entries(properties)) {
     const full = path ? `${path}.${key}` : key;
@@ -62,11 +64,14 @@ function overrides(value: Config, schema: Schema, env: NodeJS.ProcessEnv, path =
       if (
         child !== undefined &&
         (typeof child !== "object" || child === null || Array.isArray(child))
-      )
+      ) {
         continue;
+      }
       const object = (child ?? {}) as Config;
       overrides(object, field, env, full);
-      if (Object.keys(object).length) value[key] = object;
+      if (Object.keys(object).length) {
+        value[key] = object;
+      }
     }
   }
 }
@@ -92,12 +97,13 @@ export function validateYaml(
     lineCounter,
     uniqueKeys: true,
   });
-  if (doc.errors.length)
+  if (doc.errors.length) {
     throw new Error(
       doc.errors
         .map((error) => `${file}:${lineCounter.linePos(error.pos[0]).line}: YAML ${error.code}`)
         .join("\n")
     );
+  }
   const value: unknown = doc.toJS();
   if (kind === "vmethod" && value && typeof value === "object" && !Array.isArray(value)) {
     const config = value as Config;
@@ -112,8 +118,9 @@ export function validateYaml(
             .split("/")
             .slice(1)
             .map((part) => part.replace(/~1/g, "/").replace(/~0/g, "~"));
-          if (error.keyword === "additionalProperties")
+          if (error.keyword === "additionalProperties") {
             parts.push(String(error.params.additionalProperty));
+          }
           const node = doc.getIn(parts, true);
           const offset =
             node && typeof node === "object" && "range" in node
@@ -135,8 +142,9 @@ export function getConfig(root: string, env: NodeJS.ProcessEnv): Config {
 export function configValue(config: Config, key: string): unknown {
   let value: unknown = config;
   for (const part of key.split(".")) {
-    if (!value || typeof value !== "object" || !Object.hasOwn(value, part))
+    if (!value || typeof value !== "object" || !Object.hasOwn(value, part)) {
       throw new Error(`Unknown config key: ${key}`);
+    }
     value = (value as Config)[part];
   }
   return value;

@@ -92,13 +92,15 @@ test("CLI defaults to worker and parses its taskPr; worker reads and its own pos
       VMETHOD_ROLE: "orchestrator",
     })
   ).toContain("Dropped: 1");
-  for (const VMETHOD_ROLE of ["owner", "", "Worker"])
+  for (const VMETHOD_ROLE of ["owner", "", "Worker"]) {
     await expect(gatewayVerb(fixture.gateway, "dropped", [], { VMETHOD_ROLE })).rejects.toThrow(
       "Invalid VMETHOD_ROLE"
     );
-  for (const VMETHOD_TASK_PR of ["", "0", "-1", "3.5", "1e2", "9007199254740992"])
+  }
+  for (const VMETHOD_TASK_PR of ["", "0", "-1", "3.5", "1e2", "9007199254740992"]) {
     await expect(
       gatewayVerb(fixture.gateway, "read", ["pr", "3"], { VMETHOD_TASK_PR })
     ).rejects.toThrow("Invalid VMETHOD_TASK_PR");
+  }
   fixture.done();
 }, 15000);

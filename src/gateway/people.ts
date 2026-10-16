@@ -24,8 +24,9 @@ export class PeopleFilter {
     if (
       new Set(people.map((p) => p.id)).size !== people.length ||
       new Set(people.map((p) => p.login.toLowerCase())).size !== people.length
-    )
+    ) {
       throw new Error("people.yaml: duplicate id or login");
+    }
   }
 
   identity(value: unknown): Person | undefined {
@@ -34,8 +35,9 @@ export class PeopleFilter {
       !["User", "Bot"].includes(String(actor.__typename)) ||
       !Number.isSafeInteger(actor.databaseId) ||
       Number(actor.databaseId) < 1
-    )
+    ) {
       return undefined;
+    }
     return this.people.find(
       (person) =>
         person.id === actor.databaseId &&
@@ -47,7 +49,9 @@ export class PeopleFilter {
 
   accept(item: ObjectData, owner: string, link: string, kind = "comment"): Person | undefined {
     let person = this.identity(item.author);
-    if (item.lastEditedAt != null) person = this.identity(item.editor);
+    if (item.lastEditedAt != null) {
+      person = this.identity(item.editor);
+    }
     if (
       owner.toLowerCase() !== this.org.toLowerCase() ||
       !person ||

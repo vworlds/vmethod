@@ -15,6 +15,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Require conventional PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if ! [[ "$PR_TITLE" =~ ^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|BREAKING\ CHANGE):\ .+ ]]; then
+            echo "Invalid PR title: $PR_TITLE" >&2
+            exit 1
+          fi
       - name: Require PR changelog fragment
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}

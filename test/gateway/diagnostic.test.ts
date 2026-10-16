@@ -31,7 +31,9 @@ test("GraphQL parser handles strings, block strings and comments without confusi
   const fields: string[] = [];
   visit(parse(query), {
     Field(node) {
-      if (node.alias) fields.push(node.alias.value);
+      if (node.alias) {
+        fields.push(node.alias.value);
+      }
     },
   });
   expect(fields).toContain("alias");

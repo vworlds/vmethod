@@ -69,7 +69,8 @@ test("closing guard rejects fenced or formatted closing phrases but permits ordi
     "Resolves org/repo#4",
     "part\nof #4",
     "```\nfixes #4\n```",
-  ])
+  ]) {
     expect(() => guardClosingKeywords(text)).toThrow("forbidden");
+  }
   expect(() => guardClosingKeywords("Related to #4; this fixes the parser.")).not.toThrow();
 }, 15000);

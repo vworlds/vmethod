@@ -8,7 +8,9 @@ function plan(kinds: string[], candidate = false, versions: string[] = [], lates
     encoding: "utf8",
     timeout: 5000,
   });
-  if (result.status !== 0) throw new Error(result.stderr);
+  if (result.status !== 0) {
+    throw new Error(result.stderr);
+  }
   return JSON.parse(result.stdout);
 }
 

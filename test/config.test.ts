@@ -20,8 +20,11 @@ test.each([
       join(root, "models.yaml"),
       `- family: other\n  kind: ${kind}\n  model: ${model}\n  gate: "${gate}"\n`
     );
-    if (valid) expect(loadYaml(root, "models")).toEqual([{ family: "other", kind, model, gate }]);
-    else expect(() => loadYaml(root, "models")).toThrow("models.yaml:");
+    if (valid) {
+      expect(loadYaml(root, "models")).toEqual([{ family: "other", kind, model, gate }]);
+    } else {
+      expect(() => loadYaml(root, "models")).toThrow("models.yaml:");
+    }
   },
   15000
 );

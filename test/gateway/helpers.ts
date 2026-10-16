@@ -80,7 +80,9 @@ export function fakeServer(requests: Request[]) {
         variables: unknown;
       };
       expect(parse(payload.query)).toEqual(parse(expected.query));
-      if (expected.variables !== undefined) expect(payload.variables).toEqual(expected.variables);
+      if (expected.variables !== undefined) {
+        expect(payload.variables).toEqual(expected.variables);
+      }
     }
     if (expected.checkQuery) {
       const payload = JSON.parse(String(init?.body)) as {
@@ -89,8 +91,12 @@ export function fakeServer(requests: Request[]) {
       };
       expected.checkQuery(payload.query, payload.variables);
     }
-    if (expected.body !== undefined) expect(JSON.parse(String(init?.body))).toEqual(expected.body);
-    if (expected.error) throw new Error("simulated network failure");
+    if (expected.body !== undefined) {
+      expect(JSON.parse(String(init?.body))).toEqual(expected.body);
+    }
+    if (expected.error) {
+      throw new Error("simulated network failure");
+    }
     return new Response(expected.text ?? JSON.stringify(expected.json ?? {}), {
       status: expected.status ?? 200,
       headers: expected.headers,
@@ -174,8 +180,9 @@ export function graph(json: unknown): Request {
         "repository",
         "owner",
         "login",
-      ])
+      ]) {
         expect(fields).toContain(required);
+      }
       const result = object(json);
       if ("repository" in result) {
         const field = Object.keys(object(result.repository))[0];
