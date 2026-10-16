@@ -50,8 +50,6 @@ function overrides(
     const full = path ? `${path}.${key}` : key;
     const switches: Record<string, string> = {
       baseBranch: 'BASE',
-      'board.owner': 'OWNER',
-      'board.number': 'BOARD_PROJECT',
       'board.enabled': 'BOARD',
     };
     const names = [envName(full), ...(switches[full] ? [switches[full]] : [])];

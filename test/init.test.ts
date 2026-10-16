@@ -82,6 +82,52 @@ test('stub resolves git root and preserves hostile arguments without shell evalu
   );
   expect(fallback.status, fallback.stderr).toBe(0);
   expect(JSON.parse(fallback.stdout)).toEqual(['check', ...args]);
+  // A copied build context has no .git, even when a git executable is installed.
+  expect(existsSync(join(root, '.git'))).toBe(false);
+  writeFileSync(
+    fakeGit,
+    `#!${process.execPath}\nif (JSON.stringify(process.argv.slice(2)) !== '["rev-parse","--show-toplevel"]') throw new Error('Unexpected git call'); console.error('fatal: not a git repository'); process.exit(128);\n`,
+  );
+  const noRoot = spawnSync('/bin/sh', [join(root, 'scripts/agent/check.sh')], {
+    cwd: root,
+    env: { PATH: bin },
+    encoding: 'utf8',
+    timeout: 5000,
+  });
+  expect(noRoot.status).toBe(2);
+  expect(noRoot.stderr).toContain('run npm ci');
+  const copiedContext = spawnSync(
+    '/bin/sh',
+    [join(root, 'scripts/agent/check.sh'), ...args],
+    {
+      cwd: root,
+      env: { PATH: bin, VMETHOD_ROOT: root },
+      encoding: 'utf8',
+      timeout: 5000,
+    },
+  );
+  expect(copiedContext.status, copiedContext.stderr).toBe(0);
+  expect(copiedContext.stderr).toBe('');
+  expect(JSON.parse(copiedContext.stdout)).toEqual(['check', ...args]);
+}, 15000);
+
+test('converts the commented provider/id TSV format with all model rows and owner gate intact', () => {
+  const root = fixture();
+  const text = readFileSync('test/fixtures/models-comment-header.tsv', 'utf8');
+  writeFileSync(join(root, 'models.tsv'), text);
+  expect(init(root, templates, true)).toContain('Would write models.yaml');
+  expect(existsSync(join(root, 'models.yaml'))).toBe(false);
+  init(root, templates);
+  expect(loadYaml(root, 'models')).toEqual(
+    ['sol', 'luna', 'astra', 'sonnet', 'opus'].map((family) => ({
+      family,
+      model: `fixture/${family}`,
+      kind: 'worker',
+      gate: family === 'astra' ? 'owner' : 'none',
+    })),
+  );
+  expect(readFileSync(join(root, 'models.tsv'), 'utf8')).toBe(text);
+  expect(init(root, templates)).toEqual([]);
 }, 15000);
 
 test('converts models.tsv once, preserving gate and original TSV', () => {

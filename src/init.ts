@@ -40,10 +40,25 @@ export function init(
     if (existsSync(join(root, path))) continue;
     let text = readFileSync(join(templateRoot, path), 'utf8');
     if (name === 'models' && existsSync(join(root, 'models.tsv'))) {
-      const lines = readFileSync(join(root, 'models.tsv'), 'utf8')
-        .split(/\r?\n/)
-        .filter((line) => line.trim() && !line.startsWith('#'));
-      const header = lines.shift()?.split('\t');
+      const lines = readFileSync(join(root, 'models.tsv'), 'utf8').split(
+        /\r?\n/,
+      );
+      const headerIndex = lines.findIndex((line) =>
+        line
+          .replace(/^\s*#\s*/, '')
+          .split('\t')
+          .map((cell) => cell.trim())
+          .includes('family'),
+      );
+      const header =
+        headerIndex < 0
+          ? undefined
+          : lines[headerIndex]
+              .replace(/^\s*#\s*/, '')
+              .split('\t')
+              .map((cell) =>
+                cell.trim() === 'provider/id' ? 'model' : cell.trim(),
+              );
       if (
         !header ||
         ['family', 'model', 'kind', 'gate'].some(
@@ -51,16 +66,22 @@ export function init(
         )
       )
         throw new Error(
-          'models.tsv: expected header with family, model, kind, gate',
+          'models.tsv: expected header with family, model (or provider/id), kind, gate',
         );
       text = stringify(
-        lines.map((line, index) => {
+        lines.flatMap((line, index) => {
+          if (index === headerIndex || !line.trim() || /^\s*#/.test(line))
+            return [];
+          if (index < headerIndex)
+            throw new Error(`models.tsv:${index + 1}: data before header`);
           const cells = line.split('\t');
           if (cells.length !== header.length)
-            throw new Error(`models.tsv:${index + 2}: wrong column count`);
-          return Object.fromEntries(
-            header.map((column, cell) => [column, cells[cell]]),
-          );
+            throw new Error(`models.tsv:${index + 1}: wrong column count`);
+          return [
+            Object.fromEntries(
+              header.map((column, cell) => [column, cells[cell]]),
+            ),
+          ];
         }),
       );
     }

@@ -70,14 +70,12 @@ test('default board switch, arrays and credential-name overrides are typed and v
   ).toThrow('pattern');
 }, 15000);
 
-test('VMETHOD board, track, base, owner and board-project switches map to config', () => {
+test('VMETHOD board, track and base switches map to config', () => {
   const root = validProject();
   const config = getConfig(root, {
     VMETHOD_BOARD: 'off',
     VMETHOD_TRACK: 'track-name',
     VMETHOD_BASE: 'track/base',
-    VMETHOD_OWNER: 'board-owner',
-    VMETHOD_BOARD_PROJECT: '42',
     VECS_BOARD: 'on',
     VECS_TRACK: 'foreign',
     VECS_BASE: 'foreign',
@@ -87,8 +85,30 @@ test('VMETHOD board, track, base, owner and board-project switches map to config
   expect(config).toMatchObject({
     track: 'track-name',
     baseBranch: 'track/base',
-    board: { enabled: false, owner: 'board-owner', number: 42 },
+    board: { enabled: false, owner: 'example', number: 1 },
   });
+  expect(getConfig(root, { VMETHOD_BOARD: 'on' })).toMatchObject({
+    board: { enabled: true },
+  });
+}, 15000);
+
+test('owner authority cannot be supplied by VMETHOD_OWNER; obsolete board node-id switch is ignored', () => {
+  const root = validProject();
+  const people = loadYaml(root, 'people');
+  const config = getConfig(root, {
+    VMETHOD_OWNER: 'attacker',
+    VMETHOD_BOARD_PROJECT: 'PVT_node_id',
+  });
+  expect(config).toEqual(getConfig(root, {}));
+  expect(loadYaml(root, 'people', { VMETHOD_OWNER: 'attacker' })).toEqual(
+    people,
+  );
+  expect(
+    getConfig(root, {
+      VMETHOD_BOARD_OWNER: 'board-org',
+      VMETHOD_BOARD_NUMBER: '42',
+    }),
+  ).toMatchObject({ board: { owner: 'board-org', number: 42 } });
 }, 15000);
 
 test('schema rejects missing numeric ids, unknown model families, duplicate YAML keys and unknown config keys', () => {
