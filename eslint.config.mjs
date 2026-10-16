@@ -1,21 +1,16 @@
-import eslint from '@eslint/js';
-import tseslint from 'typescript-eslint';
+import eslint from "@eslint/js";
+import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: [
-      'dist/**',
-      '.tmp/**',
-      'test/fixtures/consumer/node_modules/**',
-      '.husky/_/**',
-    ],
+    ignores: ["dist/**", ".tmp/**", "test/fixtures/consumer/node_modules/**", ".husky/_/**"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['**/*.mjs'],
+    files: ["**/*.mjs"],
     languageOptions: {
-      globals: { console: 'readonly', process: 'readonly', Buffer: 'readonly' },
+      globals: { console: "readonly", process: "readonly", Buffer: "readonly" },
     },
-  },
+  }
 );

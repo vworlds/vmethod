@@ -6,7 +6,7 @@ releaseBranch: master
 workerUser: example-worker
 stateName: example-state
 branches:
-  taskPattern: '<number>-<slug>'
+  taskPattern: "<number>-<slug>"
   worktreeRoot: .worktrees
   mainCheckout: /replace/with/consumer/checkout
   packPrefix: pack/
@@ -20,7 +20,7 @@ learningsPrivacy: public
 checks:
   verify: [npm run test]
   release: [npm run build]
-  docsGlob: 'docs/**/*.md'
+  docsGlob: "docs/**/*.md"
   ci: [check]
 postMerge:
   install: npm ci

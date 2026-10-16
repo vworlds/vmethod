@@ -1,14 +1,14 @@
-import { build } from 'esbuild';
-import { readFile, chmod } from 'node:fs/promises';
+import { build } from "esbuild";
+import { readFile, chmod } from "node:fs/promises";
 
-const pkg = JSON.parse(await readFile('package.json', 'utf8'));
+const pkg = JSON.parse(await readFile("package.json", "utf8"));
 await build({
-  entryPoints: ['src/cli/main.ts'],
-  outfile: 'dist/vmethod.mjs',
+  entryPoints: ["src/cli/main.ts"],
+  outfile: "dist/vmethod.mjs",
   bundle: true,
-  platform: 'node',
-  target: 'node24',
-  format: 'esm',
+  platform: "node",
+  target: "node24",
+  format: "esm",
   minify: false,
   sourcemap: true,
   splitting: false,
@@ -20,4 +20,4 @@ await build({
     __BOARD_VERSION__: JSON.stringify(pkg.boardVersion),
   },
 });
-await chmod('dist/vmethod.mjs', 0o755);
+await chmod("dist/vmethod.mjs", 0o755);

@@ -5,14 +5,7 @@
     "fields": {
       "Status": {
         "type": "single_select",
-        "options": [
-          "Backlog",
-          "Ready",
-          "In progress",
-          "In review",
-          "Approved",
-          "Done"
-        ]
+        "options": ["Backlog", "Ready", "In progress", "In review", "Approved", "Done"]
       },
       "Model": {
         "type": "single_select",
