@@ -43,4 +43,6 @@ tools it ships.
 ## Layout
 
 - `docs/architecture.md`: the vmethod design (mounting, config, layout, roadmap).
-- `scripts/`: temporary helper scripts while bootstrapping (e.g. `watch-issue.sh`).
+- `people.tsv`: who the agents may hear from: login, numeric id and role.
+- `scripts/bootstrap/`: temporary tools until vmethod 1.0 ships its own. `watch.sh` is the
+  orchestrator's event watcher, filtered through `people.tsv`.

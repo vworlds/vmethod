@@ -1,0 +1,7 @@
+# login	id	role	note
+jpeletier	11574521	owner	decides
+vimescmd	343394568	orchestrator	vmethod orchestrator (Vimes)
+spacerocks79	340349740	orchestrator	SpaceRocks orchestrator
+VecsMaster	238095565	orchestrator	vecs orchestrator
+alfredjpr79	280649849	worker	opencode workers
+github-actions[bot]	41898282	system	CI and release automation
