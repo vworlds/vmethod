@@ -425,13 +425,26 @@ github-actions[bot] system        CI and release automation
     approves or moves another project's cards to Approved;
   - `worker`: its comments drive READY / QUESTION handling;
   - `collaborator`: proposes and comments;
-  - `system`: automation such as `github-actions[bot]` release commits, never instructions.
+  - `system`: automation such as `github-actions[bot]`. The gateway passes only structured facts
+    from it (check conclusions, SHAs, tags). Its free text is never delivered as instructions,
+    because any workflow can relay attacker text under that name.
 
   Checks and CI runs are not comments and are never filtered.
 - **The agent always knows who it is talking to.** Every event or text the toolset hands an agent
   is labelled `from <login> (<role>)`. Authority follows the role, never a tag or claim in the
   text: only an `owner` approves; a `collaborator` proposes, reviews and objects.
-- `vmethod check` validates the file, and changes to it go through the owner (CODEOWNERS).
+- `people.tsv` also stores each login's numeric GitHub id. `vmethod check` resolves the ids and
+  pins them, and refuses on a mismatch, because a renamed login can be re-registered by someone
+  else. Changes to the file go through the owner (CODEOWNERS).
+- **Filter fields:**
+  - `author.databaseId` and `__typename` (User or Bot) are matched against `people.tsv`;
+  - `editor` / `lastEditedAt`: a comment last edited by someone other than its author counts as
+    the editor's;
+  - `authorAssociation` is a secondary check only;
+  - the repo's owner must equal `ORG`.
+- **Approval is a GitHub review, never a board move or a comment.** `merge-task.sh` requires an
+  APPROVED review by an `owner`-role id on the current head. A card in Approved is a convenience
+  signal that is cross-checked against that review.
 
 ### The event gateway: no direct GitHub access
 
