@@ -1,8 +1,7 @@
 # vmethod architecture
 
-Status: **draft 4**, under review in [#1](https://github.com/vworlds/vmethod/issues/1). The
-inputs were the SpaceRocks and vecs answers plus their reviews of drafts 1 and 2. The owner's decisions
-are recorded under [Owner decisions](#owner-decisions-1).
+Status: **agreed design**, a living document. Changes go through PRs; owner decisions are listed
+under [Owner decisions](#owner-decisions-1).
 
 ## Goals
 
@@ -35,20 +34,14 @@ an exactly pinned devDependency (`"@vworlds/vmethod": "1.2.0"`). Both current co
     with "run npm ci" if it is absent. The paths in existing prompts, docs and habits keep
     working.
   - `init` never overwrites a file without the marker. Renamed verbs keep a one-release alias.
-- **Bash inside the package is launched as `bash <file>`, never executed directly,** because npm
-  normalises file modes and only `bin` targets come out executable. The packed-tarball smoke
-  test covers this.
 - **The package replaces itself during a merge.** `merge-task` fast-forwards the main checkout
   and runs `npm ci`, which rewrites `node_modules/@vworlds/vmethod` while `merge-task` runs from
-  it. The hazard is **version mixing**: a later step of the same run (a sourced helper, a second
-  legacy script, a lazily imported chunk) loading the *new* version in the middle of an
+  it. The hazard is **version mixing**: a later step of the same run (a lazily imported chunk, a
+  second process spawned from the package) loading the *new* version in the middle of an
   old-version run. So:
   - the TS build is a single bundle without code splitting, so there is no dynamic `import()` of
-    chunks;
-  - at the start of a run, the CLI snapshots the whole `legacy/` tree into a per-run temp
-    directory, and every legacy step of that run executes from the snapshot;
+    chunks, and no verb spawns another copy of the CLI from `node_modules`;
   - `merge-task` reinstalls dependencies as its **last** step, after archiving and board updates;
-  - every legacy script keeps `main "$@"; exit`;
   - a test replaces the package between two steps and checks that every later step ran from the
     version the run started with.
 - **`mermaid` is pinned to GitHub's renderer version exactly.** The release declares that version,
@@ -266,7 +259,6 @@ src/cli/            the `vmethod` command and its verbs
 src/gateway/        the only code that talks to GitHub and opencode (fetch), with the people filter
 src/board/          board client, migrations runner, lock
 src/...             watch, tasks, review, merge, learnings, config
-legacy/             existing bash scripts shipped as-is during the transition (see Road to 1.0)
 board/migrations/   ordered board migrations (0001-baseline.yaml, …)
 docs/               the methodology
 templates/          AGENTS.md routing template, vmethod.yaml / people.yaml / models.yaml examples,
@@ -293,9 +285,7 @@ without learning anything new:
 **The testing methodology is the one both projects converged on:**
 - **Offline only, through fakes.** The gateway takes injectable `fetch` and `exec`, so tests run
   in-process against a fake GitHub (REST and GraphQL), a fake board, a fake opencode server and a
-  fake `git`. Bash scripts in `legacy/` are tested by running them as child processes with fake
-  `gh`, `git` and `npm` on `PATH` (SpaceRocks' `executable()` pattern). No test needs network or
-  real git; SpaceRocks' CI image has neither.
+  fake `git`. No test needs network or real git; SpaceRocks' CI image has neither.
 - **Fakes fail loudly.** Any request a fake doesn't expect fails the test (vecs' rule); there is
   no silent default.
 - **Behavioural tests only.** No test that greps source. Patchers and fixture rewriters assert
@@ -470,7 +460,7 @@ orchestrator's credentials: GitHub token, SSH key, opencode password.
 
 **Supply chain.**
 - `dev` and `master` are protected: PR only, one approval, CODEOWNERS review by the owner for
-  `src/`, `legacy/`, `board/`, `package.json` and `.github/`, no force-push, no deletion
+  `src/`, `schema/`, `board/`, `package.json` and `.github/`, no force-push, no deletion
   (`.github/rulesets/branches.json`).
 - Release tags `v*` are immutable (`.github/rulesets/tags.json`).
 - npm: OIDC trusted publishing only (no npm token exists), provenance on every version, and 2FA on
@@ -640,34 +630,34 @@ interested party in methodology changes.
   every tooling fix made in a consumer's local copy also gets a `change-request` issue in vmethod,
   linked from that PR. Convergence picks it up.
 
-## Road to 1.0 (parity first, behind a stable interface)
+## Road to 1.0 (parity first, straight to TypeScript)
 
-1. **Package skeleton:**
-   - the TypeScript, vitest, eslint and prettier setup, and the CI and publish workflows;
-   - `vmethod.yaml` / `people.yaml` loading and the schema, `vmethod check`, `vmethod init`;
-   - the **gateway** (GitHub and opencode access, people filter);
-   - `board status|migrate` with `0001-baseline`.
+The owner decided (#7) to port the existing bash tooling **straight to TypeScript**, with no bash
+stage inside the package. The bash scripts in vecs and SpaceRocks are the behavioural reference:
+same inputs, outputs, exit codes and messages wherever workers, prompts or the owner depend on
+them. Their test suites are ported as vitest cases.
 
-   The first `rc` is published to `next`.
-2. **Ship the existing tooling inside the package.** The converged bash scripts go into `legacy/`,
-   reached through `vmethod <verb>`, with their config read through `vmethod config get`.
-   Consumers can adopt the package early, and the interface (`vmethod <verb>`, the stubs) is
-   stable from then on.
-3. **Convergence, test-first, one worker task per verb or group.** Each verb is either merged in
-   bash first or ported straight to TypeScript, whichever is cheaper:
-   - vecs ahead: `wait-checks`, the test harness, changelog.
-   - SpaceRocks ahead: `verify`'s generic part (test-merge several PR heads onto their base in the
-     orchestrator's review worktree; the recipe becomes the `verify` hook), `refresh-checks`,
-     `check-task-ci`, `start-worker`, `claude-worker`, the Estimate / Model / Progress handling.
-   - Three-way merges: `board`, `watch-prs` (which becomes `vmethod watch`), `merge-task` (vecs:
-     track base, `--merge-commit`, pack keep, owner button-merge follow-up; SpaceRocks: partial
-     re-run, CI-tested-base guard; both: post-fast-forward install), `open-task`, `review`.
-   - The gateway-facing verbs (`watch`, `read`, `post`, `board`) go to TypeScript first, since
-     they carry the security rules.
-   - `grade` writes the shared model log; `vmethod learnings submit|show|report`.
-   - Each project's orchestrator reviews the verbs its side knows.
-4. **Docs:** merge vecs `.agents/workflows/*` and SpaceRocks `docs/agents/*` into `docs/`.
-5. **Pilot:** vecs adopts `1.0.0-rc.N` in **one PR**:
+1. **Package skeleton** (#3, done): toolchain, CI, publishing, config and schemas,
+   `vmethod check|init|version`.
+2. **Gateway** (#4): GitHub and opencode access, the people filter, and the `read`, `post` and
+   `gh-read` verbs.
+3. **Board** (#5): board client, field lock, migrations, `0001-baseline`.
+4. **Ports, test-first, one worker task per group,** taking the side named as ahead for each:
+   - worker verbs (#7): `start-task`, `read-pr`, `pr-comment`, `push`, `wait-review`,
+     `check-markdown`;
+   - `vmethod watch` and `mute` (#6): three-way from both `watch-prs.sh`;
+   - task flow (#8): `open-task`, `review`, `merge-task`, `release-hold`. vecs: track base,
+     `--merge-commit`, pack keep, owner button-merge follow-up. SpaceRocks: partial re-run,
+     CI-tested-base guard. Both: post-fast-forward install, as the last step;
+   - worker management (#9): `worker`, `claude-worker`, `start-worker`, `suggest-model`, `grade`;
+   - CI and verify (#10): vecs' `wait-checks`; SpaceRocks' `verify` generic part (test-merge
+     several PR heads onto their base; the recipe becomes the `verify` hook), `refresh-checks`,
+     `check-task-ci`;
+   - learnings (#11): `learnings submit|show|report`, with `grade` writing the shared model log.
+
+   Each project's orchestrator reviews the verbs its side knows.
+5. **Docs** (#12): merge vecs `.agents/workflows/*` and SpaceRocks `docs/agents/*` into `docs/`.
+6. **Pilot** (#13): vecs adopts `1.0.0-rc.N` in **one PR**:
    - add the devDependency;
    - replace `scripts/{agent,orchestrator}` with stubs;
    - move its config to `vmethod.yaml`, `people.yaml` and `models.yaml` (`vmethod init` converts
@@ -684,7 +674,6 @@ interested party in methodology changes.
    SpaceRocks then adopts, and `1.0.0` ships.
 
 **After 1.0:**
-- port the remaining `legacy/` bash to TypeScript, behind the same verbs;
 - one Status × Assignee × Progress × draft state-machine table;
 - one event poller per account, or webhooks, instead of one per session.
 
@@ -701,3 +690,6 @@ interested party in methodology changes.
 5. **Roles:** `owner`, `orchestrator`, `worker`, `collaborator` and `system` (#2).
 6. **Distribution:** an npm package written in TypeScript, using the consumers' existing tooling
    and testing methodology (#2).
+7. **No bash stage:** the existing tooling is ported straight to TypeScript (#7).
+8. **No footer** on posts made by vmethod (#4).
+9. **Estimates belong to issues**, set in Backlog and revisable; never on PRs (#15).
