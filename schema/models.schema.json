@@ -8,9 +8,18 @@
     "required": ["family", "model", "kind", "gate"],
     "properties": {
       "family": { "type": "string" },
-      "model": { "type": "string", "pattern": "^[^/\\s]+/[^\\s]+$" },
-      "kind": { "type": "string", "minLength": 1 },
+      "model": { "type": "string", "minLength": 1 },
+      "kind": { "enum": ["opencode", "claude"] },
       "gate": { "enum": ["none", "owner"] }
+    },
+    "if": { "properties": { "kind": { "const": "opencode" } } },
+    "then": {
+      "properties": {
+        "model": { "type": "string", "pattern": "^[^/\\s]+/[^\\s]+$" }
+      }
+    },
+    "else": {
+      "properties": { "model": { "type": "string", "pattern": "^[^/\\s]+$" } }
     }
   }
 }

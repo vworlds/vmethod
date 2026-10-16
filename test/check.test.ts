@@ -28,7 +28,7 @@ test('permissions, numeric ids, model families and secret-looking values are che
   );
   writeFileSync(
     join(root, 'models.yaml'),
-    '- family: wrong\n  model: a/b\n  kind: worker\n  gate: none\n',
+    '- family: wrong\n  model: a/b\n  kind: opencode\n  gate: none\n',
   );
   const path = join(root, 'vmethod.yaml');
   const token = 'ghp_' + 'a'.repeat(36);

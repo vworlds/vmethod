@@ -1,0 +1,11 @@
+# family	provider/id	kind	gate
+# Retarget families here; family names must match the board's Model options. Unknown ids use other.
+# kind: opencode or headless claude. gate: owner requires explicit --owner-approved, - is ungated.
+sol	codexbal/gpt-6.1-sol	opencode	-
+luna	codexbal/gpt-6-luna	opencode	-
+astra	codexbal/gpt-6-astra	opencode	owner
+sonnet	claude-sonnet-5-5	claude	-
+opus	claude-opus-5-5	claude	-
+glm	ollama-cloud/glm-5.3	opencode	-
+glm-flash	ollama-cloud/glm-5.3-flash	opencode	-
+big-pickle	opencode/big-pickle	opencode	-

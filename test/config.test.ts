@@ -4,6 +4,31 @@ import { expect, test } from 'vitest';
 import { configValue, getConfig, loadYaml } from '../src/config.js';
 import { validProject } from './helpers.js';
 
+test.each([
+  { kind: 'opencode', model: 'provider/model', gate: 'none', valid: true },
+  { kind: 'claude', model: 'claude-sonnet-5-5', gate: 'none', valid: true },
+  { kind: 'claude', model: 'claude-opus-5-5', gate: 'owner', valid: true },
+  { kind: 'opencode', model: 'bare-model', gate: 'none', valid: false },
+  { kind: 'claude', model: 'provider/model', gate: 'none', valid: false },
+  { kind: 'claude', model: 'model with spaces', gate: 'none', valid: false },
+  { kind: 'opencode', model: 'provider/model', gate: '-', valid: false },
+])(
+  'models schema validates kind=$kind model=$model gate=$gate (valid=$valid)',
+  ({ kind, model, gate, valid }) => {
+    const root = validProject();
+    writeFileSync(
+      join(root, 'models.yaml'),
+      `- family: other\n  kind: ${kind}\n  model: ${model}\n  gate: "${gate}"\n`,
+    );
+    if (valid)
+      expect(loadYaml(root, 'models')).toEqual([
+        { family: 'other', kind, model, gate },
+      ]);
+    else expect(() => loadYaml(root, 'models')).toThrow('models.yaml:');
+  },
+  15000,
+);
+
 test('YAML 1.2 strings, nested keys, explicit validation and unknown keys', () => {
   const root = validProject();
   const path = join(root, 'vmethod.yaml');
@@ -117,7 +142,7 @@ test('schema rejects missing numeric ids, unknown model families, duplicate YAML
   expect(() => loadYaml(root, 'people')).toThrow(/people.yaml:1:.*id/);
   writeFileSync(
     join(root, 'models.yaml'),
-    '- family: imaginary\n  model: provider/model\n  kind: worker\n  gate: none\n',
+    '- family: imaginary\n  model: provider/model\n  kind: opencode\n  gate: none\n',
   );
   expect(() => loadYaml(root, 'models')).toThrow(/models.yaml:1:.*allowed/);
   const path = join(root, 'vmethod.yaml');

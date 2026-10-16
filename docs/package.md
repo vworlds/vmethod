@@ -30,7 +30,7 @@ Supported `VMETHOD_` switches:
 There are no board-writing verbs in this skeleton. Future board verbs must honour `board.enabled: false`.
 `VMETHOD_OWNER` and `VMETHOD_BOARD_PROJECT` are ignored. Owner authority comes only from numeric ids and roles in `people.yaml`, never from environment variables. Select the board with `VMETHOD_BOARD_OWNER` (the org) and `VMETHOD_BOARD_NUMBER` (the number), not an owner login or project node id.
 
-`models.tsv` conversion accepts a plain or `#`-commented tab-separated header with `family`, `provider/id` (or `model`), `kind` and `gate` (`none` or `owner`). Other comment lines are ignored. It validates before writing, preserves the TSV, and never converts again once `models.yaml` exists.
+`models.tsv` conversion accepts a plain or `#`-commented tab-separated header with `family`, `provider/id` (or `model`), `kind` and `gate`. TSV gate `-` becomes YAML `none`; `none` and `owner` are preserved. `kind: opencode` requires `provider/id`; `kind: claude` requires a bare model id. Other comment lines are ignored. It validates before writing, preserves the TSV, and never converts again once `models.yaml` exists.
 
 ## Development and releases
 

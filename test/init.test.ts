@@ -111,21 +111,58 @@ test('stub resolves git root and preserves hostile arguments without shell evalu
   expect(JSON.parse(copiedContext.stdout)).toEqual(['check', ...args]);
 }, 15000);
 
-test('converts the commented provider/id TSV format with all model rows and owner gate intact', () => {
+test('converts the verbatim vecs registry with ungated and owner-gated opencode/claude rows intact', () => {
   const root = fixture();
-  const text = readFileSync('test/fixtures/models-comment-header.tsv', 'utf8');
+  const text = readFileSync('test/fixtures/models-vecs.tsv', 'utf8');
   writeFileSync(join(root, 'models.tsv'), text);
   expect(init(root, templates, true)).toContain('Would write models.yaml');
   expect(existsSync(join(root, 'models.yaml'))).toBe(false);
   init(root, templates);
-  expect(loadYaml(root, 'models')).toEqual(
-    ['sol', 'luna', 'astra', 'sonnet', 'opus'].map((family) => ({
-      family,
-      model: `fixture/${family}`,
-      kind: 'worker',
-      gate: family === 'astra' ? 'owner' : 'none',
-    })),
-  );
+  expect(loadYaml(root, 'models')).toEqual([
+    {
+      family: 'sol',
+      model: 'codexbal/gpt-6.1-sol',
+      kind: 'opencode',
+      gate: 'none',
+    },
+    {
+      family: 'luna',
+      model: 'codexbal/gpt-6-luna',
+      kind: 'opencode',
+      gate: 'none',
+    },
+    {
+      family: 'astra',
+      model: 'codexbal/gpt-6-astra',
+      kind: 'opencode',
+      gate: 'owner',
+    },
+    {
+      family: 'sonnet',
+      model: 'claude-sonnet-5-5',
+      kind: 'claude',
+      gate: 'none',
+    },
+    { family: 'opus', model: 'claude-opus-5-5', kind: 'claude', gate: 'none' },
+    {
+      family: 'glm',
+      model: 'ollama-cloud/glm-5.3',
+      kind: 'opencode',
+      gate: 'none',
+    },
+    {
+      family: 'glm-flash',
+      model: 'ollama-cloud/glm-5.3-flash',
+      kind: 'opencode',
+      gate: 'none',
+    },
+    {
+      family: 'big-pickle',
+      model: 'opencode/big-pickle',
+      kind: 'opencode',
+      gate: 'none',
+    },
+  ]);
   expect(readFileSync(join(root, 'models.tsv'), 'utf8')).toBe(text);
   expect(init(root, templates)).toEqual([]);
 }, 15000);
@@ -133,11 +170,11 @@ test('converts the commented provider/id TSV format with all model rows and owne
 test('converts models.tsv once, preserving gate and original TSV', () => {
   const root = fixture();
   const text =
-    'family\tmodel\tkind\tgate\nsol\tprovider/model\tworker\towner\n';
+    'family\tmodel\tkind\tgate\nsol\tprovider/model\topencode\towner\n';
   writeFileSync(join(root, 'models.tsv'), text);
   init(root, templates);
   expect(loadYaml(root, 'models')).toEqual([
-    { family: 'sol', model: 'provider/model', kind: 'worker', gate: 'owner' },
+    { family: 'sol', model: 'provider/model', kind: 'opencode', gate: 'owner' },
   ]);
   writeFileSync(join(root, 'models.tsv'), 'invalid');
   expect(init(root, templates)).toEqual([]);
@@ -145,7 +182,7 @@ test('converts models.tsv once, preserving gate and original TSV', () => {
   const broken = fixture();
   writeFileSync(
     join(broken, 'models.tsv'),
-    'family\tmodel\tkind\tgate\nwrong\ta/b\tworker\tnone\n',
+    'family\tmodel\tkind\tgate\nwrong\ta/b\topencode\tnone\n',
   );
   expect(() => init(broken, templates)).toThrow('models.tsv conversion');
   expect(existsSync(join(broken, 'vmethod.yaml'))).toBe(false);

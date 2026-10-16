@@ -1,4 +1,4 @@
 - family: sol
   model: example/replace-me
-  kind: worker
+  kind: opencode
   gate: none

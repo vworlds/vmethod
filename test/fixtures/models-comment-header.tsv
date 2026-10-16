@@ -1,8 +1,0 @@
-# family	provider/id	kind	gate
-# Model ids below are offline fixture data, not a live model registry.
-# Owner-gated models must retain their gate during conversion.
-sol	fixture/sol	worker	none
-luna	fixture/luna	worker	none
-astra	fixture/astra	worker	owner
-sonnet	fixture/sonnet	worker	none
-opus	fixture/opus	worker	none

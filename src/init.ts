@@ -79,7 +79,10 @@ export function init(
             throw new Error(`models.tsv:${index + 1}: wrong column count`);
           return [
             Object.fromEntries(
-              header.map((column, cell) => [column, cells[cell]]),
+              header.map((column, cell) => [
+                column,
+                column === 'gate' && cells[cell] === '-' ? 'none' : cells[cell],
+              ]),
             ),
           ];
         }),
