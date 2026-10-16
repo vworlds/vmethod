@@ -373,9 +373,8 @@ vmethod and some consumers (vecs) are public. vmethod's scripts run in every con
 orchestrator's credentials: GitHub token, SSH key, opencode password.
 
 **Untrusted text.** Issues, PRs, comments, branch names and titles can be written by anyone.
-- **Authority comes from the author's login, never the tag.** Scripts and watchers check the
-  author against `ALLOWED_ORCHESTRATORS` / `ALLOWED_WORKERS` in `vmethod.conf` before treating a
-  comment as `[orchestrator]` or `[worker]`. `read-pr.sh` marks other authors' comments as
+- **Authority comes from the author's login and role, never the tag** (`people.tsv`,
+  `WORKER_LOGINS`; see [the event gateway](#the-event-gateway-no-direct-github-access)). `read-pr.sh` marks other authors' comments as
   untrusted before a worker sees them. Watchers drop events from non-allowlisted logins before any
   further API call, so spam can't drain the GraphQL budget.
 - **GitHub text is untrusted in bash.** Titles, bodies and branch names are always quoted data:
@@ -402,6 +401,77 @@ orchestrator's credentials: GitHub token, SSH key, opencode password.
 
 **CI.** The default `GITHUB_TOKEN` is read-only. Fork PRs need approval to run workflows. No
 `pull_request_target`, and no secrets in workflows that fork PRs can trigger.
+
+## Collaboration, people and the event gateway
+
+### Who is who: `people.tsv` (per consumer repo)
+
+Each consumer repo has a `people.tsv` (project file, owner-approved) listing every GitHub login the
+agents may hear from, with a role:
+
+```text
+# login        role          note
+jpeletier      owner         decides
+spacerocks79   collaborator  SpaceRocks orchestrator
+VecsMaster     collaborator  vecs orchestrator
+vimescmd       collaborator  vmethod orchestrator
+```
+
+- Roles start as `owner` and `collaborator`. Worker bot accounts are declared in `vmethod.conf`
+  (`WORKER_LOGINS`), so `[worker]` comments are recognised but never carry owner authority.
+- **The agent always knows who it is talking to.** Every event or text the toolset hands an agent
+  is labelled `from <login> (<role>)`. Authority follows the role, never a tag or claim in the
+  text: only an `owner` approves; a `collaborator` proposes, reviews and objects.
+- `vmethod check` validates the file, and changes to it go through the owner (CODEOWNERS).
+
+### The event gateway: no direct GitHub access
+
+Agents never call `gh`, `curl api.github.com` or any GitHub API directly. Raw access bypasses the
+people filter and exposes the agent to prompt injection. Every read and write goes through
+vmethod's wrappers, which call GitHub internally:
+
+- **Enforced, not just documented.** `templates/` ships agent permission settings for Claude Code
+  (`.claude/settings.json` deny rules for `gh`, `curl`/`wget` to GitHub, `git push` outside
+  `push.sh`) and the equivalent opencode config. `vmethod check` verifies that they are in
+  place.
+- **Inbound filter.** Before anything reaches the agent:
+  - comments, reviews, issues and PRs whose author is not in `people.tsv` or `WORKER_LOGINS`
+    are **dropped silently**;
+  - mentions of an orchestrator in a repo outside the organisation (`ORG`, e.g. `vworlds`) are
+    dropped;
+  - what passes is labelled with the author's login and role.
+- **Outbound.** Posts go through the existing posting scripts: Markdown check, footer, no closing
+  keywords.
+- **Coverage.** Every GitHub operation an orchestrator or worker needs gets a wrapper. Gaps are
+  collected from the orchestrators (#2) and become wrappers before 1.0. Until a wrapper exists,
+  the agent asks its owner instead of using `gh`.
+
+### Watching and muting threads
+
+`vmethod watch` is the one event loop that feeds an orchestrator. It covers its own repo's PRs and
+board, as `watch-prs.sh` does today, and **vmethod's issues and PRs**. Every orchestrator is an
+interested party in methodology changes.
+
+- **Default: subscribed.** Every orchestrator receives every new vmethod issue and PR, and their
+  comments, so it can chip in, e.g. "B's proposal would break our setup".
+- **Mute.** `vmethod mute <repo>#<n>` silences one issue or PR, in any repo, for this
+  orchestrator. Muted threads deliver nothing until the orchestrator is **explicitly mentioned**
+  there. A mention removes the mute and delivers the event; to silence the thread again, the
+  orchestrator mutes it again. `vmethod mutes` lists the mutes, and `vmethod unmute` clears one.
+  Mutes are local state under `STATE_NAME`.
+
+### How a methodology change happens
+
+1. **A need appears.** The owner asks an orchestrator for something, or an orchestrator detects a
+   gap. That orchestrator opens a vmethod issue (`vmethod propose`) describing the need and the
+   project context, or a PR if the change is small and clear.
+2. **Interested parties chip in.** Every other orchestrator sees it through `vmethod watch`, and
+   comments with support, concerns or conflicts with their setup, or mutes it.
+3. **Agreement.** The vmethod orchestrator elaborates the proposal until every orchestrator's
+   concerns are resolved or explicitly overruled, and puts it to the owner.
+4. **Decision and release.** The owner approves (Approved on the vmethod board, and an approving
+   review on the PR). It ships in a release, and consumers adopt it with `sync` and
+   `board migrate`.
 
 ## Versioning and change process
 
