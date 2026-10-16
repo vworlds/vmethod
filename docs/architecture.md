@@ -527,7 +527,7 @@ people filter and exposes the agent to prompt injection. Every read and write go
 vmethod's wrappers, which call GitHub internally:
 
 - **Enforced, not just documented.** The hard stop is a permission rule: Claude Code
-  `.claude/settings.json` denies `Bash(gh *)`, `curl`/`wget` to GitHub, and `git push` outside
+  `.claude/settings.json` denies `Bash(gh *)`, `npx`, `curl`/`wget` to GitHub, and `git push` outside
   `push.sh`, and allows the `vmethod` stubs and `npm exec --no -- vmethod`. opencode gets the equivalent config. `templates/` ships both.
   **The owner installs them; agents never edit their own permissions.** `vmethod check` verifies
   that they are in place.
