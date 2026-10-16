@@ -34,7 +34,7 @@ test('release bump priority, reset lower components, and numbered next RCs', () 
 }, 15000);
 
 test('release fails on absent or malformed fragments and duplicate versions', () => {
-  expect(() => plan([])).toThrow('No unreleased');
+  expect(() => plan([])).toThrow('nothing to release');
   expect(() => plan(['invalid'])).toThrow('kind:');
   expect(() => plan(['fix'], false, ['1.2.4'])).toThrow('already published');
 }, 15000);

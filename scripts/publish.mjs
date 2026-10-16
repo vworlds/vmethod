@@ -22,9 +22,42 @@ try {
   if (!text.includes('E404')) throw error;
   metadata = { versions: [], 'dist-tags': {} };
 }
-const fragments = readdirSync('changes/unreleased')
-  .filter((file) => /^\d+\.md$/.test(file))
-  .map((file) => readFileSync(`changes/unreleased/${file}`, 'utf8'));
+const latest = metadata?.['dist-tags']?.latest ?? '0.0.0';
+if (!/^\d+\.\d+\.\d+$/.test(latest))
+  throw new Error(`Invalid latest stable version: ${latest}`);
+let hasPreviousTag = true;
+try {
+  execFileSync(
+    'git',
+    ['show-ref', '--verify', '--quiet', `refs/tags/v${latest}`],
+    { stdio: 'pipe', timeout: 10000 },
+  );
+} catch (error) {
+  // show-ref returns 1 for an absent ref; other failures must not broaden a release.
+  if (error.status !== 1) throw error;
+  hasPreviousTag = false;
+}
+const paths = hasPreviousTag
+  ? execFileSync(
+      'git',
+      [
+        'diff',
+        '--name-only',
+        '--diff-filter=A',
+        `v${latest}..HEAD`,
+        '--',
+        'changes/unreleased',
+      ],
+      { encoding: 'utf8', timeout: 10000 },
+    )
+      .trim()
+      .split('\n')
+  : readdirSync('changes/unreleased').map(
+      (file) => `changes/unreleased/${file}`,
+    );
+const fragments = paths
+  .filter((file) => /^changes\/unreleased\/\d+\.md$/.test(file))
+  .map((file) => readFileSync(file, 'utf8'));
 const plan = releasePlan(metadata, fragments, candidate);
 pkg.version = plan.version;
 writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');

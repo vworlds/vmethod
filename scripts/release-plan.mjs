@@ -1,7 +1,8 @@
 import { fragmentKind } from './changelog.mjs';
 
 export function releasePlan(metadata, fragments, candidate) {
-  if (!fragments.length) throw new Error('No unreleased changelog fragments');
+  if (!fragments.length)
+    throw new Error('nothing to release: no new changelog fragments');
   const kinds = fragments.map(fragmentKind);
   const stable = metadata?.['dist-tags']?.latest ?? '0.0.0';
   if (!/^\d+\.\d+\.\d+$/.test(stable))
