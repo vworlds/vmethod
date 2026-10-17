@@ -1187,30 +1187,41 @@ class GatewayServer {
   };
 
   ghRead: Handlers["ghRead"] = async ({ source }) => {
+    const counts = { dropped: 0, redacted: 0 };
     if (source.endsWith(".graphql")) {
       const query = readQuery(readFileSync(source, "utf8"));
       const data = await this.github.graphql(query);
-      return untrusted(
+      const output = untrusted(
         JSON.stringify(
           filterDiagnostic(
             data,
             this.filter,
             String(this.config.repo),
-            `https://github.com/${String(this.config.repo)}`
+            `https://github.com/${String(this.config.repo)}`,
+            counts
           ),
           null,
           2
         ) ?? "null"
       );
+      return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}`;
     }
     // Only scoped repository endpoints. No URLs, alternate methods, redirects or encoded paths.
     const match =
       /^\/?repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(\/[A-Za-z0-9_./-]+)?(?:\?([A-Za-z0-9_=&,.-]+))?$/.exec(
         source
       );
+    // Permit exactly the compare delimiter, not traversal or arbitrary double dots.
+    const safePath = (match?.[3] ?? "").replace(
+      /^\/compare\/([A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*)\.\.\.([A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*)$/,
+      "/compare/$1/$2"
+    );
     if (
       !match ||
-      source.includes("..") ||
+      safePath.includes("..") ||
+      match[1].includes("..") ||
+      match[2].includes("..") ||
+      (match[4] ?? "").includes("..") ||
       match[1].toLowerCase() !== String(this.config.org).toLowerCase()
     ) {
       throw new Error(
@@ -1220,18 +1231,29 @@ class GatewayServer {
     const repo = `${match[1]}/${match[2]}`;
     let data = await this.github.rest(source.startsWith("/") ? source : `/${source}`);
     if (/^\/(?:issues|pulls)\/[1-9]\d*$/.test(match[3] ?? "")) {
-      data = await this.diagnosticThread(object(data), repo);
+      data = await this.diagnosticThread(object(data), repo, match[3]!.startsWith("/pulls/"));
+    } else if (/^\/(?:issues|pulls)$/.test(match[3] ?? "") && Array.isArray(data)) {
+      const entries: unknown[] = [];
+      for (const entry of data) {
+        entries.push(await this.diagnosticThread(object(entry), repo, match[3] === "/pulls"));
+      }
+      data = entries;
     }
-    return untrusted(
+    const output = untrusted(
       JSON.stringify(
-        filterDiagnostic(data, this.filter, repo, `https://github.com/${repo}`),
+        filterDiagnostic(data, this.filter, repo, `https://github.com/${repo}`, counts),
         null,
         2
       ) ?? "null"
     );
+    return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}`;
   };
 
-  private async diagnosticThread(rest: ObjectData, repo: string): Promise<unknown> {
+  private async diagnosticThread(
+    rest: ObjectData,
+    repo: string,
+    pullRequest: boolean
+  ): Promise<unknown> {
     const link = `https://github.com/${repo}/issues/${String(rest.number)}`;
     // REST updated_at includes labels/state changes and cannot identify a text editor.
     // Gate the original author, then obtain editor-aware metadata before requesting text.
@@ -1241,7 +1263,7 @@ class GatewayServer {
     if (typeof rest.node_id !== "string") {
       throw new Error("Missing diagnostic thread node ID");
     }
-    const kind = rest.pull_request || "merged" in rest ? "PullRequest" : "Issue";
+    const kind = pullRequest || rest.pull_request ? "PullRequest" : "Issue";
     const metadata = await this.node(rest.node_id, "", kind);
     if (!this.filter.accept(metadata, repoOf(metadata).owner, link)) {
       return undefined;

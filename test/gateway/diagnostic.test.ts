@@ -99,6 +99,9 @@ test("GraphQL aliases and fragments cannot hide author-bearing text or foreign r
   expect(output).toContain("APPROVED");
   expect(output).not.toContain("NEVER DELIVER");
   expect(output).not.toContain("__vm_");
+  expect(output.endsWith("0 items dropped by the people filter\n4 nested values redacted")).toBe(
+    true
+  );
   fixture.done();
 }, 15000);
 
@@ -137,6 +140,7 @@ test("REST diagnostics filter known author fields and unverifiable edits and nev
   });
   expect(output).toContain("from worker (worker)");
   expect(output).not.toContain("NEVER DELIVER");
+  expect(output.endsWith("4 items dropped by the people filter")).toBe(true);
   fixture.done();
 }, 15000);
 

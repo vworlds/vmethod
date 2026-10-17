@@ -1,0 +1,25 @@
+{
+  "sha": "56d00ed8149f11620810145ce2075379eac99f18",
+  "url": "https://api.github.com/repos/vworlds/vmethod/commits/56d00ed8149f11620810145ce2075379eac99f18",
+  "author": { "login": "jpeletier", "id": 11574521, "type": "User" },
+  "committer": { "login": "web-flow", "id": 19864447, "type": "User" },
+  "commit": {
+    "author": {
+      "name": "Javier Peletier",
+      "email": "jpeletier@users.noreply.github.com",
+      "date": "2026-10-17T16:36:43Z"
+    },
+    "committer": {
+      "name": "GitHub",
+      "email": "noreply@github.com",
+      "date": "2026-10-17T16:36:43Z"
+    },
+    "message": "Merge pull request #50 from vworlds/13-release-prep\n\ndocs: prepare the 1.0 release candidate",
+    "tree": {
+      "sha": "28fbd2e001ade91c0be0836e80187fb0279f82bb",
+      "url": "https://api.github.com/repos/vworlds/vmethod/git/trees/28fbd2e001ade91c0be0836e80187fb0279f82bb"
+    },
+    "url": "https://api.github.com/repos/vworlds/vmethod/git/commits/56d00ed8149f11620810145ce2075379eac99f18",
+    "comment_count": 0
+  }
+}

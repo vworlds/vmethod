@@ -66,6 +66,7 @@ export interface Operations {
     output: { branch: string; base: string };
   };
   waitReview: { input: { ref: string; pollSeconds: number }; output: string };
+  /** Scoped GET/query diagnostics: untrusted JSON, root-list drop count and optional nested-redaction count. */
   ghRead: { input: { source: string }; output: string };
   dropped: { input: { since?: string }; output: string };
   ownerApproved: { input: { ref: string }; output: boolean | "unknown" };

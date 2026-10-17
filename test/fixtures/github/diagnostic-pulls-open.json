@@ -1,0 +1,64 @@
+[
+  {
+    "node_id": "PR_kwDOVMIbYc8AAAABJDRPRQ",
+    "number": 53,
+    "html_url": "https://github.com/vworlds/vmethod/pull/53",
+    "title": "fix: gh-read drops PR lists and git commits, refuses compare",
+    "user": { "login": "vimescmd", "id": 343394568, "type": "User" },
+    "created_at": "2026-10-17T17:34:00Z",
+    "updated_at": "2026-10-17T17:34:00Z",
+    "head": {
+      "ref": "45-gh-read-drops-pr-lists-and-git-commits-refuses-compare",
+      "sha": "c79ed353f1a50504456621c73967fcbd0695996a",
+      "user": { "login": "vworlds", "id": 116653388, "type": "Organization" },
+      "repo": {
+        "full_name": "vworlds/vmethod",
+        "owner": { "login": "vworlds", "id": 116653388, "type": "Organization" },
+        "fork": false,
+        "description": "Process and methodology"
+      }
+    },
+    "base": {
+      "ref": "dev",
+      "sha": "56d00ed8149f11620810145ce2075379eac99f18",
+      "user": { "login": "vworlds", "id": 116653388, "type": "Organization" },
+      "repo": {
+        "full_name": "vworlds/vmethod",
+        "owner": { "login": "vworlds", "id": 116653388, "type": "Organization" },
+        "fork": false,
+        "description": "Process and methodology"
+      }
+    }
+  },
+  {
+    "node_id": "PR_kwDOVMIbYc8AAAABJC3OUA",
+    "number": 52,
+    "html_url": "https://github.com/vworlds/vmethod/pull/52",
+    "title": "fix: learnings submit fork sync needs workflow scope",
+    "user": { "login": "vimescmd", "id": 343394568, "type": "User" },
+    "created_at": "2026-10-17T16:37:45Z",
+    "updated_at": "2026-10-17T17:02:23Z",
+    "head": {
+      "ref": "51-learnings-submit-fork-sync-needs-workflow-scope",
+      "sha": "c0fd2c77980303fcd9c22226048b29e1740b3a15",
+      "user": { "login": "vworlds", "id": 116653388, "type": "Organization" },
+      "repo": {
+        "full_name": "vworlds/vmethod",
+        "owner": { "login": "vworlds", "id": 116653388, "type": "Organization" },
+        "fork": false,
+        "description": "Process and methodology"
+      }
+    },
+    "base": {
+      "ref": "dev",
+      "sha": "56d00ed8149f11620810145ce2075379eac99f18",
+      "user": { "login": "vworlds", "id": 116653388, "type": "Organization" },
+      "repo": {
+        "full_name": "vworlds/vmethod",
+        "owner": { "login": "vworlds", "id": 116653388, "type": "Organization" },
+        "fork": false,
+        "description": "Process and methodology"
+      }
+    }
+  }
+]
