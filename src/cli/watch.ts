@@ -57,7 +57,7 @@ export async function watchClient(
   for (;;) {
     const { events } = await transport.call(
       "nextEvents",
-      { ...session, timeoutSeconds: 300, ack },
+      { ...session, timeoutSeconds: once ? 0 : 300, ack, ...(once ? { pollOnce: true } : {}) },
       ctx
     );
     for (const event of events) {
@@ -67,8 +67,10 @@ export async function watchClient(
       await write(`${quiet}${event.line}\n`);
     }
     ack = events.map((event) => event.id);
-    if (once && events.length) {
-      await transport.call("nextEvents", { ...session, timeoutSeconds: 0, ack }, ctx);
+    if (once) {
+      if (events.length) {
+        await transport.call("nextEvents", { ...session, timeoutSeconds: 0, ack }, ctx);
+      }
       return;
     }
   }

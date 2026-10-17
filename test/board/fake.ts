@@ -47,6 +47,7 @@ export class FakeBoard {
   low = false;
   stealBeforeBump = false;
   pageSize = 100;
+  recordedFields?: ObjectData;
   failBatch = 0;
   batches = 0;
   editsBeforeReadme = false;
@@ -108,12 +109,15 @@ export class FakeBoard {
           break;
         case "BoardFields":
           expect(variables.id).toBe("project");
-          data = {
+          data = this.recordedFields ?? {
             node: {
               fields: this.page(
                 this.fields.map((field) => ({
-                  ...field,
+                  id: field.id,
+                  name: field.name,
+                  createdAt: new Date(field.createdAt).toISOString(),
                   dataType: field.type.toUpperCase(),
+                  ...(field.type === "single_select" ? { options: field.options } : {}),
                 })),
                 variables.cursor
               ),

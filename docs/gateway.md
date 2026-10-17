@@ -129,10 +129,12 @@ Run as an orchestrator (`VMETHOD_ROLE=orchestrator`):
 - `vmethod mutes`
 
 The CLI only prints server-produced `nextEvents` records; it never polls GitHub.
-`nextEvents` takes `{ timeoutSeconds, ack?, track?, only?, skip? }` and returns
+`nextEvents` takes `{ timeoutSeconds, ack?, pollOnce?, track?, only?, skip? }` and returns
 `{ events: [{ id, kind, line, quiet? }] }`. A zero timeout applies acknowledgements
 without polling. The client acknowledges IDs **after stdout finishes writing**;
-`--once` prints a settled batch and then acknowledges it before exiting. A failed
+`--once` delivers pending events or polls once without waiting for an event, then
+acknowledges any printed batch and exits, including when nothing is new. It uses
+`{ timeoutSeconds: 0, pollOnce: true }`; an ack-only call omits `pollOnce`. A failed
 write leaves the batch pending. Reconnects redeliver pending events until acknowledged;
 delivery is at least once, so a crash after print but before ack may repeat that batch.
 

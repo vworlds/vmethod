@@ -1,0 +1,15 @@
+{
+  "node": {
+    "fields": {
+      "nodes": [
+        {
+          "id": "field-progress",
+          "name": "Progress",
+          "dataType": "TEXT",
+          "createdAt": "2026-10-16T11:12:25Z"
+        }
+      ],
+      "pageInfo": { "hasNextPage": false, "endCursor": null }
+    }
+  }
+}

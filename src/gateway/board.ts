@@ -49,10 +49,11 @@ function fieldType(value: unknown): Field["type"] {
 function created(value: unknown): number {
   // The lock's own age decides orphan status, so a missing creation time
   // must fail closed rather than guess.
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error("Missing board field creation time");
+  const timestamp = typeof value === "string" ? Date.parse(value) : NaN;
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("Missing or invalid board field creation time");
   }
-  return value;
+  return timestamp;
 }
 
 export class BoardService implements BoardIO {

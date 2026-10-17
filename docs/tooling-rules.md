@@ -43,6 +43,12 @@ and commands. Any unexpected request or command fails the test; there is no sile
 default. Include hostile titles, bodies and branches, untrusted authors, fake tags
 and closing syntax as data. Every test and suite has a timeout.
 
+Fakes must use **recorded real response shapes**, never invented ones. Preserve
+wire types when sanitizing recordings (for example, GitHub field `createdAt` is
+an ISO-8601 string, not an epoch number). Record the source and any projections or
+redactions with the fixture. Exercise recordings through the real decoding and
+write paths so a fake cannot silently validate its own incorrect assumptions.
+
 Test behavior, not source greps. Patchers and fixture rewriters assert anchors and
 replacement counts. Missing scan/build inputs fail rather than produce an empty
 pass. Consumer hooks can use the shared testing kit when available; project-specific

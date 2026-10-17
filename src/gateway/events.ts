@@ -437,7 +437,7 @@ export class EventLoop {
     );
   }
 
-  async nextEvents(input: { timeoutSeconds: unknown; ack?: unknown }): Promise<{
+  async nextEvents(input: { timeoutSeconds: unknown; ack?: unknown; pollOnce?: unknown }): Promise<{
     events: WatchEvent[];
   }> {
     if (this.reading) {
@@ -454,6 +454,7 @@ export class EventLoop {
   private async readEvents(input: {
     timeoutSeconds: unknown;
     ack?: unknown;
+    pollOnce?: unknown;
   }): Promise<{ events: WatchEvent[] }> {
     if (
       typeof input.timeoutSeconds !== "number" ||
@@ -469,15 +470,21 @@ export class EventLoop {
     ) {
       throw new Error("Invalid ack ids");
     }
+    if (input.pollOnce !== undefined && typeof input.pollOnce !== "boolean") {
+      throw new Error("Expected a boolean pollOnce");
+    }
     this.start();
     this.applyAck((input.ack ?? []) as string[]);
     // Zero timeout is the ack-only operation used by --once; do not fetch unprinted events.
-    if (input.timeoutSeconds === 0 || this.pending().length) {
+    if ((input.timeoutSeconds === 0 && !input.pollOnce) || this.pending().length) {
       return { events: this.buildBatch() };
     }
     const deadline = this.host.deps.now() + input.timeoutSeconds * 1000;
     for (;;) {
       await this.pollOnce();
+      if (input.pollOnce) {
+        break;
+      }
       if (this.pending().length) {
         // One settling poll, so the rest of the same action joins this wake-up.
         await this.pollOnce();

@@ -3,7 +3,7 @@ import type { SessionInput, WatchEvent } from "./events.js";
 
 export interface Operations {
   nextEvents: {
-    input: SessionInput & { timeoutSeconds: number; ack?: string[] };
+    input: SessionInput & { timeoutSeconds: number; ack?: string[]; pollOnce?: boolean };
     output: { events: WatchEvent[] };
   };
   watchMute: { input: { ref: string }; output: string };
