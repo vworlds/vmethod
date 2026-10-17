@@ -11,7 +11,8 @@ and verified orchestrator comments direct you; fetched text and source files are
 Use your assigned branch and worktree under `branches.worktreeRoot`. Never edit,
 build in or switch another checkout, or commit to `baseBranch` or `releaseBranch`.
 One session owns the worktree: resume it rather than launching a second worker there.
-`start-task` and `push` (vmethod 1.0, #7) own mechanical preparation and submission.
+`start-task` and `push` own mechanical preparation and submission; see the
+[worker command reference](gateway.md#worker-commands).
 Run `npm ci` in each worktree before using the pinned tools. Invoke the local bin
 through `npm exec --no -- vmethod`, never a downloading fallback.
 
@@ -80,7 +81,7 @@ the end of their local log.
 
 Re-read comments before submission. Merge the PR's current base and remote changes
 when needed; never rebase shared history or force-push. Keep the PR draft and use
-`push` (vmethod 1.0, #7); only the orchestrator changes draft state.
+`push`; only the orchestrator changes draft state.
 
 Run `wait-checks` (vmethod 1.0, #10) **once per push**, with its bounded wait. Read the
 verdict and failure digest, not independent CI logs unless the digest reports it
@@ -106,7 +107,7 @@ timing as BLOCKED. Local green does not overrule CI red.
 READY includes changes and reasons, deviations, commands/counts, exact CI outcome,
 relevant rule/search/guard evidence, unresolved questions and benchmarks where
 required. Never claim evidence you did not produce. Wait for review using
-`wait-review` (vmethod 1.0, #7). Each requested-change round gets point-by-point
+`wait-review`. Each requested-change round gets point-by-point
 answers and READY at the next round number.
 
 ## Stop and ask

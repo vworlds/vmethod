@@ -23,6 +23,9 @@ import {
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { inProcess, type Handlers, type Operations, type Transport } from "./transport.js";
 import { isOwnerApproved } from "./approval.js";
+import { GitTransport, taskBranch, validateBranch } from "./git.js";
+import { realpathSync } from "node:fs";
+import { matchesGlob, resolve } from "node:path";
 import { BoardService } from "./board.js";
 
 function reference(
@@ -114,7 +117,7 @@ class GatewayServer {
     const fields =
       kind === "any"
         ? `... on Issue { ${identityFields} } ... on PullRequest { ${identityFields} }`
-        : `${identityFields} ${kind === "pr" ? "headRefOid" : ""}`;
+        : `${identityFields} ${kind === "pr" ? "headRefOid headRefName baseRefName state headRepository { nameWithOwner }" : ""}`;
     const result = object(
       await this.github.graphql(
         `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { ${field}(number: $number) { ${fields} } } }`,
@@ -333,8 +336,8 @@ class GatewayServer {
   post: Handlers["post"] = async ({ ref, file }) => {
     const target = reference(ref, this.config);
     const body = readFileSync(file, "utf8");
-    guardClosingKeywords(body);
     await checkMarkdown(this.root, body);
+    guardClosingKeywords(body);
     const { person } = await this.thread(ref, "any");
     // REST issue comments also support PRs, but the metadata query must accept both.
     if (!person) {
@@ -344,6 +347,186 @@ class GatewayServer {
       body,
     });
     return `Posted to ${target.link}`;
+  };
+
+  task: Handlers["task"] = async ({ ref, fetch }) => {
+    const { item, person } = await this.thread(ref, "pr");
+    if (!person) {
+      throw new Error("No accepted task PR");
+    }
+    const branch = String(item.headRefName ?? "");
+    const base = String(item.baseRefName ?? "");
+    taskBranch(branch, this.config);
+    validateBranch(base);
+    if (
+      String(object(item.headRepository).nameWithOwner).toLowerCase() !==
+      String(this.config.repo).toLowerCase()
+    ) {
+      throw new Error("Task branch must belong to the configured repository");
+    }
+    if (item.state !== "OPEN") {
+      throw new Error("Task PR is not open");
+    }
+    if (fetch) {
+      if (
+        !(await new GitTransport(this.config, this.env, this.deps, this.root).transfer("fetch", [
+          `+refs/heads/${base}:refs/remotes/origin/${base}`,
+          `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+        ]))
+      ) {
+        throw new Error("error: fetch failed");
+      }
+    }
+    return { branch, base };
+  };
+
+  push: Handlers["push"] = async ({ worktree, branch }, ctx) => {
+    taskBranch(branch, this.config);
+    if (!Number.isSafeInteger(ctx.taskPr) || Number(ctx.taskPr) < 1) {
+      throw new Error("Push requires its own taskPr");
+    }
+    const task = await this.task({ ref: String(ctx.taskPr) }, ctx);
+    if (ctx.role === "worker") {
+      if (task.branch !== branch) {
+        throw new Error("Worker may push only its own task branch");
+      }
+    }
+    if (realpathSync(worktree) !== realpathSync(this.root)) {
+      throw new Error("Push worktree must be the gateway checkout");
+    }
+    const git = new GitTransport(this.config, this.env, this.deps, resolve(worktree));
+    const commit = (await git.run("rev-parse", "--verify", `refs/heads/${branch}^{commit}`)).trim();
+    if (!/^[a-f\d]{40}$/i.test(commit)) {
+      throw new Error("Invalid local commit");
+    }
+    const base = task.base;
+    // Validate config refs before allowing them into fetch refspecs.
+    validateBranch(base);
+    if (!(await git.transfer("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
+      throw new Error("error: fetch failed");
+    }
+    const count = (
+      await git.run("rev-list", "--count", `refs/remotes/origin/${base}..${commit}`)
+    ).trim();
+    if (!/^\d+$/.test(count) || Number(count) === 0) {
+      throw new Error(`error: ${branch} has no commits on top of origin/${base}`);
+    }
+    const files = await git.run(
+      "diff",
+      "--name-only",
+      "--diff-filter=ACMR",
+      "-z",
+      `refs/remotes/origin/${base}...${commit}`
+    );
+    const configured = (this.config.push as { denyPatterns?: string[] } | undefined)?.denyPatterns;
+    const patterns = configured ?? [
+      ".tmp/",
+      "dist/",
+      "coverage/",
+      "*.log",
+      "test-results/",
+      "playwright-report/",
+      "test-reports/",
+    ];
+    const changelog = String(
+      object(this.config.changelog).directory ?? "changes/unreleased"
+    ).replace(/\/$/, "");
+    const denied = files.split("\0").filter(
+      (file) =>
+        file &&
+        (configured !== undefined ||
+          !(
+            /(^|\/)(?:fixtures|__fixtures__|snapshots|__snapshots__)(\/|$)/.test(file) ||
+            /(^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml)$/.test(
+              file
+            ) ||
+            file.startsWith(`${changelog}/`)
+          )) &&
+        patterns.some((pattern) => {
+          const glob = pattern.endsWith("/") ? `${pattern}**` : pattern;
+          return matchesGlob(file, glob) || matchesGlob(file, `**/${glob}`);
+        })
+    );
+    if (denied.length) {
+      throw new Error(`error: refusing to push generated artefacts:\n${denied.join("\n")}`);
+    }
+    if (!(await git.transfer("push", [`${commit}:refs/heads/${branch}`]))) {
+      throw new Error("error: the remote branch moved: fetch and merge it (never force-push)");
+    }
+    await git.run("update-ref", `refs/remotes/origin/${branch}`, commit);
+    return `pushed ${branch} at ${commit.slice(0, 7)}`;
+  };
+
+  waitReview: Handlers["waitReview"] = async ({ ref, pollSeconds }) => {
+    if (!Number.isFinite(pollSeconds) || pollSeconds <= 0 || pollSeconds > 86400) {
+      throw new Error("poll-seconds must be between 0 and 86400");
+    }
+    for (;;) {
+      try {
+        const { item, person, link } = await this.thread(ref, "pr");
+        if (!person) {
+          throw new Error("No accepted task PR");
+        }
+        if (!["OPEN", "CLOSED", "MERGED"].includes(String(item.state))) {
+          throw new Error("Invalid PR state");
+        }
+        if (item.state !== "OPEN") {
+          return `PR #${reference(ref, this.config).number} is ${String(item.state)}: you are dismissed`;
+        }
+        const comments: {
+          body: string;
+          date: string;
+          role: string;
+          rendered: string;
+        }[] = [];
+        for (const meta of await this.collection(String(item.id), "PullRequest", "comments")) {
+          if (!this.filter.accept(meta, repoOf(meta).owner, link)) {
+            continue;
+          }
+          const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
+          const author = this.filter.accept(comment, repoOf(comment).owner, link);
+          const original = this.filter.identity(comment.author);
+          if (
+            !author ||
+            original?.role !== author.role ||
+            typeof comment.body !== "string" ||
+            typeof comment.createdAt !== "string" ||
+            !Number.isFinite(Date.parse(comment.createdAt))
+          ) {
+            continue;
+          }
+          comments.push({
+            body: comment.body,
+            date: String(comment.lastEditedAt ?? comment.createdAt),
+            role: author.role,
+            rendered: labelled(author, comment.body),
+          });
+        }
+        const mine =
+          comments
+            .filter((comment) => comment.role === "worker" && comment.body.startsWith("[worker]"))
+            .map((comment) => comment.date)
+            .sort()
+            .at(-1) ?? "";
+        const replies = comments
+          .filter(
+            (comment) =>
+              comment.role === "orchestrator" &&
+              comment.body.startsWith("[orchestrator]") &&
+              comment.date > mine
+          )
+          .sort((a, b) => a.date.localeCompare(b.date));
+        if (replies.length) {
+          return replies.map((comment) => comment.rendered).join("\n\n---\n\n");
+        }
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith("GitHub ")) {
+          throw error;
+        }
+        this.deps.report("wait-review: GitHub read failed; retrying after poll interval");
+      }
+      await this.deps.sleep(pollSeconds * 1000);
+    }
   };
 
   ghRead: Handlers["ghRead"] = async ({ source }) => {
@@ -492,6 +675,9 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     boardArchive: server.boardArchive,
     read: server.read,
     post: server.post,
+    push: server.push,
+    task: server.task,
+    waitReview: server.waitReview,
     ghRead: server.ghRead,
     dropped: server.dropped,
     ownerApproved: server.ownerApproved,
@@ -504,6 +690,9 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     boardArchive: ["orchestrator"],
     read: ["worker", "orchestrator"],
     post: ["worker", "orchestrator"],
+    push: ["worker", "orchestrator"],
+    task: ["worker", "orchestrator"],
+    waitReview: ["worker", "orchestrator"],
     ghRead: ["orchestrator"],
     dropped: ["orchestrator"],
     ownerApproved: ["orchestrator"],
@@ -516,7 +705,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ) {
       throw new Error("Gateway operation denied for client role");
     }
-    if (ctx.role === "worker" && operation === "post") {
+    if (ctx.role === "worker" && ["post", "task", "waitReview"].includes(operation)) {
       const target = reference((input as Operations["post"]["input"]).ref, config);
       if (
         !Number.isSafeInteger(ctx.taskPr) ||

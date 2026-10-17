@@ -43,7 +43,7 @@ test("packed consumer installs offline with a metadata-only Mermaid fixture and 
   const run = () =>
     spawnSync(process.execPath, [cli, "check"], {
       cwd: root,
-      env: {},
+      env: { VMETHOD_ROOT: root },
       encoding: "utf8",
       timeout: 5000,
     });
@@ -62,7 +62,7 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
   const run = (args: string[]) =>
     spawnSync(process.execPath, [cli, ...args], {
       cwd: root,
-      env: {},
+      env: { VMETHOD_ROOT: root },
       encoding: "utf8",
       timeout: 5000,
     });

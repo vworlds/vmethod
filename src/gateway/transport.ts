@@ -26,6 +26,12 @@ export interface Operations {
     output: string;
   };
   post: { input: { ref: string; file: string }; output: string };
+  push: { input: { worktree: string; branch: string }; output: string };
+  task: {
+    input: { ref: string; fetch?: boolean };
+    output: { branch: string; base: string };
+  };
+  waitReview: { input: { ref: string; pollSeconds: number }; output: string };
   ghRead: { input: { source: string }; output: string };
   dropped: { input: { since?: string }; output: string };
   ownerApproved: { input: { ref: string }; output: boolean | "unknown" };
@@ -45,7 +51,10 @@ export interface Transport {
 }
 
 export type Handlers = {
-  [K in keyof Operations]: (input: Operations[K]["input"]) => Promise<Operations[K]["output"]>;
+  [K in keyof Operations]: (
+    input: Operations[K]["input"],
+    ctx: CallContext
+  ) => Promise<Operations[K]["output"]>;
 };
 
 export function inProcess(
@@ -64,8 +73,11 @@ export function inProcess(
     ): Promise<Operations[K]["output"]> {
       authorize(operation, input, ctx);
       return (
-        handlers[operation] as (input: Operations[K]["input"]) => Promise<Operations[K]["output"]>
-      )(input);
+        handlers[operation] as (
+          input: Operations[K]["input"],
+          ctx: CallContext
+        ) => Promise<Operations[K]["output"]>
+      )(input, ctx);
     },
   };
 }

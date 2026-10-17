@@ -2,6 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(npm exec --no -- vmethod *)",
+      "Bash(scripts/agent/*.sh *)",
+      "Bash(./scripts/agent/push.sh)",
+      "Bash(scripts/agent/push.sh)",
+      "Bash(bash scripts/agent/push.sh)",
       "Bash(bash scripts/agent/*.sh *)",
       "Bash(bash scripts/orchestrator/*.sh *)",
       "Bash(./scripts/agent/*.sh *)",

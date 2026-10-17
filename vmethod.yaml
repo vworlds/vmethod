@@ -1,0 +1,38 @@
+# vmethod's own configuration: vmethod runs on vmethod (dogfooding).
+repo: vworlds/vmethod
+org: vworlds
+baseBranch: dev
+releaseBranch: master
+stateName: vmethod
+branches:
+  taskPattern: "<number>-<slug>"
+  worktreeRoot: .worktrees
+board:
+  enabled: true
+  owner: vworlds
+  number: 5
+  repos: [vworlds/vmethod]
+learningsPrivacy: public
+push: {}
+checks:
+  verify:
+    [
+      npm run format:check,
+      npm run lint,
+      npm run typecheck,
+      npm test,
+      npm run build,
+      npm run smoke,
+      npm run knip,
+    ]
+  docsGlob: "docs/**/*.md"
+  ci: [check]
+postMerge:
+  install: npm ci
+  trigger: package-lock.json
+changelog:
+  directory: changes/unreleased
+  kinds: [breaking, feature, fix]
+credentials:
+  githubToken: GH_TOKEN
+  workerPassword: OPENCODE_SERVER_PASSWORD

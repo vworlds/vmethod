@@ -2,7 +2,11 @@ import type { Config } from "../config.js";
 
 export interface Dependencies {
   fetch: typeof fetch;
-  exec: (file: string, args: readonly string[]) => Promise<string>;
+  exec: (
+    file: string,
+    args: readonly string[],
+    options?: { cwd?: string; env?: NodeJS.ProcessEnv }
+  ) => Promise<string>;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   report: (message: string) => void;

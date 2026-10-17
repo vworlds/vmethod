@@ -1,0 +1,27 @@
+# Who vmethod's agents may hear from. Ids are numeric GitHub ids, checked by `vmethod check`.
+- login: jpeletier
+  id: 11574521
+  type: User
+  role: owner
+- login: vimescmd
+  id: 343394568
+  type: User
+  role: orchestrator
+- login: spacerocks79
+  id: 340349740
+  type: User
+  role: orchestrator
+- login: VecsMaster
+  id: 238095565
+  type: User
+  role: orchestrator
+- login: alfredjpr79
+  id: 280649849
+  type: User
+  role: worker
+- login: github-actions[bot]
+  id: 41898282
+  type: Bot
+  role: system
+  appIds: [15368]
+  events: [check_run, status, workflow_run]

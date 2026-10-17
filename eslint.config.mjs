@@ -4,7 +4,13 @@ import unusedImports from "eslint-plugin-unused-imports";
 
 export default tseslint.config(
   {
-    ignores: ["dist/**", ".tmp/**", "test/fixtures/consumer/node_modules/**", ".husky/_/**"],
+    ignores: [
+      "dist/**",
+      ".tmp/**",
+      ".worktrees/**",
+      "test/fixtures/consumer/node_modules/**",
+      ".husky/_/**",
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
