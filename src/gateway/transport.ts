@@ -1,6 +1,14 @@
 import type { BoardStatus, Card, MigrationResult } from "../board/types.js";
+import type { SessionInput, WatchEvent } from "./events.js";
 
 export interface Operations {
+  nextEvents: {
+    input: SessionInput & { timeoutSeconds: number; ack?: string[] };
+    output: { events: WatchEvent[] };
+  };
+  watchMute: { input: { ref: string }; output: string };
+  watchUnmute: { input: { ref: string }; output: string };
+  watchMutes: { input: Record<string, never>; output: string };
   boardStatus: { input: Record<string, never>; output: BoardStatus };
   boardMigrate: {
     input: { dryRun?: boolean; steal?: boolean };

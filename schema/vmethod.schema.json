@@ -13,7 +13,25 @@
     "releaseBranch": { "type": "string" },
     "track": { "type": "string" },
     "workerUser": { "type": "string" },
-    "stateName": { "type": "string" },
+    "stateName": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "vmethod": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "type": "string",
+          "default": "vworlds/vmethod",
+          "pattern": "^(?:off|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$"
+        }
+      }
+    },
+    "watch": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": false,
+      "properties": { "preview": { "type": "boolean", "default": false } }
+    },
     "learningsPrivacy": { "enum": ["public", "private"] },
     "board": {
       "type": "object",

@@ -9,6 +9,29 @@ export async function gatewayVerb(
 ): Promise<string> {
   const ctx = context(env);
   switch (verb) {
+    case "mute":
+    case "unmute":
+      if (args.length !== 1) {
+        throw new Error(`Usage: vmethod ${verb} <repo#number>`);
+      }
+      return transport.call(verb === "mute" ? "watchMute" : "watchUnmute", { ref: args[0] }, ctx);
+    case "mutes":
+      if (args.length) {
+        throw new Error("Usage: vmethod mutes");
+      }
+      return transport.call("watchMutes", {}, ctx);
+    default:
+      return existingVerb(transport, verb, args, ctx);
+  }
+}
+
+async function existingVerb(
+  transport: Transport,
+  verb: string,
+  args: string[],
+  ctx: CallContext
+): Promise<string> {
+  switch (verb) {
     case "board": {
       const [action, ...flags] = args;
       if (

@@ -11,6 +11,18 @@ export function isDigestLink(link: unknown): link is string {
   );
 }
 
+/** Per-OS-user state root for one session's watcher state, shared by every vmethod file. */
+export function stateRoot(env: NodeJS.ProcessEnv, stateName: string): string {
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(stateName) || stateName === "..") {
+    throw new Error("Invalid stateName");
+  }
+  return join(
+    env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local/state"),
+    "vmethod",
+    stateName
+  );
+}
+
 export class Digest {
   readonly path: string;
   constructor(
@@ -18,15 +30,7 @@ export class Digest {
     stateName: string,
     private now: () => number
   ) {
-    if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(stateName) || stateName === "..") {
-      throw new Error("Invalid stateName");
-    }
-    this.path = join(
-      env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local/state"),
-      "vmethod",
-      stateName,
-      "dropped.jsonl"
-    );
+    this.path = join(stateRoot(env, stateName), "dropped.jsonl");
   }
 
   drop(link: string): void {

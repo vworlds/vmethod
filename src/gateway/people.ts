@@ -19,7 +19,8 @@ export class PeopleFilter {
   constructor(
     readonly people: Person[],
     readonly org: string,
-    private digest: Digest
+    private digest: Digest,
+    private readonly trustedRepos: readonly string[] = []
   ) {
     if (
       new Set(people.map((p) => p.id)).size !== people.length ||
@@ -53,7 +54,11 @@ export class PeopleFilter {
       person = this.identity(item.editor);
     }
     if (
-      owner.toLowerCase() !== this.org.toLowerCase() ||
+      (owner.toLowerCase() !== this.org.toLowerCase() &&
+        !this.trustedRepos.some(
+          (repo) =>
+            repo.toLowerCase() === String(object(item.repository).nameWithOwner).toLowerCase()
+        )) ||
       !person ||
       (person.role === "system" && !person.events?.includes(kind as "check_run"))
     ) {

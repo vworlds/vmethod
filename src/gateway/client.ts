@@ -1,4 +1,6 @@
+import { resolve } from "node:path";
 import type { Config } from "../config.js";
+import { object, type ObjectData } from "./people.js";
 
 export interface Dependencies {
   fetch: typeof fetch;
@@ -12,6 +14,30 @@ export interface Dependencies {
   report: (message: string) => void;
 }
 
+/** A GraphQL answer that carried `errors`: the data is refused, and the watcher reports at once. */
+export class GraphQLResponseError extends Error {
+  constructor(
+    message: string,
+    readonly errors: readonly string[]
+  ) {
+    super(message);
+  }
+}
+
+export interface ResourceBudget {
+  remaining: number;
+  limit: number;
+  reset: number;
+}
+
+export interface BudgetStatus {
+  resources: Record<string, ResourceBudget>;
+  secondaryUntil: number;
+}
+
+/** Watch polls yield instead of sleeping inside HTTP, so budget events can be delivered now. */
+export class BudgetPause extends Error {}
+
 /** Credentials and unfiltered responses must never cross the operation seam. */
 export class GitHubClient {
   private readonly token: string;
@@ -19,6 +45,18 @@ export class GitHubClient {
   private reserveUse = 0;
   private readonly reserve: number;
   private readonly retries: number;
+  private readonly budgets = new Map<string, ResourceBudget>();
+  private secondaryUntil = 0;
+  private pollDepth = 0;
+
+  async polling<T>(action: () => Promise<T>): Promise<T> {
+    this.pollDepth++;
+    try {
+      return await action();
+    } finally {
+      this.pollDepth--;
+    }
+  }
 
   constructor(
     config: Config,
@@ -56,6 +94,9 @@ export class GitHubClient {
     for (let attempt = 0; ; attempt++) {
       const wait = this.pauseUntil - this.deps.now();
       if (wait > 0 && !this.reserveUse) {
+        if (this.pollDepth) {
+          throw new BudgetPause("Watch poll deferred until budget reset");
+        }
         await this.deps.sleep(wait);
       }
       if (!this.reserveUse) {
@@ -85,6 +126,22 @@ export class GitHubClient {
       }
       const remaining = response.headers.get("x-ratelimit-remaining");
       const reset = response.headers.get("x-ratelimit-reset");
+      const limit = response.headers.get("x-ratelimit-limit");
+      const resource =
+        response.headers.get("x-ratelimit-resource") ?? (path === "/graphql" ? "graphql" : "core");
+      if (
+        remaining !== null &&
+        reset !== null &&
+        Number.isFinite(Number(remaining)) &&
+        Number.isFinite(Number(reset))
+      ) {
+        // The headers are the only budget source; the GraphQL rateLimit field lags.
+        this.budgets.set(resource, {
+          remaining: Number(remaining),
+          limit: Number.isFinite(Number(limit)) ? Number(limit) : 0,
+          reset: Number(reset),
+        });
+      }
       if (
         remaining !== null &&
         Number.isFinite(Number(remaining)) &&
@@ -105,8 +162,12 @@ export class GitHubClient {
           throw new Error("BUDGET (secondary): invalid retry-after");
         }
         this.deps.report("BUDGET (secondary): honoring retry-after");
+        this.secondaryUntil = Math.max(this.secondaryUntil, this.deps.now() + Math.max(0, delay));
         this.pauseUntil = Math.max(this.pauseUntil, this.deps.now() + Math.max(0, delay));
         await response.body?.cancel();
+        if (this.pollDepth) {
+          throw new BudgetPause("Watch poll deferred by secondary budget");
+        }
         if (!retry || attempt >= this.retries) {
           throw new Error("BUDGET (secondary): retry limit reached");
         }
@@ -172,8 +233,9 @@ export class GitHubClient {
           ? error.message
           : "unspecified error"
       );
-      throw new Error(
-        `GitHub GraphQL (untrusted errors): ${messages.map((message) => JSON.stringify(this.redact(message))).join("; ")}`
+      throw new GraphQLResponseError(
+        `GitHub GraphQL (untrusted errors): ${messages.map((message) => JSON.stringify(this.redact(message))).join("; ")}`,
+        messages
       );
     }
     if (
@@ -191,6 +253,17 @@ export class GitHubClient {
     return this.pauseUntil > this.deps.now();
   }
 
+  /** Read-only view of the last rate-limit headers per resource, for the watcher's pacing. */
+  budget(): BudgetStatus {
+    const resources: Record<string, ResourceBudget> = {};
+    for (const [resource, status] of this.budgets) {
+      if (status.reset * 1000 > this.deps.now()) {
+        resources[resource] = { ...status };
+      }
+    }
+    return { resources, secondaryUntil: this.secondaryUntil };
+  }
+
   async usingReserve<T>(action: () => Promise<T>): Promise<T> {
     this.reserveUse++;
     try {
@@ -199,6 +272,49 @@ export class GitHubClient {
       this.reserveUse--;
     }
   }
+}
+
+export interface WorkerStatus {
+  state: "permission" | "failed" | "other";
+  /** What distinguishes this stop (the permission or error); keys the once-per-stop report. */
+  detail?: string;
+}
+
+function listed(value: unknown, field: string): ObjectData[] {
+  const items = Array.isArray(value)
+    ? value
+    : value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value) &&
+        Array.isArray((value as Record<string, unknown>)[field])
+      ? ((value as Record<string, unknown>)[field] as unknown[])
+      : [];
+  return items.map(object);
+}
+
+function sessionDirectory(session: ObjectData): string {
+  const location = object(session.location);
+  return str(session.directory) || str(location.directory);
+}
+
+function str(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function sessionIds(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => (typeof entry === "string" ? entry : str(object(entry).id)))
+      .filter(Boolean);
+  }
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const inner = (value as Record<string, unknown>).sessions;
+    if (Array.isArray(inner)) {
+      return sessionIds(inner);
+    }
+    return Object.keys(value).filter(Boolean);
+  }
+  return [];
 }
 
 export class OpencodeClient {
@@ -255,5 +371,43 @@ export class OpencodeClient {
     } catch {
       throw new Error("opencode returned invalid JSON");
     }
+  }
+
+  /**
+   * Worker session state for one worktree directory: a pending permission request or a
+   * failed turn, neither of which shows on the PR. The opencode 2 HTTP API lives under
+   * `/api`: `/api/session/active` lists running sessions, whose recorded start
+   * `location.directory` identifies the worktree; failures surface as
+   * `{"type":"idle","outcome":"failed"}` message entries.
+   */
+  async status(directory: string): Promise<WorkerStatus> {
+    const active = sessionIds(await this.request("GET", "/api/session/active"));
+    let stopped: WorkerStatus = { state: "other" };
+    for (const id of active) {
+      const path = `/api/session/${encodeURIComponent(id)}`;
+      const session = object(await this.request("GET", path));
+      const recorded = sessionDirectory(session);
+      if (!recorded || resolve(recorded) !== resolve(directory)) {
+        continue;
+      }
+      const permissions = listed(await this.request("GET", `${path}/permission`), "permissions");
+      if (permissions.length) {
+        const permission = permissions[0];
+        return {
+          state: "permission",
+          detail: str(permission.type) || str(permission.title) || undefined,
+        };
+      }
+      const messages = listed(await this.request("GET", `${path}/message?limit=20`), "messages");
+      const idle = [...messages].reverse().find((message) => str(message.type) === "idle");
+      if (idle !== undefined && str(idle.outcome) === "failed") {
+        const error = object(idle.error);
+        stopped = {
+          state: "failed",
+          detail: str(error.message) || str(error.name) || undefined,
+        };
+      }
+    }
+    return stopped;
   }
 }

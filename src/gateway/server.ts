@@ -27,6 +27,15 @@ import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { realpathSync } from "node:fs";
 import { matchesGlob, resolve } from "node:path";
 import { BoardService } from "./board.js";
+import {
+  EventLoop,
+  eventDeps,
+  resolveSession,
+  muteThread,
+  unmuteThread,
+  listMutes,
+  rememberBoardMove,
+} from "./events.js";
 
 function reference(
   value: string,
@@ -57,9 +66,49 @@ class GatewayServer {
   // Lazy: local digest reads and refused operations never need credentials.
   private client?: GitHubClient;
   private boardClient?: BoardService;
+  private readonly loops = new Map<string, EventLoop>();
+
+  nextEvents: Handlers["nextEvents"] = async (input) => {
+    const name = resolveSession(this.config, input).stateName;
+    let loop = this.loops.get(name);
+    if (!loop) {
+      const methodology = String(object(this.config.vmethod).repo ?? "vworlds/vmethod");
+      loop = new EventLoop(
+        {
+          root: this.root,
+          config: this.config,
+          env: this.env,
+          deps: eventDeps(this.deps),
+          filter: new PeopleFilter(
+            this.filter.people,
+            this.filter.org,
+            this.digest,
+            methodology === "off" ? [] : [methodology]
+          ),
+          github: this.github,
+          board: { set: (input) => this.board.set(input) },
+          digest: this.digest,
+        },
+        input
+      );
+      this.loops.set(name, loop);
+    }
+    return loop.nextEvents(input);
+  };
+  watchMute: Handlers["watchMute"] = async ({ ref }) => muteThread(this.config, this.env, ref);
+  watchUnmute: Handlers["watchUnmute"] = async ({ ref }) =>
+    unmuteThread(this.config, this.env, ref);
+  watchMutes: Handlers["watchMutes"] = async () => listMutes(this.config, this.env);
 
   private get board(): BoardService {
-    return (this.boardClient ??= new BoardService(this.config, this.github, this.deps));
+    return (this.boardClient ??= new BoardService(
+      this.config,
+      this.github,
+      this.deps,
+      undefined,
+      undefined,
+      (itemId, column) => rememberBoardMove(this.config, this.env, itemId, column)
+    ));
   }
 
   boardStatus: Handlers["boardStatus"] = async () => this.board.status();
@@ -668,6 +717,10 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
   const server = new GatewayServer(root, env, deps);
   const config = getConfig(root, env);
   const handlers: Handlers = {
+    nextEvents: server.nextEvents,
+    watchMute: server.watchMute,
+    watchUnmute: server.watchUnmute,
+    watchMutes: server.watchMutes,
     boardStatus: server.boardStatus,
     boardMigrate: server.boardMigrate,
     boardItem: server.boardItem,
@@ -683,6 +736,10 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ownerApproved: server.ownerApproved,
   };
   const policy = {
+    nextEvents: ["orchestrator"],
+    watchMute: ["orchestrator"],
+    watchUnmute: ["orchestrator"],
+    watchMutes: ["orchestrator"],
     boardStatus: ["orchestrator"],
     boardMigrate: ["orchestrator"],
     boardItem: ["orchestrator"],

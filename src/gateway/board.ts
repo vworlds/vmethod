@@ -63,7 +63,8 @@ export class BoardService implements BoardIO {
     private github: GitHubClient,
     private deps: Dependencies,
     migrations: Migration[] = loadMigrations(),
-    private boardVersion = packageInfo.boardVersion
+    private boardVersion = packageInfo.boardVersion,
+    private remember?: (itemId: string, column: string) => void
   ) {
     this.settings = object(config.board);
     if (this.settings.enabled === false) {
@@ -370,6 +371,9 @@ export class BoardService implements BoardIO {
       changes.unshift({ id: card.id, field: progress, value: input.progress! });
     }
     await this.setChanges(snapshot.id, changes);
+    if (input.field === "Status") {
+      this.remember?.(card.id, String(input.value ?? ""));
+    }
     return "Board field updated";
   }
   async archive(itemId: string): Promise<string> {

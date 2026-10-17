@@ -10,6 +10,7 @@ import { gatewayVerb } from "./gateway.js";
 import { workerVerb } from "./worker.js";
 import { MarkdownDependencyError } from "../gateway/markdown.js";
 import { execFile, execFileSync } from "node:child_process";
+import { watchClient } from "./watch.js";
 import { promisify } from "node:util";
 
 declare const __VERSION__: string;
@@ -39,6 +40,10 @@ function root(): string {
 try {
   switch (verb) {
     case "read":
+    case "watch":
+    case "mute":
+    case "unmute":
+    case "mutes":
     case "post":
     case "gh-read":
     case "board":
@@ -61,6 +66,10 @@ try {
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         report: (message) => console.error(message),
       });
+      if (verb === "watch") {
+        await watchClient(transport, args, process.env);
+        break;
+      }
       const output = ["start-task", "read-pr", "pr-comment", "push", "wait-review"].includes(verb)
         ? await workerVerb(transport, root(), verb, args, process.env, {
             exec: async (file, args, options) =>

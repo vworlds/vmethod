@@ -1,5 +1,9 @@
 # Package commands
 
+Orchestrators use `vmethod watch [--once]` instead of the removed bootstrap watcher.
+See [watching and muting](gateway.md#watching-and-muting) for scoped sessions,
+`mute`/`unmute`/`mutes`, durable acknowledgements and optional previews.
+
 Node 24 or newer is required. Pin `@vworlds/vmethod` exactly as a devDependency.
 Run `npm ci` in every worktree, then `npm exec --no -- vmethod <verb>`; never use a downloading `npx` fallback.
 

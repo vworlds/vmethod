@@ -44,5 +44,5 @@ tools it ships.
 
 - `docs/architecture.md`: the vmethod design (distribution, config, toolchain, roadmap).
 - `people.tsv`: who the agents may hear from: login, numeric id and role.
-- `scripts/bootstrap/`: temporary tools until vmethod 1.0 ships its own. `watch.sh` is the
-  orchestrator's event watcher, filtered through `people.tsv`.
+- `src/gateway/events.ts`: the orchestrator's event watcher (`vmethod watch`), filtered
+  through `people.yaml`; replaces the bootstrap watcher.

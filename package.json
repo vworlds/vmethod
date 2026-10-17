@@ -14,7 +14,7 @@
   "bin": {
     "vmethod": "dist/vmethod.mjs"
   },
-  "boardVersion": 1,
+  "boardVersion": 2,
   "files": [
     "dist/",
     "src/",

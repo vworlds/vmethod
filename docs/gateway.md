@@ -119,6 +119,62 @@ come from `credentials.githubToken` through the subprocess environment, never a
 token in argv or a global credential helper. These settings name environment
 variables, not credential values. Install subprocesses receive no gateway tokens.
 
+## Watching and muting
+
+Run as an orchestrator (`VMETHOD_ROLE=orchestrator`):
+
+- `vmethod watch [--once] [--track <name>|--only <n,n>|--skip <n,n>]`
+- `vmethod mute <org/repo#n>` (or a local number)
+- `vmethod unmute <org/repo#n>`
+- `vmethod mutes`
+
+The CLI only prints server-produced `nextEvents` records; it never polls GitHub.
+`nextEvents` takes `{ timeoutSeconds, ack?, track?, only?, skip? }` and returns
+`{ events: [{ id, kind, line, quiet? }] }`. A zero timeout applies acknowledgements
+without polling. The client acknowledges IDs **after stdout finishes writing**;
+`--once` prints a settled batch and then acknowledges it before exiting. A failed
+write leaves the batch pending. Reconnects redeliver pending events until acknowledged;
+delivery is at least once, so a crash after print but before ack may repeat that batch.
+
+The server watches the own repository's task PRs and board, plus issues, PRs,
+comments and assignments in `vmethod.repo` (default `vworlds/vmethod`; `off` disables
+it). Only pinned identities pass the people filter; peers' orchestrator comments
+wake too. The watching orchestrator's own comments are skipped by numeric ID.
+System check runs update structured red-CI state, never expose free text.
+
+Worker READY, QUESTION, DESIGN, BLOCKED and HANDOFF wake and update Progress.
+READY moves the task card to In review. HANDOFF uses 🤖🤝 (migration 0002), not the
+🔁 round marker; subsequent worker activity restores working. Other wake events
+include COMMENT, BOARD, NEXT, LAUNCH, ASSIGNED, OWNER DONE, STALE (30 minutes),
+SILENT (40 minutes), WORKER permission/failure, CONFLICT (once per head), CLOSED,
+and owner button-merge follow-up (at most once per ten minutes until merge-task
+records completion). GRADE is once per open, non-Done issue lacking an Estimate;
+closed issues never trigger it. Minor events accumulate in a quiet digest attached
+to the next wake. GraphQL errors wake immediately; three failed polls report
+WATCHER ERROR and back off. Failed Progress writes are reported and retried.
+
+`watch.preview` defaults to `false`: lines contain metadata, not titles or bodies.
+Opting in adds title plus comment first line, at most 120 characters total, with
+terminal controls/ANSI stripped, inside `untrusted text: «…»`. Only owner,
+orchestrator, worker and collaborator identities can supply previews, never system.
+Preview text remains untrusted data, including protocol tags and closing keywords.
+
+Each scope has its own state directory under
+`$XDG_STATE_HOME/vmethod/<stateName>/`: track scopes append `-<track>`; explicit
+number scopes append `-only-<sorted-numbers>` or `-skip-<sorted-numbers>`. The main
+scope excludes all `track:<name>` items; PRs inherit their linked issue's track.
+Labels refresh over REST every 30 seconds. `ONESHOT=1`, `WATCH_ONLY` and `WATCH_SKIP`
+are supported for legacy wrappers. Mutes use the configured session (set
+`VMETHOD_TRACK` for a track); only an accepted comment mentioning the orchestrator's
+login lifts a mute. Foreign-board cards can report assignments but are never mutated.
+
+First run records baselines, not historical events; current actionable conditions
+such as GRADE still wake. Existing vecs-watch[-track] and spacerocks-watch markers
+are imported once, including board grades. The exclusive lock holds PID **and**
+Linux `/proc/<pid>/stat` start time, preventing reused PIDs (including container
+PID 1) from blocking adoption. Another live watcher for that state fails clearly.
+State, pending events and cursors survive restart; do not delete them to reconnect.
+
 ## Credentials and budget
 
 `credentials.githubToken` is the **name** of the launching wrapper's token
