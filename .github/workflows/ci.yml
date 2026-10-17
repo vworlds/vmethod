@@ -33,5 +33,7 @@ jobs:
       - run: npm test
         timeout-minutes: 5
       - run: npm run build
+      - name: Check vmethod's own config (only missing owner settings allowed)
+        run: node scripts/check-self.mjs
       - run: npm run knip
       - run: npm run smoke

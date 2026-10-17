@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { beforeAll, expect, test } from "vitest";
-import { peer, validProject } from "./helpers.js";
+import { fixture, peer, validProject } from "./helpers.js";
 import { loadYaml } from "../src/config.js";
 
 beforeAll(() => {
@@ -13,7 +13,7 @@ beforeAll(() => {
   expect(build.status, build.stderr).toBe(0);
 }, 30000);
 
-test("packed consumer installs offline with a metadata-only Mermaid fixture and no git/gh", () => {
+test("packed consumer installs offline with real Mermaid and lowest-supported jsdom, without git/gh", () => {
   const map = JSON.parse(readFileSync("dist/vmethod.mjs.map", "utf8")) as {
     sources: string[];
     sourcesContent: string[];
@@ -98,4 +98,34 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
   expect(readFileSync(join(root, "models.tsv"))).toEqual(
     readFileSync("test/fixtures/models-vecs.tsv")
   );
+}, 15000);
+
+test("CI self-check skips absent config and allows only missing owner settings", () => {
+  const script = resolve("scripts/check-self.mjs");
+  const run = (root: string) =>
+    spawnSync(process.execPath, [script], {
+      cwd: root,
+      env: {},
+      encoding: "utf8",
+      timeout: 5000,
+    });
+  const absent = run(fixture());
+  expect(absent.status, absent.stderr).toBe(0);
+  expect(absent.stdout).toContain("Skipping vmethod self-check");
+  const root = validProject();
+  expect(run(root).status).toBe(0);
+  writeFileSync(join(root, ".claude/settings.json"), "{}");
+  expect(run(root).status).toBe(1);
+  writeFileSync(join(root, ".claude/settings.json"), "invalid JSON");
+  expect(run(root).status).toBe(1);
+  rmSync(join(root, ".claude/settings.json"));
+  const ownerOnly = run(root);
+  expect(ownerOnly.status, ownerOnly.stderr).toBe(0);
+  expect(ownerOnly.stdout).toBe(
+    "Install owner-approved .claude/settings.json from templates/claude-settings.json\n"
+  );
+  writeFileSync(join(root, "people.yaml"), "invalid: config");
+  expect(run(root).status).toBe(1);
+  rmSync(join(root, "node_modules/mermaid"), { recursive: true });
+  expect(run(root).status).toBe(2);
 }, 15000);

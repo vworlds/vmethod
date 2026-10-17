@@ -9,12 +9,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { createRequire } from "node:module";
 import { build } from "esbuild";
 import { beforeAll, expect, test } from "vitest";
 import { fixture, validProject } from "./helpers.js";
 import { actor, item, people } from "./gateway/helpers.js";
 import { stringify } from "yaml";
 
+const require = createRequire(import.meta.url);
 let bundle: string;
 beforeAll(async () => {
   bundle = join(fixture(), "vmethod.mjs");
@@ -107,6 +109,47 @@ test("Markdown CLI refuses Mermaid version drift without networking", () => {
   expect(result.status).toBe(2);
   expect(result.stderr).toContain("mermaid must equal 12.1.0");
 });
+
+test.each([
+  [24, require.resolve("jsdom24/package.json")],
+  [27, require.resolve("jsdom/package.json")],
+])(
+  "Markdown CLI parses real Mermaid with jsdom %i",
+  (major, jsdomPackage) => {
+    const root = fixture();
+    const cli = join(root, "vmethod.mjs");
+    copyFileSync(bundle, cli);
+    mkdirSync(join(root, "node_modules"));
+    symlinkSync(dirname(jsdomPackage), join(root, "node_modules/jsdom"));
+    symlinkSync(
+      dirname(require.resolve("mermaid/package.json")),
+      join(root, "node_modules/mermaid")
+    );
+    expect(JSON.parse(readFileSync(jsdomPackage, "utf8")).version).toMatch(
+      new RegExp(`^${major}\\.`)
+    );
+    const file = join(root, "body.md");
+    const run = () =>
+      spawnSync(process.execPath, [cli, "check-markdown", file], {
+        cwd: root,
+        env: { VMETHOD_ROOT: root },
+        encoding: "utf8",
+        timeout: 15000,
+      });
+    copyFileSync("test/fixtures/diagram.md", file);
+    const valid = run();
+    expect(valid.status, valid.stderr).toBe(0);
+    writeFileSync(file, "```mermaid\ngraph TD\nA -->\n```");
+    const broken = run();
+    expect(broken.status, broken.stderr).toBe(1);
+    expect(broken.stderr).toContain("Mermaid block 1");
+    writeFileSync(file, "# Ordinary GFM\n\n- [x] complete\n");
+    expect(run().status).toBe(0);
+    writeFileSync(file, "```\nunclosed");
+    expect(run().status).toBe(1);
+  },
+  45000
+);
 
 test("start-task child uses PATH fakes, installs once, and continues old bundled code after package replacement", () => {
   const f = cliFixture();

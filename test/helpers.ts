@@ -1,11 +1,20 @@
-import { mkdirSync, mkdtempSync, writeFileSync, cpSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, cpSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { tmpdir } from "node:os";
+import { afterAll } from "vitest";
 import { init } from "../src/init.js";
 
 export const templates = resolve("templates");
+const fixtures: string[] = [];
+afterAll(() => {
+  for (const root of fixtures) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 export function fixture(): string {
-  mkdirSync(".tmp/tests", { recursive: true });
-  return mkdtempSync(resolve(".tmp/tests/project-"));
+  const root = mkdtempSync(join(tmpdir(), "vmethod-test-"));
+  fixtures.push(root);
+  return root;
 }
 export function validProject(): string {
   const root = fixture();
