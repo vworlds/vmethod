@@ -7,7 +7,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { runChild } from "./child-process.js";
 import { expect, test } from "vitest";
 import { init } from "../src/init.js";
 import { loadYaml } from "../src/config.js";
@@ -54,20 +54,20 @@ test("stub resolves git root and preserves hostile arguments without shell evalu
     `#!${process.execPath}\nconst args = process.argv.slice(2); if (JSON.stringify(args) !== ${JSON.stringify(JSON.stringify(["check", ...args]))}) throw new Error('Unexpected vmethod call'); console.log(JSON.stringify(args));\n`
   );
   chmodSync(cli, 0o755);
-  const result = spawnSync("/bin/sh", [join(root, "scripts/agent/check.sh"), ...args], {
+  const result = runChild("/bin/sh", [join(root, "scripts/agent/check.sh"), ...args], {
     cwd: root,
     env: { PATH: bin },
     encoding: "utf8",
-    timeout: 5000,
+    timeout: 1000,
   });
   expect(result.status, result.stderr).toBe(0);
   expect(JSON.parse(result.stdout)).toEqual(["check", ...args]);
   expect(existsSync(join(root, "should-not-exist"))).toBe(false);
-  const fallback = spawnSync("/bin/sh", [join(root, "scripts/agent/check.sh"), ...args], {
+  const fallback = runChild("/bin/sh", [join(root, "scripts/agent/check.sh"), ...args], {
     cwd: root,
     env: { PATH: join(root, "no-git"), VMETHOD_ROOT: root },
     encoding: "utf8",
-    timeout: 5000,
+    timeout: 1000,
   });
   expect(fallback.status, fallback.stderr).toBe(0);
   expect(JSON.parse(fallback.stdout)).toEqual(["check", ...args]);
@@ -77,24 +77,24 @@ test("stub resolves git root and preserves hostile arguments without shell evalu
     fakeGit,
     `#!${process.execPath}\nif (JSON.stringify(process.argv.slice(2)) !== '["rev-parse","--show-toplevel"]') throw new Error('Unexpected git call'); console.error('fatal: not a git repository'); process.exit(128);\n`
   );
-  const noRoot = spawnSync("/bin/sh", [join(root, "scripts/agent/check.sh")], {
+  const noRoot = runChild("/bin/sh", [join(root, "scripts/agent/check.sh")], {
     cwd: root,
     env: { PATH: bin },
     encoding: "utf8",
-    timeout: 5000,
+    timeout: 1000,
   });
   expect(noRoot.status).toBe(2);
   expect(noRoot.stderr).toContain("run npm ci");
-  const copiedContext = spawnSync("/bin/sh", [join(root, "scripts/agent/check.sh"), ...args], {
+  const copiedContext = runChild("/bin/sh", [join(root, "scripts/agent/check.sh"), ...args], {
     cwd: root,
     env: { PATH: bin, VMETHOD_ROOT: root },
     encoding: "utf8",
-    timeout: 5000,
+    timeout: 1000,
   });
   expect(copiedContext.status, copiedContext.stderr).toBe(0);
   expect(copiedContext.stderr).toBe("");
   expect(JSON.parse(copiedContext.stdout)).toEqual(["check", ...args]);
-}, 15000);
+}, 4000);
 
 test("converts the verbatim vecs registry with ungated and owner-gated opencode/claude rows intact", () => {
   const root = fixture();
@@ -177,13 +177,13 @@ test("stub without git or node_modules fails cleanly and never downloads", () =>
   init(root, templates);
   const emptyPath = join(root, "empty-bin");
   mkdirSync(emptyPath);
-  const result = spawnSync("/bin/sh", [join(root, "scripts/agent/check.sh")], {
+  const result = runChild("/bin/sh", [join(root, "scripts/agent/check.sh")], {
     cwd: root,
     env: { PATH: emptyPath, VMETHOD_ROOT: root },
     encoding: "utf8",
-    timeout: 5000,
+    timeout: 1000,
   });
   expect(result.error).toBeUndefined();
   expect(result.status).toBe(2);
   expect(result.stderr).toContain("run npm ci");
-}, 15000);
+}, 2000);

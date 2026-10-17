@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { runChild } from "./child-process.js";
 import {
   chmodSync,
   copyFileSync,
@@ -35,16 +35,17 @@ beforeAll(async () => {
   });
 });
 
-function cliFixture() {
+// Cold CLI ~0.2–0.4 s; start-task also launches Node-backed git/npm fakes.
+function cliFixture(timeout = 3000) {
   const root = validProject();
   const cli = join(root, "vmethod.mjs");
   copyFileSync(bundle, cli);
   const run = (args: string[], extra: string[] = [], env: NodeJS.ProcessEnv = {}) =>
-    spawnSync(process.execPath, [...extra, cli, ...args], {
+    runChild(process.execPath, [...extra, cli, ...args], {
       cwd: root,
       env: { VMETHOD_ROOT: root, ...env },
       encoding: "utf8",
-      timeout: 5000,
+      timeout,
     });
   return { root, cli, run };
 }
@@ -96,7 +97,8 @@ test.each([0, 1, 2, 3])(
     expect(result.status, result.stderr).toBe(code);
     expect(result.stdout.trim().split("\n").at(-1)).toMatch(/^checks:/);
     expect(result.stderr).toBe("");
-  }
+  },
+  5000
 );
 
 function peers(root: string) {
@@ -119,7 +121,7 @@ function peers(root: string) {
   );
 }
 
-test("Markdown CLI ports missing-peer, broken/fixed diagram, ordinary GFM and unclosed-fence cases with stable exits", () => {
+test("Markdown CLI reports missing peers with a stable exit", () => {
   const f = cliFixture();
   const file = join(f.root, "body.md");
   writeFileSync(file, "# Ordinary GFM\n\n- [x] complete\n\n| a | b |\n| - | - |\n| 1 | 2 |\n");
@@ -129,22 +131,53 @@ test("Markdown CLI ports missing-peer, broken/fixed diagram, ordinary GFM and un
     `check-markdown: dependencies missing in ${f.root}; run HUSKY=0 npm ci there`
   );
   expect(missing.stderr).not.toMatch(/ERR_MODULE_NOT_FOUND|at ModuleJob/);
-  peers(f.root);
-  expect(f.run(["check-markdown", file]).status).toBe(0);
-  for (const source of ["graph TD; A-->B", "flowchart LR\nA-->B"]) {
+}, 5000);
+
+test.each(["graph TD; A-->B", "flowchart LR\nA-->B"])(
+  "Markdown CLI accepts a fixed diagram: %s",
+  (source) => {
+    const f = cliFixture();
+    peers(f.root);
+    const file = join(f.root, "body.md");
     writeFileSync(file, `# Diagram\n\n\`\`\`mermaid\n${source}\n\`\`\`\n`);
     expect(f.run(["check-markdown", file]).status).toBe(0);
-  }
+  },
+  5000
+);
+
+test("Markdown CLI accepts ordinary GFM", () => {
+  const f = cliFixture();
+  peers(f.root);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "# Ordinary GFM\n\n- [x] complete\n\n| a | b |\n| - | - |\n| 1 | 2 |\n");
+  expect(f.run(["check-markdown", file]).status).toBe(0);
+}, 5000);
+
+test("Markdown CLI reports a broken diagram with a stable exit", () => {
+  const f = cliFixture();
+  peers(f.root);
+  const file = join(f.root, "body.md");
   writeFileSync(file, "```mermaid\ngraph TD\nBROKEN\n```");
   const broken = f.run(["check-markdown", file]);
   expect(broken.status).toBe(1);
   expect(broken.stderr).toContain("Mermaid block 1 (fence line 1, diagram line 2): Parse error");
+}, 5000);
+
+test("Markdown CLI reports an unclosed fence with a stable exit", () => {
+  const f = cliFixture();
+  peers(f.root);
+  const file = join(f.root, "body.md");
   writeFileSync(file, "```\nunclosed");
   const fence = f.run(["check-markdown", file]);
   expect(fence.status).toBe(1);
   expect(fence.stderr).toContain("Unclosed code fence opened at line 1");
+}, 5000);
+
+test("Markdown CLI reports a missing file with a stable exit", () => {
+  const f = cliFixture();
+  peers(f.root);
   expect(f.run(["check-markdown", join(f.root, "missing")]).status).toBe(2);
-});
+}, 5000);
 
 test("Markdown CLI refuses Mermaid version drift without networking", () => {
   const f = cliFixture();
@@ -158,14 +191,29 @@ test("Markdown CLI refuses Mermaid version drift without networking", () => {
   const result = f.run(["check-markdown", file]);
   expect(result.status).toBe(2);
   expect(result.stderr).toContain("mermaid must equal 12.1.0");
-});
+}, 5000);
 
-test.each([
-  [24, require.resolve("jsdom24/package.json")],
-  [27, require.resolve("jsdom/package.json")],
-])(
-  "Markdown CLI parses real Mermaid with jsdom %i",
-  (major, jsdomPackage) => {
+const realMarkdownCases = [
+  { name: "valid diagram", source: readFileSync("test/fixtures/diagram.md", "utf8"), code: 0 },
+  { name: "broken diagram", source: "```mermaid\ngraph TD\nA -->\n```", code: 1 },
+  { name: "ordinary GFM", source: "# Ordinary GFM\n\n- [x] complete\n", code: 0 },
+  { name: "unclosed fence", source: "```\nunclosed", code: 1 },
+];
+
+test.each(
+  [
+    [24, require.resolve("jsdom24/package.json")],
+    [27, require.resolve("jsdom/package.json")],
+  ].flatMap(([major, jsdomPackage]) =>
+    realMarkdownCases.map((scenario) => ({
+      major,
+      jsdomPackage: String(jsdomPackage),
+      ...scenario,
+    }))
+  )
+)(
+  "Markdown CLI parses real Mermaid with jsdom $major: $name",
+  ({ major, jsdomPackage, source, code, name }) => {
     const root = fixture();
     const cli = join(root, "vmethod.mjs");
     copyFileSync(bundle, cli);
@@ -179,30 +227,23 @@ test.each([
       new RegExp(`^${major}\\.`)
     );
     const file = join(root, "body.md");
-    const run = () =>
-      spawnSync(process.execPath, [cli, "check-markdown", file], {
-        cwd: root,
-        env: { VMETHOD_ROOT: root },
-        encoding: "utf8",
-        timeout: 15000,
-      });
-    copyFileSync("test/fixtures/diagram.md", file);
-    const valid = run();
-    expect(valid.status, valid.stderr).toBe(0);
-    writeFileSync(file, "```mermaid\ngraph TD\nA -->\n```");
-    const broken = run();
-    expect(broken.status, broken.stderr).toBe(1);
-    expect(broken.stderr).toContain("Mermaid block 1");
-    writeFileSync(file, "# Ordinary GFM\n\n- [x] complete\n");
-    expect(run().status).toBe(0);
-    writeFileSync(file, "```\nunclosed");
-    expect(run().status).toBe(1);
+    writeFileSync(file, source);
+    const result = runChild(process.execPath, [cli, "check-markdown", file], {
+      cwd: root,
+      env: { VMETHOD_ROOT: root },
+      encoding: "utf8",
+      timeout: 30000,
+    });
+    expect(result.status, result.stderr).toBe(code);
+    if (name === "broken diagram") {
+      expect(result.stderr).toContain("Mermaid block 1");
+    }
   },
-  45000
+  30000
 );
 
 test("start-task child uses PATH fakes, installs once, and continues old bundled code after package replacement", () => {
-  const f = cliFixture();
+  const f = cliFixture(6000);
   writeFileSync(join(f.root, "people.yaml"), stringify(people));
   const config = readFileSync(join(f.root, "vmethod.yaml"), "utf8").replace(
     "mainCheckout: /replace/with/consumer/checkout",
@@ -307,9 +348,9 @@ test("start-task child uses PATH fakes, installs once, and continues old bundled
   expect(failedInstall.status).toBe(1);
   expect(failedInstall.stdout).not.toContain("ready.");
   expect(readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8")).toBe(stamp);
-});
+}, 15000);
 
-test("stubs run from a nested directory resolve the repository root, never the cwd", () => {
+function stubFixture() {
   const f = cliFixture();
   peers(f.root);
   // The stub execs the pinned CLI from the resolved root's node_modules.
@@ -335,11 +376,11 @@ if (args === "rev-parse --show-toplevel") {
   const nested = join(f.root, "packages/lib/deep");
   mkdirSync(nested, { recursive: true });
   const stub = (name: string, args: string[], env: NodeJS.ProcessEnv) =>
-    spawnSync("/bin/sh", [join(f.root, "scripts/agent", name), ...args], {
+    runChild("/bin/sh", [join(f.root, "scripts/agent", name), ...args], {
       cwd: nested,
       env,
       encoding: "utf8",
-      timeout: 10000,
+      timeout: 3000,
     });
 
   // Git discovery: both the stub and the CLI resolve the root via git,
@@ -348,6 +389,28 @@ if (args === "rev-parse --show-toplevel") {
     PATH: `${bin}:${dirname(process.execPath)}`,
     VMETHOD_TASK_PR: "3",
   };
+  return { f, nested, stub, gitEnv };
+}
+
+test.each([
+  { name: "ordinary GFM", source: "# Ordinary GFM\n", code: 0 },
+  { name: "unclosed fence", source: "```\nunclosed", code: 1 },
+])(
+  "Markdown stub resolves the root from a nested directory: $name",
+  ({ source, code }) => {
+    const { nested, stub, gitEnv } = stubFixture();
+    writeFileSync(join(nested, "body.md"), source);
+    const result = stub("check-markdown.sh", ["body.md"], gitEnv);
+    expect(result.status).toBe(code);
+    if (code === 1) {
+      expect(result.stderr).toContain("Unclosed code fence opened at line 1");
+    }
+  },
+  5000
+);
+
+test("stubs run from a nested directory resolve the repository root, never the cwd", () => {
+  const { f, stub, gitEnv } = stubFixture();
   const push = stub("push.sh", [], gitEnv);
   expect(push.status, push.stderr).toBe(1);
   expect(push.stderr).toContain("Missing configured GitHub token environment variable");
@@ -355,12 +418,6 @@ if (args === "rev-parse --show-toplevel") {
   const config = stub("config.sh", ["get", "repo"], gitEnv);
   expect(config.status, config.stderr).toBe(0);
   expect(config.stdout).toBe("example/project\n");
-  writeFileSync(join(nested, "body.md"), "# Ordinary GFM\n");
-  expect(stub("check-markdown.sh", ["body.md"], gitEnv).status).toBe(0);
-  writeFileSync(join(nested, "body.md"), "```\nunclosed");
-  const fence = stub("check-markdown.sh", ["body.md"], gitEnv);
-  expect(fence.status).toBe(1);
-  expect(fence.stderr).toContain("Unclosed code fence opened at line 1");
 
   // VMETHOD_ROOT when git is unavailable: only Node is on PATH.
   const nodeOnly = join(f.root, "node-only");
@@ -372,4 +429,4 @@ if (args === "rev-parse --show-toplevel") {
   });
   expect(fallback.status, fallback.stderr).toBe(0);
   expect(fallback.stdout).toBe("example/project\n");
-});
+}, 6000);

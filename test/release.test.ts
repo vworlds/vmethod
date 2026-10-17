@@ -1,12 +1,12 @@
-import { spawnSync } from "node:child_process";
+import { runChild } from "./child-process.js";
 import { expect, test } from "vitest";
 
 // Exercise the actual release planner with JSON fixtures; no registry/network calls.
 function plan(kinds: string[], candidate = false, versions: string[] = [], latest = "1.2.3") {
   const script = `import {releasePlan} from './scripts/release-plan.mjs'; console.log(JSON.stringify(releasePlan(${JSON.stringify({ "dist-tags": { latest }, versions })}, ${JSON.stringify(kinds.map((kind) => `kind: ${kind}\n\nDescription`))}, ${candidate})));`;
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+  const result = runChild(process.execPath, ["--input-type=module", "-e", script], {
     encoding: "utf8",
-    timeout: 5000,
+    timeout: 1000,
   });
   if (result.status !== 0) {
     throw new Error(result.stderr);
@@ -28,10 +28,10 @@ test("release bump priority, reset lower components, and numbered next RCs", () 
   expect(plan(["feature"], false, [], "0.0.0")).toMatchObject({
     version: "0.1.0",
   });
-}, 15000);
+}, 3000);
 
 test("release fails on absent or malformed fragments and duplicate versions", () => {
   expect(() => plan([])).toThrow("nothing to release");
   expect(() => plan(["invalid"])).toThrow("kind:");
   expect(() => plan(["fix"], false, ["1.2.4"])).toThrow("already published");
-}, 15000);
+}, 2000);

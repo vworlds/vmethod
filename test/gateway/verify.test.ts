@@ -1,7 +1,6 @@
-import { execFile } from "node:child_process";
+import { runChildAsync } from "../child-process.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { expect, test } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
 import { ciVerb } from "../../src/cli/ci.js";
@@ -202,7 +201,8 @@ console.log('ok fake hook'); console.error('hook stderr captured'); process.exit
       ]);
       expect(options?.cwd).toBe(review);
       expect(options?.env?.EXAMPLE_GITHUB_TOKEN).toBeUndefined();
-      return (await promisify(execFile)(file, [...args], { ...options, timeout: 5000 })).stdout;
+      return (await runChildAsync(file, [...args], { ...options, encoding: "utf8", timeout: 2000 }))
+        .stdout;
     };
     const home = join(f.root, "other-user");
     const env = {

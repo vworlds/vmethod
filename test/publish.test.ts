@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { runChild } from "./child-process.js";
 import { mkdirSync, writeFileSync, readFileSync, chmodSync, copyFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { expect, test } from "vitest";
@@ -82,7 +82,7 @@ function publish({
     );
     chmodSync(file, 0o755);
   }
-  const result = spawnSync(process.execPath, [resolve("scripts/publish.mjs")], {
+  const result = runChild(process.execPath, [resolve("scripts/publish.mjs")], {
     cwd: root,
     env: {
       PATH: bin,
@@ -90,7 +90,7 @@ function publish({
       GITHUB_REF: candidate ? "refs/heads/dev" : "refs/heads/master",
     },
     encoding: "utf8",
-    timeout: 10000,
+    timeout: 3000,
   });
   return {
     result,
@@ -118,7 +118,7 @@ test.each([false, true])(
     ]);
     expect(JSON.parse(readFileSync("package.json", "utf8")).version).toBe("0.0.0-dev");
   },
-  15000
+  5000
 );
 
 test("missing trusted publisher fails clearly without creating or pushing a tag", () => {
@@ -128,7 +128,7 @@ test("missing trusted publisher fails clearly without creating or pushing a tag"
   expect(calls.filter((call) => call[0] === "git")).toEqual([
     ["git", "show-ref", "--verify", "--quiet", "refs/tags/v0.0.0"],
   ]);
-}, 15000);
+}, 5000);
 
 test("a previously tagged breaking fragment is excluded; a newly added fix produces a patch", () => {
   const { result, pkg, calls } = publish({ previousRelease: true });
@@ -144,7 +144,7 @@ test("a previously tagged breaking fragment is excluded; a newly added fix produ
     "changes/unreleased",
   ]);
   expect(calls.at(-1)).toEqual(["git", "push", "origin", "refs/tags/v1.2.4"]);
-}, 15000);
+}, 5000);
 
 test("no fragments added after the previous tag means nothing to release", () => {
   const { result, pkg, calls } = publish({ previousRelease: true, added: [] });
@@ -156,7 +156,7 @@ test("no fragments added after the previous tag means nothing to release", () =>
     ["git", "show-ref"],
     ["git", "diff"],
   ]);
-}, 15000);
+}, 5000);
 
 test("git ref lookup errors do not silently release every fragment", () => {
   const { result, pkg, calls } = publish({
@@ -169,10 +169,10 @@ test("git ref lookup errors do not silently release every fragment", () => {
     ["npm", "view"],
     ["git", "show-ref"],
   ]);
-}, 15000);
+}, 5000);
 
 test("manual publication outside dev fails before any external call", () => {
-  const result = spawnSync(process.execPath, [resolve("scripts/publish.mjs")], {
+  const result = runChild(process.execPath, [resolve("scripts/publish.mjs")], {
     cwd: fixture(),
     env: {
       PATH: "",
@@ -180,8 +180,8 @@ test("manual publication outside dev fails before any external call", () => {
       GITHUB_REF: "refs/heads/master",
     },
     encoding: "utf8",
-    timeout: 5000,
+    timeout: 1000,
   });
   expect(result.status).toBe(1);
   expect(result.stderr).toContain("Publishing requires refs/heads/dev");
-}, 15000);
+}, 2000);

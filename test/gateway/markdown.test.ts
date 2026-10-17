@@ -4,16 +4,20 @@ import { expect, test } from "vitest";
 import { checkMarkdown, guardClosingKeywords } from "../../src/gateway/markdown.js";
 import { fixture } from "../helpers.js";
 
-test("Markdown fence checking accepts balanced mixed fences and rejects empty and unterminated documents", async () => {
-  const root = fixture();
+test("Markdown fence checking accepts balanced mixed fences", async () => {
   await expect(
-    checkMarkdown(root, "Text\n````text\n```\n````\n~~~\nbody\n~~~")
+    checkMarkdown(fixture(), "Text\n````text\n```\n````\n~~~\nbody\n~~~")
   ).resolves.toBeUndefined();
-  await expect(checkMarkdown(root, "   ")).rejects.toThrow("nonempty");
-  await expect(checkMarkdown(root, "~~~\nbody\n~~")).rejects.toThrow("unclosed");
-}, 15000);
+});
 
-test("Mermaid uses only exact-version installed peers, parses every diagram and restores the DOM on failure", async () => {
+test.each([
+  ["   ", "nonempty"],
+  ["~~~\nbody\n~~", "unclosed"],
+])("Markdown fence checking rejects %j", async (source, message) => {
+  await expect(checkMarkdown(fixture(), source)).rejects.toThrow(message);
+});
+
+function mermaidFixture() {
   const root = fixture();
   const mermaid = join(root, "node_modules/mermaid");
   const jsdom = join(root, "node_modules/jsdom");
@@ -43,24 +47,33 @@ test("Mermaid uses only exact-version installed peers, parses every diagram and 
     join(jsdom, "index.cjs"),
     "exports.JSDOM = class { window = { document: {}, close() {} }; };"
   );
+  return root;
+}
+
+test("Mermaid uses exact-version installed peers for a valid diagram", async () => {
+  await expect(
+    checkMarkdown(mermaidFixture(), "```mermaid\ngraph TD; A-->B\n```")
+  ).resolves.toBeUndefined();
+}, 10000);
+
+test("Mermaid parses every diagram and restores the DOM on failure", async () => {
+  const root = mermaidFixture();
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const previousDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
-  await expect(checkMarkdown(root, "```mermaid\ngraph TD; A-->B\n```")).resolves.toBeUndefined();
   await expect(
     checkMarkdown(root, "```mermaid\ngraph TD; A-->B\n```\n```mermaid\ninvalid\n```")
   ).rejects.toThrow("Invalid Mermaid fixture");
   expect(Object.getOwnPropertyDescriptor(globalThis, "window")).toEqual(previousWindow);
   expect(Object.getOwnPropertyDescriptor(globalThis, "document")).toEqual(previousDocument);
-  writeFileSync(
-    join(mermaid, "package.json"),
-    JSON.stringify({ name: "mermaid", version: "0.0.0", main: "index.mjs" })
-  );
+}, 10000);
+
+test("Mermaid refuses version drift", async () => {
   // A different root avoids Node's package metadata cache.
   const other = fixture();
   mkdirSync(join(other, "node_modules/mermaid"), { recursive: true });
   writeFileSync(join(other, "node_modules/mermaid/package.json"), '{"version":"0.0.0"}');
   await expect(checkMarkdown(other, "```mermaid\nx\n```")).rejects.toThrow("mermaid must equal");
-}, 15000);
+});
 
 test("closing guard rejects fenced or formatted closing phrases but permits ordinary nonclosing references", () => {
   for (const text of [

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { runChild } from "./child-process.js";
 import { copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { beforeAll, expect, test } from "vitest";
@@ -6,12 +6,12 @@ import { fixture, peer, validProject } from "./helpers.js";
 import { loadYaml } from "../src/config.js";
 
 beforeAll(() => {
-  const build = spawnSync(process.execPath, ["scripts/build.mjs"], {
+  const build = runChild(process.execPath, ["scripts/build.mjs"], {
     encoding: "utf8",
-    timeout: 30000,
+    timeout: 3000,
   });
   expect(build.status, build.stderr).toBe(0);
-}, 30000);
+}, 5000);
 
 test("packed consumer installs offline with real Mermaid and lowest-supported jsdom, without git/gh", () => {
   const map = JSON.parse(readFileSync("dist/vmethod.mjs.map", "utf8")) as {
@@ -32,27 +32,27 @@ test("packed consumer installs offline with real Mermaid and lowest-supported js
       readFileSync(file, "utf8")
     );
   }
-  const result = spawnSync(process.execPath, ["scripts/smoke.mjs"], {
+  const result = runChild(process.execPath, ["scripts/smoke.mjs"], {
     encoding: "utf8",
-    timeout: 90000,
+    timeout: 60000,
   });
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toContain("Tarball smoke passed");
   const root = validProject();
   const cli = resolve("dist/vmethod.mjs");
   const run = () =>
-    spawnSync(process.execPath, [cli, "check"], {
+    runChild(process.execPath, [cli, "check"], {
       cwd: root,
       env: { VMETHOD_ROOT: root },
       encoding: "utf8",
-      timeout: 5000,
+      timeout: 3000,
     });
   expect(run().status).toBe(0);
   peer(root, "0.0.0");
   expect(run().status).toBe(1);
   rmSync(join(root, "node_modules/mermaid"), { recursive: true });
   expect(run().status).toBe(2);
-}, 120000);
+}, 65000);
 
 test("built CLI initializes and checks the verbatim public vecs TSV registry offline", () => {
   const root = validProject();
@@ -60,11 +60,11 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
   copyFileSync("test/fixtures/models-vecs.tsv", join(root, "models.tsv"));
   const cli = resolve("dist/vmethod.mjs");
   const run = (args: string[]) =>
-    spawnSync(process.execPath, [cli, ...args], {
+    runChild(process.execPath, [cli, ...args], {
       cwd: root,
       env: { VMETHOD_ROOT: root },
       encoding: "utf8",
-      timeout: 5000,
+      timeout: 3000,
     });
   const initialized = run(["init"]);
   expect(initialized.status, initialized.stderr).toBe(0);
@@ -98,16 +98,16 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
   expect(readFileSync(join(root, "models.tsv"))).toEqual(
     readFileSync("test/fixtures/models-vecs.tsv")
   );
-}, 15000);
+}, 6000);
 
 test("CI self-check skips absent config and allows only missing owner settings", () => {
   const script = resolve("scripts/check-self.mjs");
   const run = (root: string) =>
-    spawnSync(process.execPath, [script], {
+    runChild(process.execPath, [script], {
       cwd: root,
       env: {},
       encoding: "utf8",
-      timeout: 5000,
+      timeout: 3000,
     });
   const absent = run(fixture());
   expect(absent.status, absent.stderr).toBe(0);
@@ -128,4 +128,4 @@ test("CI self-check skips absent config and allows only missing owner settings",
   expect(run(root).status).toBe(1);
   rmSync(join(root, "node_modules/mermaid"), { recursive: true });
   expect(run(root).status).toBe(2);
-}, 15000);
+}, 12000);
