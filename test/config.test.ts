@@ -49,6 +49,27 @@ test("YAML 1.2 strings, nested keys, explicit validation and unknown keys", () =
   expect(() => getConfig(root, {})).toThrow(new RegExp(`vmethod.yaml:${numberLine}:.*integer`));
 }, 15000);
 
+test("legacyState is an optional list of safe, unique directory names", () => {
+  const root = validProject();
+  const path = join(root, "vmethod.yaml");
+  const original = readFileSync(path, "utf8");
+  expect(getConfig(root, {}).legacyState).toBeUndefined();
+  for (const value of ["[]", "[spacerocks-watch, spacerocks-watch-audit, rebase-watch]"]) {
+    writeFileSync(path, `${original}\nlegacyState: ${value}\n`);
+    expect(Array.isArray(getConfig(root, {}).legacyState)).toBe(true);
+  }
+  for (const value of [
+    "vecs-watch",
+    "[../vecs-watch]",
+    "[/tmp/watch]",
+    "[vecs-watch, vecs-watch]",
+    "[null]",
+  ]) {
+    writeFileSync(path, `${original}\nlegacyState: ${value}\n`);
+    expect(() => getConfig(root, {})).toThrow("legacyState");
+  }
+}, 15000);
+
 test("VMETHOD overrides config; VECS, SPACEROCKS and bare BASE are ignored", () => {
   const root = validProject();
   expect(

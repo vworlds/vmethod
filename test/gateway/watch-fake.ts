@@ -69,6 +69,12 @@ export class WatchFake {
   writes: ObjectData[] = [];
   loops: EventLoop[] = [];
   processStart = 42;
+  legacyBatches: number[][] = [];
+  legacyItems = new Map<number, string>([
+    [6, "Issue"],
+    [24, "PullRequest"],
+  ]);
+  legacyError = false;
   deps: EventDeps = {
     pid: 1,
     readProc: () => proc(this.processStart),
@@ -113,6 +119,64 @@ export class WatchFake {
           const payload = JSON.parse(String(init?.body));
           const operation = parse(payload.query).definitions[0];
           expect(operation.kind).toBe(Kind.OPERATION_DEFINITION);
+          if (
+            operation.kind === Kind.OPERATION_DEFINITION &&
+            operation.name?.value === "WatchLegacy"
+          ) {
+            expect(payload.variables).toEqual({ owner: "example", name: "project" });
+            const repository = operation.selectionSet.selections[0];
+            expect(repository.kind).toBe(Kind.FIELD);
+            if (repository.kind !== Kind.FIELD || !repository.selectionSet) {
+              return this.unknown(url);
+            }
+            const batch = repository.selectionSet.selections.map((field) => {
+              expect(field.kind).toBe(Kind.FIELD);
+              if (field.kind !== Kind.FIELD) {
+                throw new Error("Expected legacy lookup field");
+              }
+              expect(field.name.value).toBe("issueOrPullRequest");
+              const number = field.arguments?.find((arg) => arg.name.value === "number")?.value;
+              if (number?.kind !== Kind.INT) {
+                throw new Error("Expected integer number");
+              }
+              expect(field.alias?.value).toBe(`n${number.value}`);
+              return Number(number.value);
+            });
+            this.legacyBatches.push(batch);
+            // GitHub issueOrPullRequest projects number/type/repository; missing numbers
+            // return null plus a NOT_FOUND error at the aliased field path.
+            const errors = batch
+              .filter((number) => !this.legacyItems.has(number))
+              .map((number) => ({
+                type: "NOT_FOUND",
+                path: ["repository", `n${number}`],
+                message: `Could not resolve to an Issue or PullRequest with the number of ${number}.`,
+              }));
+            return new Response(
+              JSON.stringify({
+                data: {
+                  repository: Object.fromEntries(
+                    batch.map((number) => [
+                      `n${number}`,
+                      this.legacyItems.has(number)
+                        ? {
+                            __typename: this.legacyItems.get(number),
+                            number,
+                            repository: { nameWithOwner: "example/project" },
+                          }
+                        : null,
+                    ])
+                  ),
+                },
+                ...(this.legacyError
+                  ? { errors: [{ type: "FORBIDDEN", message: "Resource not accessible" }] }
+                  : errors.length
+                    ? { errors }
+                    : {}),
+              }),
+              { headers: this.headers }
+            );
+          }
           if (
             operation.kind !== Kind.OPERATION_DEFINITION ||
             operation.name?.value !== "WatchBoard"

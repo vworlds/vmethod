@@ -473,7 +473,7 @@ export class EventLoop {
     if (input.pollOnce !== undefined && typeof input.pollOnce !== "boolean") {
       throw new Error("Expected a boolean pollOnce");
     }
-    this.start();
+    await this.start();
     this.applyAck((input.ack ?? []) as string[]);
     // Zero timeout is the ack-only operation used by --once; do not fetch unprinted events.
     if ((input.timeoutSeconds === 0 && !input.pollOnce) || this.pending().length) {
@@ -684,14 +684,19 @@ export class EventLoop {
 
   // ---------------------------------------------------------------- start and lock
 
-  private start(): void {
+  private async start(): Promise<void> {
     if (this.started) {
       return;
     }
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     mkdirSync(join(this.dir, "board"), { recursive: true, mode: 0o700 });
     this.acquireLock();
-    this.importLegacy();
+    try {
+      await this.importLegacy();
+    } catch (error) {
+      this.close();
+      throw error;
+    }
     this.loadTracksCache();
     this.started = true;
   }
@@ -771,16 +776,42 @@ export class EventLoop {
     process.once("exit", this.releaseLock);
   }
 
-  private importLegacy(): void {
+  private async importLegacy(): Promise<void> {
+    const names = (this.host.config.legacyState ?? []) as string[];
+    if (!names.length) {
+      return;
+    }
     const marker = join(this.dir, "legacy-imported");
     if (existsSync(marker)) {
       return;
     }
     const root = dirname(dirname(this.dir));
-    const sources = [
-      join(root, `vecs-watch${this.session.track !== null ? `-${this.session.track}` : ""}`),
-      ...(this.session.track !== null ? [] : [join(root, "spacerocks-watch")]),
-    ].filter((source) => existsSync(source));
+    const sources = names
+      .map((name) =>
+        join(root, `${name}${this.session.track !== null ? `-${this.session.track}` : ""}`)
+      )
+      .filter((source) => existsSync(source));
+    const files: {
+      source: string;
+      target: string;
+      number: number | null;
+      pr: boolean;
+      own: boolean;
+    }[] = [];
+    const collect = (source: string, target: string, name: string): void => {
+      const match =
+        /^(open|head|branch|ci|conflict|merge-attempt|merge-error|activity|review|seeded|merged|picked|closed|graded|grade|pending-progress|worker-stop|q|w|button)-(\d+)(?:[-@].*)?$/.exec(
+          name
+        );
+      const scoped = /^(?:new-(.+)#|\.turn-(.+)-)(\d+)$/.exec(name);
+      files.push({
+        source,
+        target,
+        number: match ? count(match[2]) : scoped ? count(scoped[3]) : null,
+        pr: match !== null && !["graded", "grade"].includes(match[1]),
+        own: !scoped || (scoped[1] ?? scoped[2]) === slug(this.own),
+      });
+    };
     const skipTop = new Set([
       "watcher.lock",
       "quiet.log",
@@ -802,7 +833,7 @@ export class EventLoop {
           !skipTop.has(entry.name) &&
           !/^(?:mine-|theirs-|merge-(?:attempt|error)-)/.test(entry.name)
         ) {
-          copyFileSync(join(source, entry.name), join(this.dir, entry.name));
+          collect(join(source, entry.name), join(this.dir, entry.name), entry.name);
         }
       }
       const board = join(source, "board");
@@ -815,11 +846,91 @@ export class EventLoop {
           (entry.name.startsWith(".turn-") ||
             (!entry.name.startsWith(".") && !skipBoard.has(entry.name)))
         ) {
-          copyFileSync(join(board, entry.name), join(this.dir, "board", entry.name));
+          collect(join(board, entry.name), join(this.dir, "board", entry.name), entry.name);
         }
       }
     }
+    // Validate every numbered marker before copying anything. Failure leaves the import retryable.
+    const numbers = [
+      ...new Set(files.flatMap((file) => (file.number === null || !file.own ? [] : [file.number]))),
+    ];
+    const valid = await this.validateLegacy(numbers);
+    let dropped = 0;
+    for (const file of files) {
+      if (
+        file.number !== null &&
+        (!file.own ||
+          !valid.has(file.number) ||
+          (file.pr && valid.get(file.number) !== "PullRequest"))
+      ) {
+        dropped++;
+        continue;
+      }
+      copyFileSync(file.source, file.target);
+    }
+    if (sources.length) {
+      this.host.deps.report(
+        `watcher: legacy import dropped ${dropped} markers not belonging to ${this.own}`
+      );
+    }
     atomicWrite(marker, `${sources.join("\n")}\n`);
+  }
+
+  private async validateLegacy(numbers: number[]): Promise<Map<number, string>> {
+    const valid = new Map<number, string>();
+    const [owner, name] = this.own.split("/");
+    for (let offset = 0; offset < numbers.length; offset += 50) {
+      const batch = numbers.slice(offset, offset + 50);
+      // Use the gateway's header-driven pacing, including between batches. Missing items
+      // produce NOT_FOUND field errors; all other partial/error responses fail closed.
+      const result = object(
+        await this.host.github.rest("/graphql", "POST", {
+          query: `query WatchLegacy($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) {
+            ${batch.map((number) => `n${number}: issueOrPullRequest(number: ${number}) { __typename ... on Issue { number repository { nameWithOwner } } ... on PullRequest { number repository { nameWithOwner } } }`).join("\n")}
+          }
+        }`,
+          variables: { owner, name },
+        })
+      );
+      const repository = object(object(result.data).repository);
+      if (
+        !result.data ||
+        !object(result.data).repository ||
+        (result.errors !== undefined && !Array.isArray(result.errors))
+      ) {
+        throw new Error("Invalid legacy validation response");
+      }
+      for (const error of this.list(result.errors)) {
+        const path = error.path;
+        if (
+          error.type !== "NOT_FOUND" ||
+          !Array.isArray(path) ||
+          path.length !== 2 ||
+          path[0] !== "repository" ||
+          !batch.some((number) => path[1] === `n${number}`) ||
+          repository[String(path[1])] !== null
+        ) {
+          throw new Error("Legacy validation failed; refusing partial data");
+        }
+      }
+      for (const number of batch) {
+        const value = repository[`n${number}`];
+        if (value === null) {
+          continue;
+        }
+        const item = object(value);
+        if (
+          item.number !== number ||
+          !["Issue", "PullRequest"].includes(str(item.__typename)) ||
+          str(object(item.repository).nameWithOwner).toLowerCase() !== this.own.toLowerCase()
+        ) {
+          throw new Error("Invalid legacy validation item");
+        }
+        valid.set(number, str(item.__typename));
+      }
+    }
+    return valid;
   }
 
   private loadTracksCache(): void {
@@ -959,7 +1070,7 @@ export class EventLoop {
 
   private async runPoll(): Promise<void> {
     this.budgetDeferred = false;
-    this.start();
+    await this.start();
     this.firstRun = this.readCursor() === null;
     const startedAt = new Date(this.host.deps.now()).toISOString();
     this.cycle++;

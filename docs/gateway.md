@@ -171,8 +171,16 @@ are supported for legacy wrappers. Mutes use the configured session (set
 login lifts a mute. Foreign-board cards can report assignments but are never mutated.
 
 First run records baselines, not historical events; current actionable conditions
-such as GRADE still wake. Existing vecs-watch[-track] and spacerocks-watch markers
-are imported once, including board grades. The exclusive lock holds PID **and**
+such as GRADE still wake. To import legacy markers once (including board grades),
+set `legacyState: [spacerocks-watch, spacerocks-watch-audit, rebase-watch]` in your
+project's `vmethod.yaml`. Without this key nothing is imported. Names are directories
+under `$XDG_STATE_HOME` (default `~/.local/state`); track sessions import only
+`<name>-<track>`. The sources are read-only and their locks are never opened.
+Numbered PR and issue markers are validated against `repo` in batches through the
+gateway before copying; missing items and PR markers naming issues are dropped,
+with one dropped-count log line. Validation respects gateway budget resets and
+fails closed on other API errors, leaving the import retryable.
+The exclusive lock holds PID **and**
 Linux `/proc/<pid>/stat` start time, preventing reused PIDs (including container
 PID 1) from blocking adoption. Another live watcher for that state fails clearly.
 State, pending events and cursors survive restart; do not delete them to reconnect.
