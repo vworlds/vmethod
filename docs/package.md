@@ -15,8 +15,10 @@ Run `npm ci` in every worktree, then `npm exec --no -- vmethod <verb>`; never us
 Every verb except `version` resolves the project root once per run exactly as the stubs do: `VMETHOD_ROOT` first, then `git rev-parse --show-toplevel` from the current directory. The cwd is never the root, so commands work from any subdirectory of a checkout.
 
 Template identities and model ids are examples, not real credentials or an authoritative allowlist.
-Configure real values before adoption. Mermaid is optional at install time but `check` requires exactly 12.1.0. Diagram validation also uses the installed jsdom peer.
+Configure real values before adoption. Mermaid is optional at install time but `check` requires exactly 12.1.0. Diagram validation also uses the installed jsdom peer (24 or newer).
 The permission template denies raw `git push` and allows the `push` compatibility stub and local CLI. See [worker commands](gateway.md#worker-commands) for the six worker verbs, their arguments and branch policy.
+See [CI and integration commands](gateway.md#ci-and-integration-commands) for
+`wait-checks`, `verify`, `refresh-checks`, `check-task-ci` and the project verify hook.
 
 ## Environment mapping
 
@@ -40,7 +42,9 @@ There are no board-writing verbs in this skeleton. Future board verbs must honou
 
 ## Development and releases
 
-Run format:check, lint, typecheck, test, build, knip and smoke. Tests and smoke use `.tmp/`, run offline and have explicit timeouts. The tarball consumer uses a labelled metadata-only Mermaid fixture which throws on any renderer call. Only Node is on PATH during CLI smoke checks.
+Run format:check, lint, typecheck, test, build, smoke and knip. Tests and smoke create consumer projects under `os.tmpdir()`, outside the repo, so they cannot inherit its dependencies or config. They run offline and have explicit timeouts. Real Mermaid Markdown checks cover jsdom majors 24 and 27; the packed-tarball consumer installs jsdom 24 with peer validation enabled. Run `npm ci` first to populate npm's cache for the offline smoke install. Only Node is on PATH during CLI smoke checks.
+
+CI also runs `vmethod check` against this repo's config, allowing only the missing owner-installed `.claude/settings.json` finding. It skips cleanly if `vmethod.yaml` is absent.
 
 Every PR adds `changes/unreleased/<number>.md` with `kind: breaking`, `feature` or `fix`, a blank line and a description. The next release PR collects previously released fragments into `CHANGELOG.md` and removes them from `unreleased`.
 

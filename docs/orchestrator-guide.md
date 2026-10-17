@@ -56,8 +56,9 @@ in worktree-local `.tmp/`. Do not launch a replacement session in an occupied tr
    documentation, test strength and exclusions. Require benchmark evidence for
    declared hot paths, using local performance budgets and comparable baselines.
 4. Wait once for CI on each push. Confirm the exact head and tested base, not
-   timestamps alone. Use `verify` (vmethod 1.0, #10) and `checks.verify` for additional
-   integration experiments, including combined PR heads. Avoid repeating CI's
+   timestamps alone. Use `verify` and the project's verify hook for additional
+   integration experiments, including combined PR heads. See the
+   [CI command and hook contract](gateway.md#ci-and-integration-commands). Avoid repeating CI's
    standard full recipe without a specific reason.
 5. Post a numbered [REVIEW](protocol.md) with disposition and actionable points.
    Send the same worker the review link; preserve context across rounds. A DESIGN
@@ -83,7 +84,7 @@ incidental run. Local audit recipes and cadence stay with the project.
 Only `merge-task` (vmethod 1.0, #8) merges. Apply the [owner approval policy](roles.md)
 and repository protections. Stop the worker first. Require green checks for the
 exact reviewed head **and current base**: an old green merge run is stale if its
-base parent moved. `refresh-checks` (vmethod 1.0, #10) updates the branch to trigger
+base parent moved. `refresh-checks` updates the branch to trigger
 a new run; re-running the old event still tests its old base. Conflicts go back to
 the worker. Record base-only changes after owner approval rather than implying a
 different head was reviewed. Emergency overrides must be explicit and logged and

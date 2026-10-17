@@ -175,6 +175,72 @@ Linux `/proc/<pid>/stat` start time, preventing reused PIDs (including container
 PID 1) from blocking adoption. Another live watcher for that state fails clearly.
 State, pending events and cursors survive restart; do not delete them to reconnect.
 
+## CI and integration commands
+
+| Command                                       | Role                                 | Behavior                                                                                                                                                                                                              |
+| --------------------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wait-checks <pr> [max-minutes]`              | Worker (own task PR) or orchestrator | REST-only bounded wait; default 30 minutes. No accepted checks means pending for a 120-second grace window, then no verdict. A completed first job waits for its suite to finish, avoiding the job-registration race. |
+| `check-task-ci <pr>`                          | Orchestrator                         | One-shot CI verdict for the current head and base, without sleeping.                                                                                                                                                  |
+| `refresh-checks <pr>`                         | Orchestrator                         | If a green run used an old/unknown base, create a two-parent merge commit bringing in the current base and push through the task branch/artefact policy. An already-current base or no green run causes no push.      |
+| `verify <pr>… [--packages "<ws>…"] [--bench]` | Orchestrator                         | Test-merge the pinned heads together onto their shared base in a detached review worktree, clean outputs and run the project hook once.                                                                               |
+
+CI operations require an accepted, open, same-repository task PR. Trust follows
+`people.yaml` system `appIds`, never check names; reruns are deduplicated within
+each application/name pair. Failure digests are fenced untrusted data. Signed log
+downloads never receive the GitHub API credential. Missing logs are reported with
+the job link; they do not hide the red verdict.
+
+The last output line is the verdict. `wait-checks` exits **0** green, **1** red
+(with failing checks and a short digest), **2** no verdict/head moved (run again,
+never report BLOCKED), or **3** conflict (merge the base, push, run again).
+`check-task-ci` uses the same codes, but green also requires every trusted check's
+workflow-associated PR head/base SHAs to match the current PR. Missing workflow
+evidence fails closed with code 2; commit timestamps cannot establish the tested
+base. It returns check names, without downloading failure logs. `refresh-checks`
+returns 0 for a successful push or no-op, 2 for a ref moving during preparation,
+and 3 for a merge conflict. Push/fetch errors remain errors, never successful no-ops.
+
+### Verify hook
+
+Install an executable `scripts/vmethod-hooks/verify` in the consumer. It is called
+once, in the merged review worktree, with this argument interface:
+
+```text
+scripts/vmethod-hooks/verify --logs <absolute-directory> [--packages "<ws>…"] [--bench]
+```
+
+The hook owns the recipe: install dependencies, then run format, lint, typecheck,
+tests and build. **Only tests** may be narrowed by `--packages`; other steps remain
+repo-wide. `--bench` adds the project's benchmark step. Write full per-step output
+to `<logs>/<step>.log`, print progress, and exit nonzero at the first failure. The
+gateway captures stdout and stderr in `hook.log` and returns exit 0/1 with the
+log directory. It passes only PATH, HOME, TMPDIR and SYSTEMROOT, never credentials.
+The legacy `checks.verify` recipe list is not executed by this command.
+
+Logs persist in a fresh run directory under
+`$XDG_STATE_HOME/vmethod/<stateName>/verify/` (default
+`$HOME/.local/state/vmethod/<stateName>/verify/`). Previous runs are retained.
+The review worktree is `branches.worktreeRoot/orchestrator-review`, resolved
+relative to `branches.mainCheckout` or the gateway checkout. It must be created
+by vmethod, detached and in the same repository. A sibling ownership marker and
+exclusive lock protect it. An unowned existing directory is refused, not reset.
+After a crashed run, inspect the worktree before manually removing a stale
+`.vmethod-review-lock` directory.
+
+Verification **resets and runs `git clean -qxfd` only in that owned review
+worktree**, removing ignored build output and node_modules before the hook. Keep
+no personal work there. PRs must share a base; moving refs or merge conflicts stop
+preparation. Refreshing CI instead uses `merge-tree`/`commit-tree` without changing
+any working checkout or local task branch; workers fetch and merge the new remote
+commit normally.
+
+The typed operations are `waitChecks({ref, maxMinutes?, graceSeconds?})`,
+`checkTaskCi({ref})`, `refreshChecks({ref})` and
+`verify({refs, packages?: string[], bench?})`, each returning `{text, code}`.
+`graceSeconds` is a server/test interface (default 120). An orchestrator's internal
+`push` call may additionally select a full frozen `commit` SHA; workers cannot.
+All regular push policy still applies, and refresh pins the task PR in its call.
+
 ## Credentials and budget
 
 `credentials.githubToken` is the **name** of the launching wrapper's token

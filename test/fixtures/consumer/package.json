@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "mermaid": "file:../mermaid"
+    "mermaid": "12.1.0",
+    "jsdom": "24.1.3"
   }
 }

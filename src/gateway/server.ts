@@ -37,27 +37,9 @@ import {
   rememberBoardMove,
 } from "./events.js";
 
-function reference(
-  value: string,
-  config: Config
-): { repo: string; number: number; owner: string; name: string; link: string } {
-  const match = /^(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#)?([1-9]\d*)$/.exec(value);
-  if (!match || !Number.isSafeInteger(Number(match[2]))) {
-    throw new Error("Expected <number> or <org/repo#number>");
-  }
-  const repo = match[1] ?? String(config.repo);
-  const [owner, name] = repo.split("/");
-  if (owner.toLowerCase() !== String(config.org).toLowerCase()) {
-    throw new Error("Repository is outside configured org");
-  }
-  return {
-    repo,
-    number: Number(match[2]),
-    owner,
-    name,
-    link: `https://github.com/${repo}/issues/${match[2]}`,
-  };
-}
+import { ChecksService } from "./checks.js";
+import { VerificationService } from "./verify.js";
+import { reference } from "./refs.js";
 
 class GatewayServer {
   private readonly config: Config;
@@ -99,6 +81,26 @@ class GatewayServer {
   watchUnmute: Handlers["watchUnmute"] = async ({ ref }) =>
     unmuteThread(this.config, this.env, ref);
   watchMutes: Handlers["watchMutes"] = async () => listMutes(this.config, this.env);
+
+  private get ci(): ChecksService {
+    return new ChecksService(this.config, this.github, this.filter, this.deps);
+  }
+
+  private get verification(): VerificationService {
+    return new VerificationService(
+      this.root,
+      this.env,
+      this.config,
+      this.deps,
+      this.ci,
+      (input, taskPr) => this.push(input, { role: "orchestrator", taskPr })
+    );
+  }
+
+  waitChecks: Handlers["waitChecks"] = async (input) => this.ci.wait(input);
+  checkTaskCi: Handlers["checkTaskCi"] = async ({ ref }) => this.ci.check(ref);
+  refreshChecks: Handlers["refreshChecks"] = async ({ ref }) => this.verification.refresh(ref);
+  verify: Handlers["verify"] = async (input) => this.verification.verify(input);
 
   private get board(): BoardService {
     return (this.boardClient ??= new BoardService(
@@ -429,12 +431,21 @@ class GatewayServer {
     return { branch, base };
   };
 
-  push: Handlers["push"] = async ({ worktree, branch }, ctx) => {
+  push: Handlers["push"] = async ({ worktree, branch, commit: selected }, ctx) => {
+    if (
+      selected !== undefined &&
+      (ctx.role !== "orchestrator" || !/^[a-f\d]{40}$/i.test(selected))
+    ) {
+      throw new Error("Only orchestrators may push a frozen commit");
+    }
     taskBranch(branch, this.config);
     if (!Number.isSafeInteger(ctx.taskPr) || Number(ctx.taskPr) < 1) {
       throw new Error("Push requires its own taskPr");
     }
     const task = await this.task({ ref: String(ctx.taskPr) }, ctx);
+    if (selected && task.branch !== branch) {
+      throw new Error("Frozen push must match its task PR branch");
+    }
     if (ctx.role === "worker") {
       if (task.branch !== branch) {
         throw new Error("Worker may push only its own task branch");
@@ -444,7 +455,13 @@ class GatewayServer {
       throw new Error("Push worktree must be the gateway checkout");
     }
     const git = new GitTransport(this.config, this.env, this.deps, resolve(worktree));
-    const commit = (await git.run("rev-parse", "--verify", `refs/heads/${branch}^{commit}`)).trim();
+    const commit = (
+      await git.run(
+        "rev-parse",
+        "--verify",
+        selected ? `${selected}^{commit}` : `refs/heads/${branch}^{commit}`
+      )
+    ).trim();
     if (!/^[a-f\d]{40}$/i.test(commit)) {
       throw new Error("Invalid local commit");
     }
@@ -721,6 +738,10 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     watchMute: server.watchMute,
     watchUnmute: server.watchUnmute,
     watchMutes: server.watchMutes,
+    waitChecks: server.waitChecks,
+    checkTaskCi: server.checkTaskCi,
+    refreshChecks: server.refreshChecks,
+    verify: server.verify,
     boardStatus: server.boardStatus,
     boardMigrate: server.boardMigrate,
     boardItem: server.boardItem,
@@ -740,6 +761,10 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     watchMute: ["orchestrator"],
     watchUnmute: ["orchestrator"],
     watchMutes: ["orchestrator"],
+    waitChecks: ["worker", "orchestrator"],
+    checkTaskCi: ["orchestrator"],
+    refreshChecks: ["orchestrator"],
+    verify: ["orchestrator"],
     boardStatus: ["orchestrator"],
     boardMigrate: ["orchestrator"],
     boardItem: ["orchestrator"],
@@ -762,7 +787,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ) {
       throw new Error("Gateway operation denied for client role");
     }
-    if (ctx.role === "worker" && ["post", "task", "waitReview"].includes(operation)) {
+    if (ctx.role === "worker" && ["post", "task", "waitReview", "waitChecks"].includes(operation)) {
       const target = reference((input as Operations["post"]["input"]).ref, config);
       if (
         !Number.isSafeInteger(ctx.taskPr) ||

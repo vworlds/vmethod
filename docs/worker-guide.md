@@ -83,17 +83,17 @@ Re-read comments before submission. Merge the PR's current base and remote chang
 when needed; never rebase shared history or force-push. Keep the PR draft and use
 `push`; only the orchestrator changes draft state.
 
-Run `wait-checks` (vmethod 1.0, #10) **once per push**, with its bounded wait. Read the
+Run `wait-checks` **once per push**, with its bounded wait. Read the
 verdict and failure digest, not independent CI logs unless the digest reports it
 could not read them. Exit codes are distinct documented outcomes, not generic
 failure:
 
-| Exit | Meaning            | Action                                                    |
-| ---- | ------------------ | --------------------------------------------------------- |
-| 0    | Green              | Report READY with exact verdict                           |
-| 1    | Red                | Read the digest and fix the failing check                 |
-| 2    | No verdict         | BLOCKED with the last line; stop                          |
-| 3    | Conflict with base | Merge the base, resolve, push and wait once for that push |
+| Exit | Meaning               | Action                                                    |
+| ---- | --------------------- | --------------------------------------------------------- |
+| 0    | Green                 | Report READY with exact verdict                           |
+| 1    | Red                   | Read the digest and fix the failing check                 |
+| 2    | No verdict/head moved | Run again; never report this retry outcome as BLOCKED     |
+| 3    | Conflict with base    | Merge the base, resolve, push and wait once for that push |
 
 Other verbs may document retry outcomes, such as “head moved, run again”. Retry
 those according to their contract; do not report them as BLOCKED or invent a

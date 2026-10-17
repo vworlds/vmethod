@@ -9,6 +9,13 @@ export interface Operations {
   watchMute: { input: { ref: string }; output: string };
   watchUnmute: { input: { ref: string }; output: string };
   watchMutes: { input: Record<string, never>; output: string };
+  waitChecks: {
+    input: { ref: string; maxMinutes?: number; graceSeconds?: number };
+    output: Verdict;
+  };
+  checkTaskCi: { input: { ref: string }; output: Verdict };
+  refreshChecks: { input: { ref: string }; output: Verdict };
+  verify: { input: { refs: string[]; packages?: string[]; bench?: boolean }; output: Verdict };
   boardStatus: { input: Record<string, never>; output: BoardStatus };
   boardMigrate: {
     input: { dryRun?: boolean; steal?: boolean };
@@ -34,7 +41,7 @@ export interface Operations {
     output: string;
   };
   post: { input: { ref: string; file: string }; output: string };
-  push: { input: { worktree: string; branch: string }; output: string };
+  push: { input: { worktree: string; branch: string; commit?: string }; output: string };
   task: {
     input: { ref: string; fetch?: boolean };
     output: { branch: string; base: string };
@@ -48,6 +55,12 @@ export interface Operations {
 export interface CallContext {
   role: "orchestrator" | "worker";
   taskPr?: number;
+}
+
+/** CLI-ready outcome: the last text line is always the verdict. */
+export interface Verdict {
+  text: string;
+  code: 0 | 1 | 2 | 3;
 }
 
 export interface Transport {

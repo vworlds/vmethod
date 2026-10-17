@@ -1,18 +1,48 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
 export function smoke() {
   const repo = fileURLToPath(new URL("../", import.meta.url));
-  const consumer = join(repo, "test/fixtures/consumer");
-  const originalPackage = readFileSync(join(consumer, "package.json"));
-  mkdirSync(join(repo, ".tmp/smoke"), { recursive: true });
-  const temp = mkdtempSync(join(repo, ".tmp/smoke/run-"));
+  const temp = mkdtempSync(join(tmpdir(), "vmethod-smoke-"));
+  const consumer = join(temp, "consumer");
+  mkdirSync(consumer);
+  const originalPackage = readFileSync(join(repo, "test/fixtures/consumer/package.json"));
+  copyFileSync(join(repo, "test/fixtures/consumer/package.json"), join(consumer, "package.json"));
+  // npm ci caches tarballs, not registry metadata. Reuse its locked graph so the
+  // consumer can install offline even with a fresh cache. Promote the jsdom 24
+  // test alias (and its nested dependencies) to the consumer's real jsdom peer.
+  const lock = JSON.parse(readFileSync(join(repo, "package-lock.json"), "utf8"));
+  const manifest = JSON.parse(originalPackage);
+  lock.name = manifest.name;
+  lock.packages[""] = manifest;
+  for (const path of Object.keys(lock.packages)) {
+    if (path === "node_modules/jsdom" || path.startsWith("node_modules/jsdom/")) {
+      delete lock.packages[path];
+    }
+  }
+  for (const path of Object.keys(lock.packages)) {
+    if (path === "node_modules/jsdom24" || path.startsWith("node_modules/jsdom24/")) {
+      lock.packages[path.replace("node_modules/jsdom24", "node_modules/jsdom")] =
+        lock.packages[path];
+      delete lock.packages[path];
+    }
+  }
+  writeFileSync(join(consumer, "package-lock.json"), JSON.stringify(lock));
   function run(command, args, cwd, env = process.env) {
     const result = spawnSync(command, args, {
       cwd,
-      env: { ...env, npm_config_cache: join(repo, ".tmp/npm-cache") },
+      env,
       encoding: "utf8",
       timeout: 60000,
     });
@@ -23,11 +53,11 @@ export function smoke() {
     }
     return result.stdout;
   }
-  const packed = JSON.parse(
-    run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temp], repo)
-  );
-  const tarball = join(temp, packed[0].filename);
   try {
+    const packed = JSON.parse(
+      run("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temp], repo)
+    );
+    const tarball = join(temp, packed[0].filename);
     run(
       "npm",
       [
@@ -36,13 +66,18 @@ export function smoke() {
         "--ignore-scripts",
         "--no-audit",
         "--no-fund",
-        "--package-lock=false",
-        "--legacy-peer-deps",
+        "--strict-peer-deps",
         "--no-save",
         tarball,
       ],
       consumer
     );
+    const jsdom = JSON.parse(
+      readFileSync(join(consumer, "node_modules/jsdom/package.json"), "utf8")
+    );
+    if (jsdom.version !== manifest.devDependencies.jsdom) {
+      throw new Error(`Smoke must use lowest-supported jsdom; installed ${jsdom.version}`);
+    }
     const bin = join(temp, "bin");
     mkdirSync(bin);
     symlinkSync(process.execPath, join(bin, "node"));
@@ -62,6 +97,8 @@ export function smoke() {
     if (!output.includes("vmethod check: ok")) {
       throw new Error(`Unexpected check output: ${output}`);
     }
+    copyFileSync(join(repo, "test/fixtures/diagram.md"), join(consumer, "diagram.md"));
+    run(cli, ["check-markdown", "diagram.md"], consumer, env);
     const pkg = JSON.parse(
       readFileSync(join(consumer, "node_modules/@vworlds/vmethod/package.json"), "utf8")
     );
@@ -72,20 +109,9 @@ export function smoke() {
     if (!readFileSync(join(consumer, "package.json")).equals(originalPackage)) {
       throw new Error("Smoke unexpectedly modified consumer package.json");
     }
-    console.log("Tarball smoke passed (metadata-only Mermaid fixture; no git/gh).");
+    console.log("Tarball smoke passed (Mermaid 12.1.0, jsdom 24; no git/gh).");
     return output;
   } finally {
-    // These files belong solely to the fixture smoke run.
-    for (const path of [
-      "node_modules",
-      "vmethod.yaml",
-      "people.yaml",
-      "models.yaml",
-      "scripts",
-      ".claude",
-    ]) {
-      rmSync(join(consumer, path), { recursive: true, force: true });
-    }
     rmSync(temp, { recursive: true, force: true });
   }
 }
