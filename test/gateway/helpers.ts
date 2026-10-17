@@ -98,10 +98,13 @@ export function fakeServer(requests: Request[]) {
     if (expected.error) {
       throw new Error("simulated network failure");
     }
-    return new Response(expected.text ?? JSON.stringify(expected.json ?? {}), {
-      status: expected.status ?? 200,
-      headers: expected.headers,
-    });
+    return new Response(
+      expected.status === 204 ? null : (expected.text ?? JSON.stringify(expected.json ?? {})),
+      {
+        status: expected.status ?? 200,
+        headers: expected.headers,
+      }
+    );
   };
   return {
     fetch: fetcher,

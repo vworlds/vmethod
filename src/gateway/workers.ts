@@ -557,6 +557,11 @@ export class WorkerService {
         ? "live"
         : "stopped";
   }
+  /** Read the recorded task session's activity without fetching GitHub comments. */
+  async watchStatus(pr: number): Promise<WorkerSessionStatus> {
+    const record = this.read(pr);
+    return record ? this.status(record, false) : { reason: "session unknown", active: false };
+  }
   async resume(pr: number, text: string): Promise<void> {
     await this.locked(pr, async () => {
       const record = this.read(pr);

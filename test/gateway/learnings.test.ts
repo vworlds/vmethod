@@ -15,6 +15,7 @@ import { createGateway } from "../../src/gateway/server.js";
 import { learningsVerb } from "../../src/cli/learnings.js";
 import { fixture, validProject } from "../helpers.js";
 import recorded from "../fixtures/github/learnings-recorded.json" with { type: "json" };
+import { WatchFake } from "./watch-fake.js";
 
 const repo = "vworlds/vecs";
 const login = "VecsMaster";
@@ -367,6 +368,8 @@ function setup(
   );
   return {
     root,
+    env,
+    deps,
     service,
     writes,
     files,
@@ -400,6 +403,54 @@ function setup(
     },
   };
 }
+
+test.each([false, true])(
+  "learnings submit then watch --once (owner=%s)",
+  async (owner) => {
+    const f = setup();
+    const w = new WatchFake();
+    try {
+      w.attachWriter(f, "test");
+      w.config.vmethod = { repo: "vworlds/vmethod" };
+      w.watchPeople = [
+        ...w.watchPeople,
+        { login, id: identity.id, type: "User", role: owner ? "owner" : "orchestrator" },
+      ];
+      if (!owner) {
+        w.viewer = { login, id: identity.id };
+      } else {
+        w.config.stateName = "owner-observer";
+        w.dir = join(f.env.XDG_STATE_HOME, "vmethod", "owner-observer");
+      }
+      f.deps.now = w.deps.now;
+      const loop = w.loop();
+      const once = () => w.once(loop);
+      expect(await once()).toEqual([]);
+      w.advance();
+      await learningsVerb(
+        {
+          call: async (operation, input) => {
+            if (operation !== "learnings") {
+              throw new Error(`Unexpected learning operation ${operation}`);
+            }
+            return (await f.service.command(
+              input as Parameters<typeof f.service.command>[0]
+            )) as never;
+          },
+        },
+        ["submit"],
+        { VMETHOD_ROLE: "orchestrator" }
+      );
+      const events = await once();
+      expect(events.map((event) => event.kind)).toEqual(owner ? ["new"] : []);
+      expect(w.reports).toEqual([]);
+      expect(f.unexpected).toEqual([]);
+    } finally {
+      w.done();
+    }
+  },
+  15000
+);
 
 test("unmodified captured contents decode through show and the pre-binding registry fails closed", async () => {
   const root = fixture();

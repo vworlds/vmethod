@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { actor, fixtureServer, graph, item } from "./helpers.js";
@@ -6,6 +6,97 @@ import { gatewayVerb } from "../../src/cli/gateway.js";
 import { createGateway } from "../../src/gateway/server.js";
 import issueResponse from "../fixtures/github/issue-response.json" with { type: "json" };
 import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
+import { WatchFake } from "./watch-fake.js";
+
+test.each(
+  ["issue create", "issue close", "board set"].flatMap((verb) =>
+    [false, true].map((owner) => ({ verb, owner }))
+  )
+)(
+  "$verb then watch --once (owner=$owner)",
+  async ({ verb, owner }) => {
+    const recording = verb === "issue create" ? createdCard() : structuredClone(boardRecording);
+    const card = recording.items.nodes[0];
+    const metadata = [
+      graph({ repository: { issue: item({ id: card.content.id }) } }),
+      graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+    ];
+    const mutation = boardGraph({
+      m0: { projectV2Item: { id: card.id } },
+      m1: { projectV2Item: { id: card.id } },
+    });
+    const requests =
+      verb === "issue create"
+        ? [
+            {
+              path: "/repos/example/project/issues",
+              json: { number: issueResponse.number, node_id: issueResponse.node_id },
+            },
+            ...createBoardReads(recording),
+            ...boardReads(recording),
+            mutation,
+          ]
+        : verb === "issue close"
+          ? [
+              ...metadata,
+              {
+                path: `/repos/example/project/issues/${card.content.number}`,
+                method: "PATCH",
+                json: { number: card.content.number, state: "closed" },
+              },
+            ]
+          : [...metadata, ...boardReads(recording), mutation];
+    const f = fixtureServer(requests);
+    const w = new WatchFake();
+    try {
+      w.attachWriter(f);
+      if (owner) {
+        w.config.stateName = "observer-session";
+        w.dir = join(f.env.XDG_STATE_HOME, "vmethod", "observer-session");
+      }
+      if (verb !== "issue create") {
+        const observed = w.card(card.content.number, "In progress");
+        observed.id = card.id;
+        w.cards = [observed];
+        w.issues = [{ number: card.content.number, labels: [] }];
+      }
+      const loop = w.loop();
+      const once = () => w.once(loop);
+      expect(await once()).toEqual([]);
+      // Keep the gateway's injected clock and GitHub value timestamps aligned.
+      const file = join(f.root, ".tmp", "issue.md");
+      mkdirSync(join(f.root, ".tmp"), { recursive: true });
+      writeFileSync(file, "Body\n");
+      if (verb === "issue create") {
+        await gatewayVerb(f.transport, "issue", ["create", "Title", file, "--status", "Done"], {
+          VMETHOD_ROLE: "orchestrator",
+        });
+      } else if (verb === "issue close") {
+        await gatewayVerb(f.transport, "issue", ["close", String(card.content.number)], {
+          VMETHOD_ROLE: "orchestrator",
+        });
+      } else {
+        await gatewayVerb(
+          f.transport,
+          "board",
+          ["set", String(card.content.number), "Status", "Done"],
+          { VMETHOD_ROLE: "orchestrator" }
+        );
+      }
+      const events = await once();
+      if (owner && verb !== "issue close") {
+        expect(events.map((event) => event.kind)).toEqual(["board"]);
+      } else {
+        expect(events).toEqual([]);
+      }
+      expect(w.reports).toEqual([]);
+      f.done();
+    } finally {
+      w.done();
+    }
+  },
+  15000
+);
 
 const acceptedIssue = () =>
   item({
@@ -443,8 +534,8 @@ test.each(["Estimate", "Status"])(
       })
     ).resolves.toBe("Board field updated");
     if (field === "Status") {
-      const path = join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "board");
-      expect(readFileSync(join(path, card.id), "utf8")).toContain("Done");
+      const path = join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl");
+      expect(readFileSync(path, "utf8")).toContain('"field":"Status","value":"Done"');
     }
     f.done();
   },

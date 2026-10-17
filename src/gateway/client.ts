@@ -3,6 +3,7 @@ import type { Config } from "../config.js";
 import type { ProcessRuntime } from "./claude.js";
 import type { WorkerFilesystem } from "./access.js";
 import { object, type ObjectData } from "./people.js";
+import { WriteJournal } from "./write-journal.js";
 
 export interface Dependencies {
   /** #9 supplies both backends; absent/unknown status must never permit a merge. */
@@ -61,6 +62,8 @@ export class GitHubHttpError extends Error {
 
 /** Credentials and unfiltered responses must never cross the operation seam. */
 export class GitHubClient {
+  /** Session-local successful-write attribution; no credentials or response text. */
+  readonly writes: WriteJournal;
   private readonly token: string;
   private pauseUntil = 0;
   private reserveUse = 0;
@@ -92,6 +95,7 @@ export class GitHubClient {
     const budget = config.gateway as { reserve?: number; maxRetries?: number } | undefined;
     this.reserve = budget?.reserve ?? 100;
     this.retries = budget?.maxRetries ?? 3;
+    this.writes = new WriteJournal(config, env, deps.now);
   }
 
   private redact(text: string): string {
@@ -215,14 +219,26 @@ export class GitHubClient {
     retry = true
   ): Promise<unknown> {
     const response = await this.request(path, method, body, undefined, retry);
+    const at = new Date(this.deps.now()).toISOString();
     if (response.status === 204) {
+      this.writes.record(path, method, body, null, at);
       return null;
     }
+    let result: unknown;
     try {
-      return await response.json();
+      result = await response.json();
     } catch {
       throw new Error("GitHub returned invalid JSON");
     }
+    // A GraphQL POST can be a read. Refused/partial mutations are not successful writes.
+    if (
+      path !== "/graphql" ||
+      object(result).errors === undefined ||
+      (Array.isArray(object(result).errors) && (object(result).errors as unknown[]).length === 0)
+    ) {
+      this.writes.record(path, method, body, result, at);
+    }
+    return result;
   }
 
   async diff(path: string): Promise<string> {

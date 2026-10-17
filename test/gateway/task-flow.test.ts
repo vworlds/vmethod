@@ -10,9 +10,193 @@ import type { Card } from "../../src/board/types.js";
 import { validProject } from "../helpers.js";
 import { people, sha } from "./helpers.js";
 import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
+import { BoardService } from "../../src/gateway/board.js";
+import { WatchFake } from "./watch-fake.js";
+import { writeState } from "../../src/board/readme.js";
+import { taskFlowVerb } from "../../src/cli/task-flow.js";
+import type { Operations, Transport } from "../../src/gateway/transport.js";
 
 const baseSha = "b".repeat(40),
   mergedSha = "c".repeat(40);
+
+test.each(
+  [
+    "open-task",
+    "review changes",
+    "review owner",
+    "review answer",
+    "review ask",
+    "review approve",
+    "merge-task",
+  ].flatMap((verb) =>
+    ["self", "owner", ...(["review owner", "merge-task"].includes(verb) ? ["sibling"] : [])].map(
+      (identity) => ({ verb, identity })
+    )
+  )
+)(
+  "$verb through real board/client writes then watch --once (identity=$identity)",
+  async ({ verb, identity }) => {
+    const f = fixture();
+    const w = new WatchFake();
+    let sibling: WatchFake | undefined;
+    try {
+      w.enableWrites = true;
+      w.watchPeople = [
+        ...w.watchPeople,
+        { login: "me", id: 999, type: "User", role: "orchestrator" },
+      ];
+      w.root = f.root;
+      w.config = { ...f.config, board: w.config.board, vmethod: { repo: "off" } };
+      w.env = { ...w.env, ...f.env };
+      w.dir = join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName));
+      if (identity === "owner") {
+        w.writeActor = { login: "owner", id: 101, type: "User" };
+        f.config.stateName = "owner-session";
+      }
+      if (identity === "sibling") {
+        f.config.stateName = "sibling-session";
+      }
+      f.config.board = w.config.board;
+      w.readme = writeState("", { version: 2, minCompatible: 1, aliases: {} }, true);
+      const status = w.fields.find((field) => field.name === "Status")!;
+      status.options = ["Backlog", "Ready", "In progress", "In review", "Approved", "Done"].map(
+        (name, index) => ({ id: `option-${index}`, name, color: "GRAY", description: "" })
+      );
+      w.fields.push({
+        id: "model",
+        name: "Model",
+        dataType: "SINGLE_SELECT",
+        createdAt: "2026-10-16T11:12:25Z",
+        options: [{ id: "model-sol", name: "sol", color: "GRAY", description: "" }],
+      });
+      w.cards = [w.card(8, "In review")];
+      object(w.cards[0].content).id = "issue";
+      object(w.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+      w.issues = [{ number: 8, labels: [] }];
+      if (verb !== "open-task") {
+        const pr = w.card(27, "In progress", "PullRequest");
+        object(pr.content).id = "pr";
+        w.cards.push(pr);
+        w.pulls = [
+          {
+            number: 27,
+            head: { ref: "8-task", sha },
+            base: { ref: "dev" },
+            created_at: w.iso(),
+            user: { login: "worker", id: 102, type: "User" },
+          },
+        ];
+        w.issues.push({ number: 27, pull_request: {}, labels: [] });
+      }
+      w.checks = [
+        {
+          id: 1,
+          name: "check",
+          app: { id: 909 },
+          status: "completed",
+          conclusion: "success",
+          head_sha: sha,
+        },
+      ];
+      const originalFetch = f.deps.fetch;
+      f.deps.fetch = (input, init) => {
+        const path = new URL(String(input)).pathname;
+        return /\/git\/(matching-refs|refs)\/|\/dependencies\/blocking$/.test(path)
+          ? originalFetch(input, init)
+          : w.deps.fetch(input, init);
+      };
+      f.deps.now = w.deps.now;
+      const github = new GitHubClient(f.config, f.env, f.deps);
+      f.host.github = github;
+      const board = new BoardService(f.config, github, f.deps);
+      f.host.board = () => board;
+      const transport: Transport = {
+        call: async (operation, input) => {
+          if (operation === "openTask") {
+            return (await f.flow().open(input as Operations["openTask"]["input"])) as never;
+          }
+          if (operation === "reviewTask") {
+            return (await f.flow().review(input as Operations["reviewTask"]["input"])) as never;
+          }
+          if (operation === "mergeTask") {
+            return (await f.flow().merge((input as Operations["mergeTask"]["input"]).ref)) as never;
+          }
+          throw new Error(`Unexpected matrix operation ${operation}`);
+        },
+      };
+      const commandEnv = { VMETHOD_ROLE: "orchestrator" };
+      const loop = w.loop();
+      const once = () => w.once(loop);
+      expect(await once()).toEqual([]);
+      if (identity === "sibling") {
+        sibling = new WatchFake();
+        sibling.enableWrites = true;
+        sibling.watchPeople = w.watchPeople;
+        sibling.root = w.root;
+        sibling.env = w.env;
+        sibling.config = { ...w.config, stateName: "sibling-session" };
+        sibling.dir = join(f.env.XDG_STATE_HOME, "vmethod", "sibling-session");
+        sibling.cards = structuredClone(w.cards);
+        sibling.pulls = w.pulls;
+        sibling.issues = w.issues;
+        sibling.clock = w.clock;
+        expect(await sibling.once(sibling.loop())).toEqual([]);
+      }
+      w.advance();
+      if (verb === "open-task") {
+        await taskFlowVerb(transport, verb, ["8", "--model", "sol"], commandEnv);
+      } else if (verb === "merge-task") {
+        await taskFlowVerb(transport, verb, ["27"], commandEnv);
+      } else {
+        const file = join(f.root, ".tmp", "review.md");
+        mkdirSync(join(f.root, ".tmp"), { recursive: true });
+        writeFileSync(file, "Review body\n");
+        await taskFlowVerb(transport, "review", ["27", verb.split(" ")[1], file], commandEnv);
+      }
+      const events = await once();
+      if (identity !== "self") {
+        expect(events.map((event) => event.kind)).toContain(
+          verb === "open-task" ? "owner-done" : verb === "merge-task" ? "button-merge" : "comment"
+        );
+      } else {
+        expect(events).toEqual([]);
+      }
+      if (sibling) {
+        expect(events.some((event) => event.line.includes("this account, another session"))).toBe(
+          true
+        );
+        if (verb === "review owner") {
+          expect(events.some((event) => event.kind === "board")).toBe(true);
+          expect(
+            events
+              .filter((event) => event.kind === "board")
+              .every((event) => !event.line.includes(" by "))
+          ).toBe(true);
+        }
+        sibling.cards = w.cards;
+        sibling.comments = w.comments;
+        sibling.pulls = w.pulls;
+        sibling.gone = w.gone;
+        sibling.assignmentEvents = w.assignmentEvents;
+        sibling.clock = w.clock;
+        expect(await sibling.once(sibling.loops[0])).toEqual([]);
+        expect(sibling.reports).toEqual([]);
+      }
+      expect(w.reports).toEqual([]);
+      expect(
+        readFileSync(
+          join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "writes.jsonl"),
+          "utf8"
+        )
+      ).toContain('"kind":');
+      f.done();
+    } finally {
+      sibling?.done();
+      w.done();
+    }
+  },
+  15000
+);
 function fixture() {
   const root = validProject();
   const configPath = join(root, "vmethod.yaml");
@@ -355,27 +539,32 @@ test("merged task with only its task header closes its issue and completes the i
     expect.objectContaining({ id: "issue", field: "Status", value: "Done" })
   );
   expect(
-    existsSync(join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merged-27"))
-  ).toBe(true);
+    JSON.parse(
+      readFileSync(
+        join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+        "utf8"
+      )
+    ).done
+  ).toContain("follow-up");
   f.done();
 });
 
 test("merge follow-up writes watcher completion before dependency reinstall, never on partial failure", async () => {
   const f = fixture();
-  const marker = join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merged-27");
+  const marker = join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json");
   f.set({ state: "MERGED", fail: "board" });
   await expect(f.flow().merge("27")).rejects.toThrow("board failed");
-  expect(existsSync(marker)).toBe(false);
+  expect(JSON.parse(readFileSync(marker, "utf8")).done).not.toContain("follow-up");
   f.set({ fail: "" });
   const exec = f.deps.exec;
   f.deps.exec = async (file, args, options) => {
     if (file === "sh") {
-      expect(existsSync(marker)).toBe(true);
+      expect(JSON.parse(readFileSync(marker, "utf8")).done).toContain("follow-up");
     }
     return exec(file, args, options);
   };
   await f.flow().merge("27");
-  expect(existsSync(marker)).toBe(true);
+  expect(JSON.parse(readFileSync(marker, "utf8")).done).toContain("follow-up");
   f.done();
 });
 
@@ -402,7 +591,7 @@ test("an old empty completed journal discovers its task header issue on retry", 
   f.done();
 });
 
-test("track follow-up writes completion in its watcher's scoped state directory", async () => {
+test("track follow-up keeps durable merge completion without a watcher marker", async () => {
   const f = fixture();
   f.config.track = "engine";
   f.set({ state: "MERGED", base: "track/engine" });
@@ -413,10 +602,18 @@ test("track follow-up writes completion in its watcher's scoped state directory"
   });
   await f.flow().merge("27");
   expect(
+    JSON.parse(
+      readFileSync(
+        join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+        "utf8"
+      )
+    ).done
+  ).toContain("follow-up");
+  expect(
     existsSync(
       join(f.env.XDG_STATE_HOME, "vmethod", `${String(f.config.stateName)}-engine`, "merged-27")
     )
-  ).toBe(true);
+  ).toBe(false);
   expect(f.writes.some((w) => w.body.state === "closed")).toBe(false);
   f.done();
 });

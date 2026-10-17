@@ -64,8 +64,7 @@ export class BoardService implements BoardIO {
     private github: GitHubClient,
     private deps: Dependencies,
     migrations: Migration[] = loadMigrations(),
-    private boardVersion = packageInfo.boardVersion,
-    private remember?: (itemId: string, column: string) => void
+    private boardVersion = packageInfo.boardVersion
   ) {
     this.settings = object(config.board);
     if (this.settings.enabled === false) {
@@ -419,13 +418,10 @@ export class BoardService implements BoardIO {
       changes.unshift({ id: card.id, field: progress, value: input.progress! });
     }
     await this.setChanges(snapshot.id, changes);
-    if (input.field === "Status") {
-      this.remember?.(card.id, String(input.value ?? ""));
-    }
     return "Board field updated";
   }
   /** Set a single-select/number field by issue content ID on the configured board only.
-   * Status writes clear Progress and record the move through the shared watcher callback.
+   * Status writes clear Progress; GitHubClient journals the successful mutations.
    */
   async setIssueField(contentId: string, name: string, value: string): Promise<string> {
     if (typeof name !== "string" || !name || typeof value !== "string" || !value.trim()) {
@@ -463,9 +459,6 @@ export class BoardService implements BoardIO {
       changes.unshift({ id: card.id, field: progress, value: null });
     }
     await this.setChanges(snapshot.id, changes);
-    if (name === "Status") {
-      this.remember?.(card.id, value);
-    }
     return "Board field updated";
   }
   async archive(itemId: string): Promise<string> {

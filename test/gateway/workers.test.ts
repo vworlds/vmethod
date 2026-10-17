@@ -143,6 +143,26 @@ const start: Request[] = [
     body: { text: "PR description `data`", delivery: "steer" },
   },
 ];
+test("watch status uses the recorded task session and client update time without reading comments", async () => {
+  const f = fixture([
+    ...start,
+    { path: "/api/session/active", data: { ses_fake: true } },
+    { path: "/api/session/ses_fake", data: { id: "ses_fake", time: { updated: 123_456 } } },
+    { path: "/api/session/ses_fake/permission", data: [] },
+    { path: "/api/session/ses_fake/message?limit=20", data: [] },
+  ]);
+  expect(await f.service.watchStatus(31)).toEqual({ reason: "session unknown", active: false });
+  await f.service.command(["start", "31"]);
+  vi.mocked(f.hooks.metadata).mockClear();
+  expect(await f.service.watchStatus(31)).toMatchObject({
+    reason: "running",
+    active: true,
+    updated: 123_456,
+  });
+  expect(f.hooks.metadata).not.toHaveBeenCalled();
+  f.done();
+});
+
 test("adopt records an existing session without creating or prompting it", async () => {
   const f = fixture();
   // The session must belong to the prepared task worktree.

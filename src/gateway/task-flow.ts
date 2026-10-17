@@ -10,8 +10,6 @@ import { object, type ObjectData, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
-import { stateRoot } from "./digest.js";
-import { resolveSession } from "./events.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 
 interface Host {
@@ -863,13 +861,6 @@ export class TaskFlow {
     await step("follow-up", async () => {
       this.deps.report(`#${ref} merged; follow-up complete`);
     });
-    const marker = join(
-      stateRoot(this.env, resolveSession(this.config, {}).stateName),
-      `merged-${this.number(ref)}`
-    );
-    mkdirSync(dirname(marker), { recursive: true });
-    writeFileSync(`${marker}.tmp`, `${Math.floor(this.deps.now() / 1000)}\n`, { mode: 0o600 });
-    renameSync(`${marker}.tmp`, marker);
     const output = `Merged #${ref}`;
     if (journal.install) {
       const install = String(object(this.config.postMerge).install ?? "npm ci");

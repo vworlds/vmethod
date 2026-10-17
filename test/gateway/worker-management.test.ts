@@ -9,6 +9,8 @@ import type { Dependencies } from "../../src/gateway/client.js";
 import { object } from "../../src/gateway/people.js";
 import { validProject } from "../helpers.js";
 import { actor, item, people } from "./helpers.js";
+import { WatchFake } from "./watch-fake.js";
+import { gatewayVerb } from "../../src/cli/gateway.js";
 
 function fixture() {
   const root = validProject();
@@ -164,6 +166,7 @@ function fixture() {
                 project: { id: "PVT" },
                 content: {
                   __typename: variables.id === "CARD31" ? "PullRequest" : "Issue",
+                  number: variables.id === "CARD31" ? 31 : 9,
                   repository: { nameWithOwner: "example/project" },
                   assignees: { nodes: [] },
                 },
@@ -269,6 +272,51 @@ function fixture() {
     done: () => expect(unexpected).toEqual([]),
   };
 }
+
+test.each([false, true])(
+  "worker start then watch --once (owner=%s)",
+  async (owner) => {
+    const f = fixture();
+    const w = new WatchFake();
+    try {
+      w.attachWriter(f);
+      if (owner) {
+        w.config.stateName = "observer-session";
+        w.dir = join(f.env.XDG_STATE_HOME, "vmethod", "observer-session");
+      }
+      w.fields.push({
+        id: "F_MODEL",
+        name: "Model",
+        dataType: "SINGLE_SELECT",
+        options: [{ id: "O_glm", name: "glm" }],
+      });
+      const card = w.card(31, "In progress", "PullRequest");
+      card.id = "CARD31";
+      w.cards = [card];
+      w.issues = [{ number: 31, labels: [] }];
+      const loop = w.loop();
+      const once = () => w.once(loop);
+      expect(await once()).toEqual([]);
+      await gatewayVerb(f.transport, "worker", ["start", "31"], { VMETHOD_ROLE: "orchestrator" });
+      expect(await once()).toEqual([]); // Model-only changes never woke the watcher.
+      const records = readFileSync(
+        join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"),
+        "utf8"
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(records).toContainEqual(
+        expect.objectContaining({ kind: "board", number: 31, field: "Model", value: "glm" })
+      );
+      expect(w.reports).toEqual([]);
+      f.done();
+    } finally {
+      w.done();
+    }
+  },
+  15000
+);
 
 test("gateway dispatches a draft PR and grades its delivery, writing Estimate only on linked issue", async () => {
   const f = fixture();

@@ -23,12 +23,16 @@ import {
   BudgetPause,
   GraphQLResponseError,
   OpencodeClient,
+  type WorkerSessionStatus,
   type Dependencies,
   type WorkerStatus,
 } from "./client.js";
 import { stateRoot, type Digest } from "./digest.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
-import { repoOf, restActor } from "./queries.js";
+import { repoOf, restActor, actorFields } from "./queries.js";
+import { WriteJournal } from "./write-journal.js";
+import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
+export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 
 const INTERVAL_MS = 10_000;
 const WORKER_EVERY = 6;
@@ -39,6 +43,7 @@ const TRACKS_TTL_MS = 30_000;
 const NEXT_RECHECK_MS = 60_000;
 const MIGRATION_WINDOW_MS = 60 * 60_000;
 const HOLD_MAX_AGE_MS = 120_000;
+const GRADE_SETTLE_MS = 60_000;
 const POLL_COST = 2;
 const PAGE_LIMIT = 20;
 const PREVIEW_LIMIT = 120;
@@ -55,19 +60,6 @@ export interface WatchEvent {
   quiet?: string[];
 }
 
-export interface SessionInput {
-  track?: string;
-  only?: number[];
-  skip?: number[];
-}
-
-export interface ResolvedSession {
-  stateName: string;
-  track: string | null;
-  only: number[] | null;
-  skip: number[] | null;
-}
-
 export interface EventDeps extends Dependencies {
   pid: number;
   /** Contents of /proc/<pid>/stat, or null when unreadable; injectable for lock tests. */
@@ -81,6 +73,7 @@ export interface LoopHost {
   deps: EventDeps;
   filter: PeopleFilter;
   github: GitHubClient;
+  workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
   board: Pick<BoardService, "set">;
   digest: Digest;
 }
@@ -111,6 +104,7 @@ interface CardInfo {
   kind: "ISSUE" | "PR";
   state: string;
   column: string;
+  columnAt: string;
   assignees: string[];
   estimate: number | null;
   progress: string;
@@ -179,46 +173,6 @@ export function sanitizePreview(text: string): string {
     .slice(0, PREVIEW_LIMIT)
     .trimEnd();
   /* eslint-enable no-control-regex */
-}
-
-function normalizeNumbers(value: unknown): number[] | null {
-  if (value === undefined) {
-    return null;
-  }
-  if (!Array.isArray(value) || !value.length) {
-    throw new Error("Expected a nonempty list of item numbers");
-  }
-  const numbers = value.map((entry) => {
-    const parsed = count(entry);
-    if (parsed === null) {
-      throw new Error("Expected positive item numbers");
-    }
-    return parsed;
-  });
-  return [...new Set(numbers)].sort((a, b) => a - b);
-}
-
-export function resolveSession(config: Config, input: SessionInput): ResolvedSession {
-  const track =
-    input.track ?? (typeof config.track === "string" && config.track ? config.track : null);
-  if (track !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(track)) {
-    throw new Error("Invalid track name");
-  }
-  const only = normalizeNumbers(input.only);
-  const skip = normalizeNumbers(input.skip);
-  if ([track !== null, only !== null, skip !== null].filter(Boolean).length > 1) {
-    throw new Error("Choose one session: --track, --only or --skip");
-  }
-  const base = String(config.stateName ?? String(config.repo).replace("/", "-"));
-  const suffix =
-    track !== null
-      ? `-${track}`
-      : only !== null
-        ? `-only-${only.join("-")}`
-        : skip !== null
-          ? `-skip-${skip.join("-")}`
-          : "";
-  return { stateName: `${base}${suffix}`, track, only, skip };
 }
 
 interface ThreadRef {
@@ -336,20 +290,6 @@ export function listMutes(config: Config, env: NodeJS.ProcessEnv): string {
   return [`Muted: ${lines.length}`, ...lines].join("\n");
 }
 
-export function rememberBoardMove(
-  config: Config,
-  env: NodeJS.ProcessEnv,
-  itemId: string,
-  column: string
-): void {
-  if (!ID.test(itemId)) {
-    throw new Error("Invalid board item id");
-  }
-  const dir = join(stateRoot(env, resolveSession(config, {}).stateName), "board");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  atomicWrite(join(dir, itemId), `${column}\n`);
-}
-
 /**
  * One event loop per session (state directory): the server polls GitHub through the
  * gateway client, filters every author through people.yaml, and hands the client
@@ -368,6 +308,7 @@ export class EventLoop {
   private readonly preview: boolean;
   private readonly boardEnabled: boolean;
   private readonly owners: Set<string>;
+  private readonly writes: WriteJournal;
   private readonly subjectPreviews = new Map<
     string,
     { title: string; person: Person | undefined }
@@ -383,6 +324,7 @@ export class EventLoop {
   private readonly tracks = new Map<number, string>();
   private readonly known = new Set<number>();
   private readonly cycleStale = new Set<number>();
+  private readonly cycleOwnMoves = new Set<string>();
   private inprogress: { number: number; branch: string }[] = [];
   private observedPrs: PrInfo[] = [];
   private nextBoardAt = 0;
@@ -412,6 +354,7 @@ export class EventLoop {
     const config = host.config;
     this.session = resolveSession(config, input);
     this.dir = stateRoot(host.env, this.session.stateName);
+    this.writes = new WriteJournal(config, host.env, host.deps.now, this.session.stateName);
     this.own = String(config.repo);
     this.org = String(config.org);
     const methodology = str(object(config.vmethod).repo) || "vworlds/vmethod";
@@ -693,12 +636,54 @@ export class EventLoop {
     this.acquireLock();
     try {
       await this.importLegacy();
+      this.migrateActions();
     } catch (error) {
       this.close();
       throw error;
     }
     this.loadTracksCache();
     this.started = true;
+  }
+
+  /** Import obsolete writer stamps once; future writers only use the gateway journal. */
+  private migrateActions(): void {
+    if (this.marked("actions-migrated")) {
+      return;
+    }
+    const completed = object(safeJson(this.readMarker("legacy-completed.json")));
+    const turns = object(safeJson(this.readMarker("legacy-turns.json")));
+    const obsolete: string[] = [];
+    const shared = stateRoot(
+      this.host.env,
+      resolveSession(this.host.config, { track: this.session.track ?? undefined }).stateName
+    );
+    if (shared !== this.dir && existsSync(shared)) {
+      for (const name of readdirSync(shared)) {
+        const match = /^merged-(\d+)$/.exec(name);
+        if (match) {
+          completed[match[1]] = true;
+        }
+      }
+    }
+    for (const name of readdirSync(this.dir)) {
+      const match = /^merged-(\d+)$/.exec(name);
+      if (match) {
+        completed[match[1]] = true;
+        obsolete.push(join(this.dir, name));
+      }
+    }
+    for (const name of readdirSync(join(this.dir, "board"))) {
+      if (name.startsWith(".turn-")) {
+        turns[name] = true;
+        obsolete.push(join(this.dir, "board", name));
+      }
+    }
+    this.writeMarker("legacy-completed.json", JSON.stringify(completed));
+    this.writeMarker("legacy-turns.json", JSON.stringify(turns));
+    for (const file of obsolete) {
+      remove(file);
+    }
+    this.mark("actions-migrated");
   }
 
   private acquireLock(): void {
@@ -822,6 +807,13 @@ export class EventLoop {
       "quiet",
       "mutes",
       "legacy-imported",
+      "writes.jsonl",
+      "writes.jsonl.lock",
+      "writes.jsonl.tmp",
+      "actions-migrated",
+      "legacy-completed.json",
+      "legacy-turns.json",
+      "unestimated.json",
     ]);
     const skipBoard = new Set([".next", ".launch", ".hold-startable", ".seen", "next", "launch"]);
     for (const source of sources) {
@@ -1059,6 +1051,13 @@ export class EventLoop {
         this.budgetDeferred = true;
         return false;
       }
+      if (error instanceof GraphQLResponseError) {
+        this.produceOnce(
+          `graphql-error-${key(error.errors.join(";"))}`,
+          "query-error",
+          "QUERY ERROR: GraphQL rejected a watcher query; details on stderr"
+        );
+      }
       this.host.deps.report(`watcher: ${name} failed: ${(error as Error).message}`);
       return false;
     }
@@ -1075,6 +1074,7 @@ export class EventLoop {
     const startedAt = new Date(this.host.deps.now()).toISOString();
     this.cycle++;
     this.cycleStale.clear();
+    this.cycleOwnMoves.clear();
     let ok = true;
     if (this.me === null) {
       ok = await this.step("own identity", async () => {
@@ -1101,12 +1101,15 @@ export class EventLoop {
     const commentsOk = await this.step("comments", () => this.pollComments());
     if (commentsOk && pullsOk) {
       for (const pr of this.observedPrs) {
-        this.watchStale(pr);
+        await this.watchStale(pr);
       }
     }
     const itemsOk = await this.step("subscribed items", () => this.pollSubscribedItems());
     const assignedOk = await this.step("assignments", () => this.pollAssigned());
     const boardOk = await this.step("board", () => this.pollBoard());
+    if (!boardOk) {
+      remove(join(this.dir, "unestimated.json"));
+    }
     const workersOk = await this.step("worker sessions", () => this.pollWorkers());
     await this.step("budget", () => this.checkBudget());
     ok = ok && pullsOk && commentsOk && itemsOk && assignedOk && boardOk && workersOk;
@@ -1300,7 +1303,7 @@ export class EventLoop {
     this.observedPrs.push(pr);
   }
 
-  private watchStale(pr: PrInfo): void {
+  private async watchStale(pr: PrInfo): Promise<void> {
     const url = this.threadUrl(this.own, pr.number, "PR");
     const review = this.readReview(pr.number);
     const activity = this.activityAt(pr.number);
@@ -1310,12 +1313,28 @@ export class EventLoop {
       activity <= review.at &&
       Date.parse(review.at) <= this.host.deps.now() - STALE_MS
     ) {
+      let unreachable: boolean;
+      try {
+        const worker = await this.host.workerStatus(pr.number);
+        unreachable = worker.reason === "session unknown";
+        if (
+          worker.active &&
+          typeof worker.updated === "number" &&
+          Number.isFinite(worker.updated) &&
+          worker.updated >= this.host.deps.now() - STALE_MS
+        ) {
+          return;
+        }
+      } catch {
+        // Transport details may contain private data; only report availability.
+        unreachable = true;
+      }
       this.cycleStale.add(pr.number);
       if (
         this.produceOnce(
           `s-${key(review.id)}`,
           "stale",
-          `PR #${pr.number} (${pr.branch}): STALE: no worker reply for 30+ min after my review ${url}`
+          `PR #${pr.number} (${pr.branch}): STALE${unreachable ? " (worker unreachable)" : ""}: no worker reply for 30+ min after my review ${url}`
         )
       ) {
         this.queueProgress(pr.number, { state: "idle", if: ["working"] });
@@ -1400,35 +1419,61 @@ export class EventLoop {
       await this.restRead(() => this.host.github.rest(`/repos/${this.own}/pulls/${number}`))
     );
     const person = this.host.filter.identity(restActor(data.user));
-    const completion = join(
-      stateRoot(
-        this.host.env,
-        resolveSession(this.host.config, { track: this.session.track ?? undefined }).stateName
-      ),
-      `merged-${number}`
+    const shared = stateRoot(
+      this.host.env,
+      resolveSession(this.host.config, { track: this.session.track ?? undefined }).stateName
     );
-    if (data.merged === true && (this.marked(`merged-${number}`) || existsSync(completion))) {
-      // Our own merge-task follow-up: not news.
-      // Keep completion durable: main and explicit-number watchers can observe it independently.
+    const sharedLegacy = join(shared, "legacy-completed.json");
+    const legacy =
+      object(safeJson(this.readMarker("legacy-completed.json")))[String(number)] === true ||
+      (existsSync(sharedLegacy) &&
+        object(JSON.parse(readFileSync(sharedLegacy, "utf8")))[String(number)] === true);
+    const mergeFile = join(
+      stateRoot(this.host.env, String(this.host.config.stateName ?? this.own.replace("/", "-"))),
+      `merge-${number}.json`
+    );
+    const followUp = existsSync(mergeFile)
+      ? object(JSON.parse(readFileSync(mergeFile, "utf8")))
+      : {};
+    const complete = Array.isArray(followUp.done) && followUp.done.includes("follow-up");
+    const self = count(object(data.merged_by).id) === this.meId;
+    const matched = this.writes.matches(
+      { kind: "merged", repo: this.own, number },
+      str(data.merged_at)
+    );
+    const notified = this.marked(`merge-notified-${number}`);
+    if (data.merged === true && (legacy || (complete && (!self || matched || notified)))) {
       this.clearPrState(number);
       this.queueProgress(number, { state: null, round: null, ci: "ok" });
       return;
     }
     if (data.merged === true) {
-      // Unmarked merge: report the actual merger; never run follow-up from the watcher.
+      // Never run follow-up from the watcher. A sibling's same-account merge is
+      // still work unless this session recorded it AND recovery is complete.
       const attempted = Number(this.readMarker(`merge-attempt-${number}`)) * 1000;
       if (this.host.deps.now() - attempted < BUTTON_RETRY_MS) {
         return;
       }
       const at = Math.floor(this.host.deps.now() / 1000);
       const merger = str(object(data.merged_by).login);
+      const sibling = self && !matched ? " (this account, another session)" : "";
+      const action =
+        self && !complete
+          ? "follow-up not run: run merge-task"
+          : complete
+            ? "follow-up complete"
+            : "run merge-task";
       this.emit(
         `button-${number}@${at}`,
         "button-merge",
-        `PR #${number} MERGED by ${/^[\w-]+$/.test(merger) ? merger : "unknown"}: consider merge-task${this.previewText(person, str(data.title))} ${url}`
+        `PR #${number} MERGED by ${/^[\w-]+$/.test(merger) ? merger : "unknown"}${sibling}: ${action}${this.previewText(person, str(data.title))} ${url}`
       );
+      this.mark(`merge-notified-${number}`);
       atomicWrite(join(this.dir, `merge-attempt-${number}`), `${at}\n`);
       this.queueProgress(number, { state: null, round: null, ci: "ok" });
+      if (complete) {
+        this.clearPrState(number);
+      }
       return;
     }
     if (data.state === "closed" && str(data.closed_at)) {
@@ -1522,7 +1567,7 @@ export class EventLoop {
     if (own && !this.inScope(number)) {
       return;
     }
-    const person = this.host.filter.accept(
+    let person = this.host.filter.accept(
       {
         author: restActor(comment.user),
         editor: null,
@@ -1552,6 +1597,8 @@ export class EventLoop {
     const firstLine = body.split(/\r?\n/)[0];
     const edited = created !== str(comment.updated_at) ? " (edited: verify editor)" : "";
     const taskPr = own && this.marked(`open-${number}`);
+    const selfWrite =
+      this.isSelf(comment) && this.writes.matches({ kind: "comment", repo, number }, created);
     if (this.isSelf(comment)) {
       // Only the watching orchestrator's own comments are skipped; matched by id.
       if (taskPr) {
@@ -1563,7 +1610,10 @@ export class EventLoop {
       if (own && /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)) {
         this.queueProgress(number, { state: taskPr ? "working" : null });
       }
-      return;
+      if (selfWrite) {
+        return;
+      }
+      person ??= { login: this.me ?? login, id: this.meId!, type: "User", role: "orchestrator" };
     }
     if (!person) {
       return;
@@ -1628,7 +1678,7 @@ export class EventLoop {
       this.produceOnce(
         `c-${key(url)}`,
         "comment",
-        `COMMENT ${this.ref(repo, number)} from ${login} (${person.role})${edited}${preview} ${url}`
+        `COMMENT ${this.ref(repo, number)} from ${login} (${person.role})${this.isSelf(comment) ? " (this account, another session)" : ""}${edited}${preview} ${url}`
       ) &&
       taskPr
     ) {
@@ -1677,7 +1727,10 @@ export class EventLoop {
           repo.split("/")[0],
           url
         );
-        if (!person) {
+        if (
+          !person ||
+          (this.isSelf(item) && this.writes.matches({ kind: "created", repo, number }, created))
+        ) {
           continue;
         }
         this.produceOnce(
@@ -1722,7 +1775,12 @@ export class EventLoop {
         if (this.firstRun) {
           this.mark(marker);
         } else {
-          this.produceOnce(marker, "assigned", line);
+          const event = await this.assignmentEvent(repo, number, "AssignedEvent", [this.me ?? ""]);
+          if (this.ownAssignment(event, repo, number, "assigned")) {
+            this.mark(marker);
+          } else {
+            this.produceOnce(marker, "assigned", `${line}${this.siblingActor(event)}`);
+          }
         }
       }
     }
@@ -1731,6 +1789,80 @@ export class EventLoop {
         remove(join(this.dir, name));
       }
     }
+  }
+
+  private async assignmentEvent(
+    repo: string,
+    number: number,
+    type: string,
+    assignees: string[]
+  ): Promise<ObjectData> {
+    const [owner, name] = repo.split("/");
+    const selection = `timelineItems(first: 100, after: $cursor, itemTypes: [ASSIGNED_EVENT, UNASSIGNED_EVENT]) { nodes { __typename ... on AssignedEvent { createdAt actor { ${actorFields} } assignee { ... on User { login databaseId } ... on Bot { login databaseId } } } ... on UnassignedEvent { createdAt actor { ${actorFields} } assignee { ... on User { login databaseId } ... on Bot { login databaseId } } } } pageInfo { hasNextPage endCursor } }`;
+    let cursor: string | null = null;
+    const seen = new Set<string>();
+    let latest: ObjectData = {};
+    for (let page = 0; page < PAGE_LIMIT; page++) {
+      const data = object(
+        await this.host.github.graphql(
+          `query WatchAssignment($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { item: issueOrPullRequest(number: $number) { ... on Issue { ${selection} } ... on PullRequest { ${selection} } } } }`,
+          { owner, name, number, cursor }
+        )
+      );
+      const connection = object(object(object(data.repository).item).timelineItems);
+      if (!Array.isArray(connection.nodes)) {
+        throw new Error("Missing assignment timeline");
+      }
+      for (const event of this.list(connection.nodes)) {
+        if (
+          event.__typename === type &&
+          assignees.some(
+            (login) => login.toLowerCase() === str(object(event.assignee).login).toLowerCase()
+          ) &&
+          str(event.createdAt) >= str(latest.createdAt)
+        ) {
+          latest = event;
+        }
+      }
+      const info = object(connection.pageInfo);
+      if (info.hasNextPage === false) {
+        return latest;
+      }
+      if (
+        info.hasNextPage !== true ||
+        typeof info.endCursor !== "string" ||
+        seen.has(info.endCursor)
+      ) {
+        throw new Error("Invalid assignment pagination cursor");
+      }
+      cursor = info.endCursor;
+      seen.add(cursor);
+    }
+    throw new Error("Assignment timeline pagination limit reached");
+  }
+
+  private ownAssignment(event: ObjectData, repo: string, number: number, kind: string): boolean {
+    return (
+      count(object(event.actor).databaseId) === this.meId &&
+      this.writes.matches(
+        {
+          kind,
+          repo,
+          number,
+          field: "Assignee",
+          value: str(object(event.assignee).login).toLowerCase(),
+        },
+        str(event.createdAt)
+      )
+    );
+  }
+
+  private siblingActor(event: ObjectData): string {
+    const actor = object(event.actor);
+    const login = str(actor.login);
+    return count(actor.databaseId) === this.meId
+      ? ` by ${/^[\w-]+$/.test(login) ? login : "unknown"} (this account, another session)`
+      : "";
   }
 
   // ---------------------------------------------------------------- board
@@ -1753,6 +1885,7 @@ export class EventLoop {
 
   private async pollBoard(): Promise<void> {
     if (!this.boardAllowed()) {
+      remove(join(this.dir, "unestimated.json"));
       return;
     }
     const settings = object(this.host.config.board);
@@ -1771,6 +1904,8 @@ export class EventLoop {
     const approved: CardInfo[] = [];
     const present = new Set<string>();
     const theirs = new Set<string>();
+    const unestimated = object(safeJson(this.readMarker("unestimated.json")));
+    const nextUnestimated: Record<string, number> = {};
     for (const card of cards.list) {
       present.add(card.id);
       this.subjectPreviews.set(`${card.repo.toLowerCase()}#${card.number}`, {
@@ -1779,7 +1914,7 @@ export class EventLoop {
       });
       if (!this.isOwn(card.repo)) {
         // A foreign card assigned to me asks for a reply there, not for board authority.
-        if (this.watchForeignAssignment(card)) {
+        if (await this.watchForeignAssignment(card)) {
           theirs.add(`theirs-${slug(card.repo)}-${card.number}`);
         }
         continue;
@@ -1794,8 +1929,10 @@ export class EventLoop {
       if (card.kind === "PR" && card.column === "In progress") {
         this.inprogress.push({ number: card.number, branch: this.branchOf(card.number) });
       }
-      this.watchAssignees(card);
-      this.watchColumn(card, migration);
+      await this.watchAssignees(card);
+      if (!(await this.watchColumn(card, migration))) {
+        continue;
+      }
       if (
         card.kind === "ISSUE" &&
         card.state === "OPEN" &&
@@ -1805,11 +1942,17 @@ export class EventLoop {
         !existsSync(join(this.dir, "board", `graded-${card.number}`)) &&
         !this.marked(`grade-${card.number}`)
       ) {
-        this.produceOnce(
-          `grade-${card.number}`,
-          "grade",
-          `GRADE #${card.number} (ISSUE): no Estimate yet${this.previewText(card.person, card.title)} ${this.threadUrl(card.repo, card.number, "ISSUE")}`
-        );
+        const now = this.host.deps.now();
+        const previous = unestimated[card.id];
+        const since = typeof previous === "number" && previous <= now ? previous : now;
+        nextUnestimated[card.id] = since;
+        if (now - since >= GRADE_SETTLE_MS) {
+          this.produceOnce(
+            `grade-${card.number}`,
+            "grade",
+            `GRADE #${card.number} (ISSUE): no Estimate yet${this.previewText(card.person, card.title)} ${this.threadUrl(card.repo, card.number, "ISSUE")}`
+          );
+        }
       }
       if (card.column === "Ready" && card.state === "OPEN") {
         ready.push(card);
@@ -1818,6 +1961,7 @@ export class EventLoop {
         approved.push(card);
       }
     }
+    this.writeMarker("unestimated.json", JSON.stringify(nextUnestimated));
     for (const name of readdirSync(join(this.dir, "board"))) {
       if (
         (!/^PVTI_/.test(name) && !/\.who$/.test(name)) ||
@@ -1846,7 +1990,7 @@ export class EventLoop {
       for (;;) {
         const data = object(
           await this.host.github.graphql(
-            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor, query: "-status:Done") { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
+            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor, query: "-status:Done") { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
             { owner, number, cursor }
           )
         );
@@ -1906,6 +2050,7 @@ export class EventLoop {
       kind,
       state: str(content.state),
       column: str(object(node.status).name),
+      columnAt: str(object(node.status).updatedAt),
       assignees: this.list(object(content.assignees).nodes).map((entry) => str(entry.login)),
       estimate: typeof estimate === "number" && Number.isFinite(estimate) ? estimate : null,
       progress: str(object(node.progress).text),
@@ -1914,7 +2059,7 @@ export class EventLoop {
     };
   }
 
-  private watchAssignees(card: CardInfo): void {
+  private async watchAssignees(card: CardInfo): Promise<void> {
     const path = join(this.dir, "board", `${card.id}.who`);
     const next = card.assignees.join(",");
     const old = readLines(path).join(",");
@@ -1922,38 +2067,51 @@ export class EventLoop {
       return;
     }
     const remember = () => atomicWrite(path, `${next}\n`);
-    const turn = join(this.dir, "board", `.turn-${slug(card.repo)}-${card.number}`);
+    const turn = `.turn-${slug(card.repo)}-${card.number}`;
+    const turns = object(safeJson(this.readMarker("legacy-turns.json")));
+    const stamped = turns[turn] === true;
+    if (stamped) {
+      delete turns[turn];
+      this.writeMarker("legacy-turns.json", JSON.stringify(turns));
+    }
     const hadOwner = old
       .split(",")
       .filter(Boolean)
       .some((login) => this.owners.has(login.toLowerCase()));
     const hasOwner = card.assignees.some((login) => this.owners.has(login.toLowerCase()));
     if (hasOwner) {
-      // Assigned to the owner again: whoever takes them off next is news unless marked.
-      remove(turn);
       remember();
       return;
     }
-    if (hadOwner && !this.firstRun && existsSync(turn)) {
-      remove(turn);
+    if (hadOwner && !this.firstRun && stamped) {
       remember();
       return;
     }
     if (hadOwner && !this.firstRun) {
+      const event = await this.assignmentEvent(
+        card.repo,
+        card.number,
+        "UnassignedEvent",
+        old.split(",").filter((login) => this.owners.has(login.toLowerCase()))
+      );
+      if (this.ownAssignment(event, card.repo, card.number, "unassigned")) {
+        remember();
+        return;
+      }
       this.emit(
         `owner-done-${card.id}@${key(`${old}>${next}`)}`,
         "owner-done",
-        `OWNER DONE #${card.number} (${card.kind})${this.previewText(card.person, card.title)} ${this.threadUrl(card.repo, card.number, card.kind)}`
+        `OWNER DONE #${card.number} (${card.kind})${this.siblingActor(event)}${this.previewText(card.person, card.title)} ${this.threadUrl(card.repo, card.number, card.kind)}`
       );
     }
     remember();
   }
 
-  private watchColumn(card: CardInfo, migration: boolean): void {
+  private async watchColumn(card: CardInfo, migration: boolean): Promise<boolean> {
     const path = join(this.dir, "board", card.id);
     const old = readLines(path).join("");
     if (old === card.column) {
-      return;
+      return true;
     }
     const remember = () => atomicWrite(path, `${card.column}\n`);
     if (card.column === "Approved") {
@@ -1964,7 +2122,36 @@ export class EventLoop {
     }
     if (this.firstRun || migration) {
       remember();
-      return;
+      return true;
+    }
+    const result = object(
+      await this.host.github.graphql(
+        `query WatchBoardCurrent($id: ID!) { node(id: $id) { ... on ProjectV2Item { status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } } } }`,
+        { id: card.id }
+      )
+    );
+    if (
+      !Object.hasOwn(result, "node") ||
+      (result.node !== null && !Object.hasOwn(object(result.node), "status"))
+    ) {
+      throw new Error("Missing current board value");
+    }
+    const current = object(result.node);
+    const status = object(current.status);
+    // An archived/deleted card is no longer evidence of a current move either.
+    if (str(status.name) !== card.column) {
+      this.host.deps.report(
+        `watcher: discarded stale BOARD #${card.number}: ${old} → ${card.column}; current ${str(status.name) || "absent"}`
+      );
+      // Preserve the previous baseline. A later fresh poll must still report a
+      // genuine move to a third value instead of silently adopting it here.
+      return false;
+    }
+    card.columnAt = str(status.updatedAt);
+    if (this.ownBoardMove(card)) {
+      this.cycleOwnMoves.add(card.id);
+      remember();
+      return true;
     }
     const url = this.threadUrl(card.repo, card.number, card.kind);
     const preview = this.previewText(card.person, card.title);
@@ -1979,16 +2166,16 @@ export class EventLoop {
         );
       }
       remember();
-      return;
+      return true;
     }
     if (card.column === "In progress") {
       this.quiet(`NOTE #${card.number} (${card.kind}): ${old} → ${card.column} ${url}`);
       remember();
-      return;
+      return true;
     }
     if (card.kind === "PR" && card.column === "Done") {
       remember();
-      return;
+      return true;
     }
     // Moves to Ready wake too: the tested rule never silences what could need us.
     this.emit(
@@ -1997,9 +2184,24 @@ export class EventLoop {
       `BOARD #${card.number} (${card.kind}): ${old} → ${card.column}${preview} ${url}`
     );
     remember();
+    return true;
   }
 
-  private watchForeignAssignment(card: CardInfo): boolean {
+  private ownBoardMove(card: CardInfo): boolean {
+    return this.writes.matches(
+      {
+        kind: "board",
+        repo: card.repo,
+        number: card.number,
+        itemId: card.id,
+        field: "Status",
+        value: card.column || null,
+      },
+      card.columnAt || (card.column ? "" : new Date(this.host.deps.now()).toISOString())
+    );
+  }
+
+  private async watchForeignAssignment(card: CardInfo): Promise<boolean> {
     if (!card.assignees.some((login) => login.toLowerCase() === (this.me ?? "").toLowerCase())) {
       return false;
     }
@@ -2011,10 +2213,17 @@ export class EventLoop {
       return true;
     }
     if (!this.firstRun) {
+      const event = await this.assignmentEvent(card.repo, card.number, "AssignedEvent", [
+        this.me ?? "",
+      ]);
+      if (this.ownAssignment(event, card.repo, card.number, "assigned")) {
+        this.mark(marker);
+        return true;
+      }
       this.produceOnce(
         marker,
         "assigned",
-        `ASSIGNED ${card.repo}#${card.number} (${card.kind})${this.previewText(card.person, card.title)} ${this.threadUrl(card.repo, card.number, card.kind)}`
+        `ASSIGNED ${card.repo}#${card.number} (${card.kind})${this.siblingActor(event)}${this.previewText(card.person, card.title)} ${this.threadUrl(card.repo, card.number, card.kind)}`
       );
     } else {
       this.mark(marker);
@@ -2101,17 +2310,25 @@ export class EventLoop {
     }
     const next = await this.firstUnblocked(ready);
     const launch = await this.firstUnblocked(approved);
-    this.recordStartable("next", next);
-    this.recordStartable("launch", launch);
+    this.recordStartable(
+      "next",
+      next,
+      ready.some((card) => card.number === next?.number && this.cycleOwnMoves.has(card.id))
+    );
+    this.recordStartable(
+      "launch",
+      launch,
+      approved.some((card) => card.number === launch?.number && this.cycleOwnMoves.has(card.id))
+    );
   }
 
-  private recordStartable(name: string, value: StartableValue | null): void {
+  private recordStartable(name: string, value: StartableValue | null, ownMove: boolean): void {
     const path = join(this.dir, "board", name);
     const stored = value ? JSON.stringify(value) : "";
     if (readLines(path).join("") === stored) {
       return;
     }
-    if (!this.firstRun && value) {
+    if (!this.firstRun && value && !ownMove) {
       const line =
         name === "next"
           ? `NEXT #${value.number} (${value.kind})`

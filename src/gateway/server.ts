@@ -38,7 +38,6 @@ import {
   muteThread,
   unmuteThread,
   listMutes,
-  rememberBoardMove,
 } from "./events.js";
 
 import { ChecksService } from "./checks.js";
@@ -403,6 +402,7 @@ class GatewayServer {
             methodology === "off" ? [] : [methodology]
           ),
           github: this.github,
+          workerStatus: (pr) => this.workers.watchStatus(pr),
           board: { set: (input) => this.board.set(input) },
           digest: this.digest,
         },
@@ -438,14 +438,7 @@ class GatewayServer {
   verify: Handlers["verify"] = async (input) => this.verification.verify(input);
 
   private get board(): BoardService {
-    return (this.boardClient ??= new BoardService(
-      this.config,
-      this.github,
-      this.deps,
-      undefined,
-      undefined,
-      (itemId, column) => rememberBoardMove(this.config, this.env, itemId, column)
-    ));
+    return (this.boardClient ??= new BoardService(this.config, this.github, this.deps));
   }
 
   boardStatus: Handlers["boardStatus"] = async () => this.board.status();

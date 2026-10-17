@@ -17,7 +17,6 @@ import {
   resolveSession,
   procStart,
   sanitizePreview,
-  rememberBoardMove,
 } from "../../src/gateway/events.js";
 import { object } from "../../src/gateway/people.js";
 import { WatchFake, proc, user } from "./watch-fake.js";
@@ -26,6 +25,200 @@ import { writeState } from "../../src/board/readme.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { stringify } from "yaml";
 import { people } from "./helpers.js";
+import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
+import { GitHubClient } from "../../src/gateway/client.js";
+
+test("an older in-flight board listing cannot turn a completed Done write into Done → In review", async () => {
+  const f = setup();
+  f.cards = [f.card(24, "In review", "PullRequest")];
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  // The listing has already read In review when merge-task writes Done into
+  // the shared previous-column file. Reproduce the #41 interleaving exactly.
+  f.boardSnapshot = structuredClone(f.cards);
+  writeFileSync(join(f.dir, "board", "PVTI_24"), "Done\n");
+  object(f.cards[0].status).name = "Done";
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  expect(readFileSync(join(f.dir, "board", "PVTI_24"), "utf8").trim()).toBe("Done");
+  expect(f.reports).toEqual([expect.stringContaining("discarded stale BOARD #24")]);
+});
+
+test.each([true, false])(
+  "self merge with completed follow-up and journal match=%s",
+  async (matched) => {
+    const f = setup();
+    f.task();
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    f.pulls = [];
+    f.gone = {
+      merged: true,
+      merged_at: f.iso(),
+      user: user(),
+      merged_by: { login: "me", id: 999, type: "User" },
+    };
+    writeFileSync(join(f.dir, "merge-24.json"), JSON.stringify({ done: ["follow-up"] }));
+    if (matched) {
+      writeFileSync(
+        join(f.dir, "writes.jsonl"),
+        `${JSON.stringify({ at: f.iso(), kind: "merged", repo: "example/project", number: 24 })}\n`
+      );
+    }
+    const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+    if (matched) {
+      expect(events).toEqual([]);
+    } else {
+      expect(events).toHaveLength(1);
+      expect(events[0].line).toContain("this account, another session");
+      expect(events[0].line).not.toContain("follow-up not run");
+    }
+  }
+);
+
+test.each([false, true])(
+  "a self merge without completed follow-up wakes (journal match=%s)",
+  async (matched) => {
+    const f = setup();
+    f.task();
+    const loop = f.loop();
+    await f.tick(loop);
+    f.advance();
+    f.pulls = [];
+    f.gone = {
+      merged: true,
+      merged_at: f.iso(),
+      user: user(),
+      merged_by: { login: "me", id: 999, type: "User" },
+    };
+    if (matched) {
+      writeFileSync(
+        join(f.dir, "writes.jsonl"),
+        `${JSON.stringify({ at: f.iso(), kind: "merged", repo: "example/project", number: 24 })}\n`
+      );
+    }
+    const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+    expect(events).toHaveLength(1);
+    expect(events[0].line).toContain("follow-up not run: run merge-task");
+    expect(events[0].line.includes("this account, another session")).toBe(!matched);
+    await f.ack(loop, events);
+    writeFileSync(join(f.dir, "merge-24.json"), JSON.stringify({ done: ["follow-up"] }));
+    expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  }
+);
+
+test("an owner merge whose follow-up already completed before polling is not new work", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  f.pulls = [];
+  f.gone = { merged: true, merged_at: f.iso(), user: user(), merged_by: user(0) };
+  writeFileSync(join(f.dir, "merge-24.json"), JSON.stringify({ done: ["follow-up"] }));
+  expect(await f.once(loop)).toEqual([]);
+  f.advance(600_000);
+  expect(await f.once(loop)).toEqual([]);
+});
+
+test.each(["self", "owner", "sibling"])(
+  "owner removal attributed to %s uses the affected owner's latest event",
+  async (identity) => {
+    const f = setup();
+    f.enableWrites = true;
+    f.cards = [f.card()];
+    object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+    const loop = f.loop();
+    expect(await f.tick(loop)).toEqual([]);
+    f.advance();
+    const env = identity === "self" ? f.env : { ...f.env, XDG_STATE_HOME: join(f.root, identity) };
+    if (identity === "owner") {
+      f.writeActor = user(0);
+    }
+    const client = new GitHubClient(f.config, env, f.deps);
+    await client.rest("/repos/example/project/issues/6/assignees", "DELETE", {
+      assignees: ["owner"],
+    });
+    // A later removal of an unrelated assignee by this account must not attribute
+    // the owner's removal to it (or hide an owner's external action).
+    f.assignmentEvents.push({
+      ...recordedActions.timelineItems.nodes[1],
+      createdAt: f.iso(1),
+      actor: { login: "me", databaseId: 999 },
+      assignee: { login: "worker", databaseId: 102 },
+    });
+    const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+    expect(events.map((event) => event.kind)).toEqual(identity === "self" ? [] : ["owner-done"]);
+    if (identity === "sibling") {
+      expect(events[0].line).toContain("by me (this account, another session)");
+    }
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test("a discarded snapshot does not swallow the later real move to a third column", async () => {
+  const f = setup();
+  f.cards = [f.card(24, "In review", "PullRequest")];
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  f.boardSnapshot = structuredClone(f.cards);
+  object(f.boardSnapshot[0].status).name = "Ready";
+  object(f.cards[0].status).name = "Approved";
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  f.boardSnapshot = null;
+  const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+  expect(events.map((event) => event.kind)).toEqual(["board"]);
+  expect(events[0].line).toContain("In review → Approved");
+});
+
+test("an old journalled Ready move does not suppress a later unblocking notification", async () => {
+  const f = setup();
+  f.cards = [f.card()];
+  f.blockers = [{ number: 7, state: "open" }];
+  const loop = f.loop();
+  const once = async () => (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+  expect(await once()).toEqual([]);
+  f.advance();
+  f.cards[0].status = { name: "Ready", updatedAt: f.iso() };
+  writeFileSync(
+    join(f.dir, "writes.jsonl"),
+    `${JSON.stringify({ at: f.iso(), kind: "board", repo: "example/project", number: 6, itemId: "PVTI_6", field: "Status", value: "Ready" })}\n`
+  );
+  expect(await once()).toEqual([]);
+  f.advance(300_000);
+  f.blockers[0].state = "closed";
+  expect((await once()).map((event) => event.kind)).toEqual(["next"]);
+});
+
+test("failed or missing board observations restart GRADE settling, including across restart", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog", "Issue", { estimate: {} })];
+  let loop = f.loop();
+  const once = async () => (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+  expect(await once()).toEqual([]);
+  f.advance();
+  f.queryError = true;
+  const error = await once();
+  expect(error.map((event) => event.kind)).toEqual(["query-error"]);
+  await f.ack(loop, error);
+  f.queryError = false;
+  f.advance();
+  expect(await once()).toEqual([]);
+  f.cards = [];
+  f.advance();
+  expect(await once()).toEqual([]);
+  f.cards = [f.card(6, "Backlog", "Issue", { estimate: {} })];
+  f.advance();
+  expect(await once()).toEqual([]);
+  loop.close();
+  loop = f.loop();
+  f.advance(59_999);
+  expect(await once()).toEqual([]);
+  f.advance(1);
+  expect((await once()).map((event) => event.kind)).toEqual(["grade"]);
+});
 
 let fake: WatchFake;
 vi.mock("node:fs", { spy: true });
@@ -144,7 +337,8 @@ test("owner and peer comments wake; self is skipped by numeric id; forged worker
   unknown.user = { ...user(), id: 666 };
   f.comment("system body", 3);
   const events = await f.tick(loop);
-  expect(events.map((e) => e.kind)).toEqual(["comment", "comment"]);
+  expect(events.map((e) => e.kind)).toEqual(["comment", "comment", "comment"]);
+  expect(events[2].line).toContain("this account, another session");
   expect(f.writes.every((write) => write.field === "Progress")).toBe(true);
 });
 
@@ -172,6 +366,29 @@ test("mute suppresses comments, board, assignments and conflicts; only a trusted
   expect(unmuteThread(f.config, f.env, "24")).toContain("not muted");
 });
 
+test("GRADE settles over consecutive polls a minute apart and resets when an Estimate appears", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog", "Issue", { estimate: {} })];
+  const loop = f.loop();
+  const once = async () => (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+  expect(await once()).toEqual([]);
+  f.advance(59_999);
+  expect(await once()).toEqual([]);
+  object(f.cards[0].estimate).number = 3;
+  f.advance(1);
+  expect(await once()).toEqual([]);
+  f.cards[0].estimate = {};
+  f.advance();
+  expect(await once()).toEqual([]);
+  f.advance();
+  const events = await once();
+  expect(events.map((event) => event.kind)).toEqual(["grade"]);
+  await f.ack(loop, events);
+  f.advance();
+  expect(await once()).toEqual([]);
+  expect(f.reports).toEqual([]);
+});
+
 test("GRADE is once per open unestimated issue, never PR, closed or Done, respecting imported markers", async () => {
   const f = setup();
   f.cards = [
@@ -182,6 +399,8 @@ test("GRADE is once per open unestimated issue, never PR, closed or Done, respec
   ];
   object(f.cards[2].content).state = "CLOSED";
   const loop = f.loop();
+  expect(await f.tick(loop)).toEqual([]);
+  f.advance();
   const batch = await f.tick(loop);
   expect(batch.map((e) => e.kind)).toEqual(["grade"]);
   await f.ack(loop, batch);
@@ -227,7 +446,7 @@ test("own remembered moves and migration-stamped changes stay quiet", async () =
   await f.tick(loop);
   f.advance();
   object(f.cards[0].status).name = "In review";
-  rememberBoardMove(f.config, f.env, "PVTI_6", "In review");
+  writeFileSync(join(f.dir, "board", "PVTI_6"), "In review\n");
   expect(await f.tick(loop)).toEqual([]);
   f.readme = writeState(
     "",
@@ -262,7 +481,7 @@ test("REST conflicts are once per head SHA and red CI is Progress only", async (
   expect(object(f.cards[0].progress).text).toContain("🔴");
 });
 
-test("CLOSED clears Progress; owner button merges are pending-safe and paced until merge-task marker", async () => {
+test("CLOSED clears Progress; owner button merges are pending-safe and paced until follow-up completes", async () => {
   const f = setup();
   f.task();
   const loop = f.loop();
@@ -282,14 +501,14 @@ test("CLOSED clears Progress; owner button merges are pending-safe and paced unt
   f.gone = { merged: true, user: user(0), merged_by: { login: "vimescmd" } };
   let events = await f.tick(loop);
   expect(events.map((e) => e.kind)).toEqual(["button-merge"]);
-  expect(JSON.stringify(events)).toContain("MERGED by vimescmd: consider merge-task");
+  expect(JSON.stringify(events)).toContain("MERGED by vimescmd: run merge-task");
   await f.ack(loop, events);
   expect(await f.tick(loop)).toEqual([]);
   f.advance(600_000);
   events = await f.tick(loop);
   expect(events.map((e) => e.kind)).toEqual(["button-merge"]);
   await f.ack(loop, events);
-  writeFileSync(join(f.dir, "merged-24"), "");
+  writeFileSync(join(f.dir, "merge-24.json"), JSON.stringify({ done: ["follow-up"] }));
   f.advance();
   expect(await f.tick(loop)).toEqual([]);
   expect(existsSync(join(f.dir, "open-24"))).toBe(false);
@@ -314,14 +533,14 @@ test("QUERY ERROR wakes immediately and transport errors report three failures",
 test("number-scoped watchers observe shared merge completion without consuming it", async () => {
   const f = setup();
   f.task();
+  mkdirSync(f.dir, { recursive: true });
+  writeFileSync(join(f.dir, "legacy-completed.json"), JSON.stringify({ 24: true }));
   const loop = f.loop({ only: [24] });
   await f.tick(loop);
   f.advance();
   f.pulls = [];
   f.gone = { merged: true, user: user(0), merged_by: { login: "vimescmd" } };
-  const marker = join(f.dir, "merged-24");
-  mkdirSync(f.dir, { recursive: true });
-  writeFileSync(marker, "complete\n");
+  const marker = join(f.dir, "legacy-completed.json");
   expect(await f.tick(loop)).toEqual([]);
   expect(existsSync(marker)).toBe(true);
   expect(existsSync(join(`${f.dir}-only-24`, "open-24"))).toBe(false);
@@ -529,7 +748,8 @@ test("legacy validation drops missing numbers and PR markers for issues before p
   }
   expect(f.marker("head-24")).toBe(sha);
   expect(existsSync(join(f.dir, "board/graded-6"))).toBe(true);
-  expect(existsSync(join(f.dir, "board/.turn-example_project-6"))).toBe(true);
+  expect(existsSync(join(f.dir, "board/.turn-example_project-6"))).toBe(false);
+  expect(JSON.parse(f.marker("legacy-turns.json"))).toEqual({ ".turn-example_project-6": true });
   expect(f.reports).toEqual([
     "watcher: legacy import dropped 7 markers not belonging to example/project",
   ]);
@@ -538,6 +758,26 @@ test("legacy validation drops missing numbers and PR markers for issues before p
     f.requests.some((request) => /\/(?:pulls|issues)\/(?:346|999)(?:\D|$)/.test(request))
   ).toBe(false);
   expect(f.reports).toHaveLength(1);
+});
+
+test("legacy adoption never imports another session's write journal or settling state", async () => {
+  const f = setup();
+  f.config.legacyState = ["old-watch"];
+  const source = join(f.env.XDG_STATE_HOME, "old-watch");
+  mkdirSync(source, { recursive: true });
+  writeFileSync(
+    join(source, "writes.jsonl"),
+    `${JSON.stringify({ at: f.iso(), kind: "comment", repo: "example/project", number: 24 })}\n`
+  );
+  writeFileSync(join(source, "writes.jsonl.lock"), "other writer");
+  writeFileSync(join(source, "actions-migrated"), "");
+  writeFileSync(join(source, "unestimated.json"), JSON.stringify({ PVTI_6: f.clock - 60_000 }));
+  const loop = f.loop();
+  await loop.nextEvents({ timeoutSeconds: 0 });
+  expect(existsSync(join(f.dir, "writes.jsonl"))).toBe(false);
+  expect(existsSync(join(f.dir, "writes.jsonl.lock"))).toBe(false);
+  expect(existsSync(join(f.dir, "unestimated.json"))).toBe(false);
+  expect(JSON.parse(f.marker("legacy-turns.json"))).toEqual({});
 });
 
 test("legacy validation errors copy nothing, release the lock and allow a retry", async () => {
@@ -617,6 +857,58 @@ test.each([
     );
     expect(existsSync(join(f.dir, "head-24"))).toBe(false);
     expect(existsSync(join(f.dir, "legacy-imported"))).toBe(false);
+  }
+);
+
+test.each(["busy recent", "idle", "busy aged", "boundary", "unreachable", "unknown"])(
+  "STALE checks task worker activity: %s",
+  async (state) => {
+    const f = setup();
+    f.task();
+    f.pulls[0].created_at = f.iso(-120 * 60_000);
+    f.history = [
+      {
+        ...f.comment("[orchestrator] CHANGES", 2),
+        user: { login: "me", id: 999, type: "User" },
+        created_at: f.iso(-35 * 60_000),
+      },
+    ];
+    f.comments["example/project"] = [];
+    f.staleWorker =
+      state === "unreachable"
+        ? new Error("private transport detail")
+        : {
+            reason:
+              state === "idle"
+                ? "idle without reply"
+                : state === "unknown"
+                  ? "session unknown"
+                  : "running",
+            active: state.startsWith("busy") || state === "boundary",
+            updated:
+              f.clock -
+              (state === "busy aged"
+                ? 30 * 60_000 + 1
+                : state === "boundary"
+                  ? 30 * 60_000
+                  : 60_000),
+          };
+    const loop = f.loop();
+    const events = await f.once(loop);
+    expect(f.staleWorkerReads).toEqual([24]);
+    if (["busy recent", "boundary"].includes(state)) {
+      expect(events).toEqual([]);
+      f.advance();
+      f.staleWorker = { reason: "idle", active: false, updated: f.clock };
+      expect((await f.once(loop)).map((event) => event.kind)).toEqual(["stale"]);
+    } else {
+      expect(events.map((event) => event.kind)).toEqual(["stale"]);
+      expect(events[0].line.includes("STALE (worker unreachable)")).toBe(
+        ["unreachable", "unknown"].includes(state)
+      );
+      expect(events[0].line).not.toContain("private transport detail");
+      expect(await f.once(loop)).toEqual([]);
+    }
   }
 );
 

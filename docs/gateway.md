@@ -109,8 +109,8 @@ Do not blindly retry a failed create: inspect the repository for a created issue
 `board set` accepts an issue number, not a project item ID. The issue must pass the
 people filter and already belong to the configured board. Choose a single-select
 option by its exact name or supply a finite numeric value; other field types are
-refused. Status writes clear Progress first and record the move for the watcher,
-like other board writes. No housekeeping command changes repository/board scope.
+refused. Status writes clear Progress first; the gateway client journals the
+successful mutations like other writes. No housekeeping command changes repository/board scope.
 The typed operations are `issueCreate({title, file, labels?, estimate?, status?})`,
 `issueClose({ref, comment?})` and `boardSetIssue({ref, field, value})` in
 `src/gateway/transport.ts`.
@@ -291,7 +291,8 @@ delivery is at least once, so a crash after print but before ack may repeat that
 The server watches the own repository's task PRs and board, plus issues, PRs,
 comments and assignments in `vmethod.repo` (default `vworlds/vmethod`; `off` disables
 it). Only pinned identities pass the people filter; peers' orchestrator comments
-wake too. The watching orchestrator's own comments are skipped by numeric ID.
+wake too. Own comments are silent only when their numeric actor ID and this
+session's gateway write journal match.
 System check runs update structured red-CI state, never expose free text.
 
 Worker READY, QUESTION, DESIGN, BLOCKED and HANDOFF wake and update Progress.
@@ -300,10 +301,47 @@ READY moves the task card to In review. HANDOFF uses 🤖🤝 (migration 0002), 
 include COMMENT, BOARD, NEXT, LAUNCH, ASSIGNED, OWNER DONE, STALE (30 minutes),
 SILENT (40 minutes), WORKER permission/failure, CONFLICT (once per head), CLOSED,
 and owner button-merge follow-up (at most once per ten minutes until merge-task
-records completion). GRADE is once per open, non-Done issue lacking an Estimate;
-closed issues never trigger it. Minor events accumulate in a quiet digest attached
+records completion). GRADE is once per open, non-Done issue lacking an Estimate,
+after consecutive observations spanning at least one minute. An estimate, closure,
+Done, disappearance or failed/skipped board poll resets settling; closed issues
+never trigger it. Minor events accumulate in a quiet digest attached
 to the next wake. GraphQL errors wake immediately; three failed polls report
 WATCHER ERROR and back off. Failed Progress writes are reported and retried.
+
+Before STALE wakes for an unanswered review, the watcher reads the recorded task's
+worker session through the worker client. A busy session updated within the last
+30 minutes stays quiet; idle workers or older/missing update times remain eligible.
+Missing or unreachable sessions produce `STALE (worker unreachable)` without
+exposing transport details. This check runs before marking the review stale, so a
+busy worker can still notify later if it stops without replying.
+
+The GitHub client records successful REST writes and GraphQL mutations in
+`writes.jsonl` in the writing session's state directory, pruning entries older
+than 24 hours on writes. Reads (including GraphQL query POSTs) and refused writes
+do not stamp activity. Records contain timestamp, operation kind, repository and
+item number, plus board item/field/value or affected assignee when applicable;
+non-item operations use number 0 and never match numbered events. No comment
+body, title or credential is stored. Writes use a short exclusive journal lock;
+if journaling fails after a GitHub write, inspect remote state before retrying,
+especially for creation. Remove a crash lock only after confirming no writer runs.
+
+Assignments use the latest relevant assignment timeline actor; merges use
+`merged_by` (GitHub's REST form of `mergedBy`). Their actor must be this account's
+numeric ID **and** the matching write must be within two minutes of the GitHub
+event timestamp. A same-account action without a match is labelled
+`this account, another session`. Owner removal by a matched own write is silent.
+Board moves use only an exact item/Status/value journal match within two minutes
+of the field's `updatedAt`: `creator` is the first writer, not the latest actor.
+An unmatched board move is reported without attributing an actor. Changed board
+values are re-read before reporting; a stale listing is discarded on stderr only,
+without advancing its previous-column baseline or producing NEXT/LAUNCH from it.
+
+Keep write commands and watch on the same scope. For explicit number scopes, set
+the existing `WATCH_ONLY` or `WATCH_SKIP` environment selector on **both** processes
+(comma- or whitespace-separated numbers); matching `--only`/`--skip` flags select
+the watcher side only. Track configurations select the same journal automatically.
+Separate scopes retain separate journals, so another session sharing your GitHub
+account cannot silently consume your activity.
 
 `watch.preview` defaults to `false`: lines contain metadata, not titles or bodies.
 Opting in adds title plus comment first line, at most 120 characters total, with
@@ -470,8 +508,8 @@ unknown sessions do not block recovery. The remote branch head is then re-read.
 Any commits beyond the merged PR head are reported as
 `post-merge commits on <branch>: <shas>` and the branch is kept for a follow-up PR.
 Otherwise cleanup continues with issue closure, board Done, branch deletion and
-checkout fast-forward. Installation remains last. Unmarked watcher merge events
-name `merged_by` and only suggest follow-up, regardless of who merged.
+checkout fast-forward. Installation remains last. Watcher merge events name
+`merged_by` and suggest `run merge-task`; the watcher never performs follow-up.
 Issue resolution prefers the structured task header, including its partial flag,
 then the existing task marker. Without either, a legacy `Part of #n` line prevents
 issue completion; otherwise same-repository GitHub closing references take
@@ -480,9 +518,13 @@ accept a leading blockquote, bold markers and a trailing period. Branch numbers
 are never issue relations and no sibling-PR scan is performed. Explicit legacy
 relations emit a `legacy link` notice; absent relations report `no linked issue`
 and leave issues unchanged. Old empty journals reconcile newly discoverable issues.
-Completed follow-up writes the watcher's `merged-<pr>` marker before any reinstall;
-failed follow-up does not mark completion. Number-scoped watchers also read the
-shared track/main marker without consuming it. Done capping ranks all board repositories but archives
+Completed follow-up is checkpointed as `follow-up` in `merge-<pr>.json` before any
+reinstall; failed follow-up does not mark completion. A journal-matched own merge
+is silent only after that checkpoint. An unmatched self-merge reports another
+session and, unless complete, `follow-up not run: run merge-task`. Owner button
+merges notify normally; after follow-up completes they stop repeating.
+Obsolete `.turn-*` and `merged-*` stamps are imported once to preserve old
+suppression state, not written by verbs anymore. Done capping ranks all board repositories but archives
 only this repository's cards after the newest six. Keep the main checkout clean on
 the configured base branch before retrying its fast-forward. Install is the final
 effect, after all follow-up is checkpointed, with no token environment or second

@@ -153,7 +153,12 @@ so changes to the methodology and your own cards always reach you. Follow
 
 When several orchestrator sessions share one account, an item's author no longer
 identifies the session that owns it. Ask the owning session before acting rather
-than inferring ownership from the account. Each session watches a **disjoint scope**
-(only, or skip, explicit item numbers) with **its own state directory**: two watchers
+than inferring ownership from the account. Sessions sharing an account **must have
+disjoint scopes** (tracks, or `--only`/`--skip`) with **their own state directories**: two watchers
 sharing state take each other's events. Keep scope coordination explicit even when
-the sessions use the same repository and identity.
+the sessions use the same repository and identity. A fork working inside another
+session's scope breaks that rule. The gateway write journal distinguishes your
+session's writes from a sibling's: unmatched same-account assignments and merges
+are reported as another session's activity, not silently discarded. Board field
+creators do not identify the latest writer, so unmatched board moves make no actor
+claim. See [watch attribution and scope selection](gateway.md#watching-and-muting).

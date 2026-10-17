@@ -1,5 +1,23 @@
 # GitHub board field regression
 
+## Watch action projections (PR #56)
+
+`watch-actions.json` projects the gateway-filtered captures supplied by vimescmd
+on 2026-10-17 in PR #56's authenticated answer: issue 45's assignment timeline,
+its board Status value, and PR 52's MergedEvent. Attribution labels are removed;
+wire timestamps and numeric identities are unchanged. Tests rename identities,
+item numbers, repositories and timestamps to build deterministic scenarios.
+The direct-item Status re-read uses the same selected field-value envelope, not
+a separately recorded request. Creator is deliberately retained to demonstrate
+that it is the first writer, **not** the latest actor; board suppression must
+not depend on it. The source captures remain ignored in `.tmp/captures/`.
+
+The orchestrator confirmed the PR 41 interleaving from watcher output order:
+`merge-task` stored Done mid-poll, then the older listing's In review was compared
+against that newer stored value. The card and its previous-column file were
+subsequently archived/pruned; no field history survives. The regression reproduces
+this interleaving rather than claiming a surviving history capture.
+
 For learning endpoint recordings and explicitly documented derivations, see
 [learning fixture provenance](learnings-PROVENANCE.md).
 

@@ -17,9 +17,11 @@ new columns. Normalize numeric values before comparing them.
 ## One reader per state directory
 
 The watcher takes a lock before reading or advancing state. A second reader refuses
-the same directory; distinct tracks have distinct state. Preserve `stateName` and
-existing once, graded and merged markers during adoption so old events do not replay.
-State and caches belong under the OS user's state/cache roots, not the package tree.
+the same directory; distinct tracks have distinct state. Preserve `stateName`, once
+and graded state during adoption so old events do not replay. Obsolete merged/turn
+writer stamps are imported once; new writes are attributed through the
+gateway journal, never by a verb writing watcher state directly. State and caches
+belong under the OS user's state/cache roots, not the package tree.
 Each user runs the package from their own checkout; never another user's installation.
 
 ## GraphQL budget and listing lag
