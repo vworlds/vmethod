@@ -8,6 +8,7 @@ import { verbs } from "../registry.js";
 import { createGateway } from "../gateway/server.js";
 import { gatewayVerb } from "./gateway.js";
 import { workerVerb } from "./worker.js";
+import { ciVerb } from "./ci.js";
 import { MarkdownDependencyError } from "../gateway/markdown.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
@@ -47,13 +48,17 @@ try {
     case "read-pr":
     case "pr-comment":
     case "push":
+    case "wait-checks":
+    case "verify":
+    case "refresh-checks":
+    case "check-task-ci":
     case "wait-review": {
       const transport = createGateway(root(), process.env, {
         fetch,
         exec: async (file, args, options) =>
           (
             await promisify(execFile)(file, [...args], {
-              timeout: 30000,
+              timeout: verb === "verify" ? 1800000 : 30000,
               ...options,
             })
           ).stdout,
@@ -61,6 +66,12 @@ try {
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         report: (message) => console.error(message),
       });
+      if (["wait-checks", "verify", "refresh-checks", "check-task-ci"].includes(verb)) {
+        const result = await ciVerb(transport, verb, args, process.env);
+        console.log(result.text);
+        process.exitCode = result.code;
+        break;
+      }
       const output = ["start-task", "read-pr", "pr-comment", "push", "wait-review"].includes(verb)
         ? await workerVerb(transport, root(), verb, args, process.env, {
             exec: async (file, args, options) =>

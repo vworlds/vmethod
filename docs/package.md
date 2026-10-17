@@ -13,6 +13,8 @@ Every verb except `version` resolves the project root once per run exactly as th
 Template identities and model ids are examples, not real credentials or an authoritative allowlist.
 Configure real values before adoption. Mermaid is optional at install time but `check` requires exactly 12.1.0. Diagram validation also uses the installed jsdom peer.
 The permission template denies raw `git push` and allows the `push` compatibility stub and local CLI. See [worker commands](gateway.md#worker-commands) for the six worker verbs, their arguments and branch policy.
+See [CI and integration commands](gateway.md#ci-and-integration-commands) for
+`wait-checks`, `verify`, `refresh-checks`, `check-task-ci` and the project verify hook.
 
 ## Environment mapping
 

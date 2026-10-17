@@ -46,6 +46,7 @@ export function item(overrides: ObjectData = {}): ObjectData {
 }
 
 interface Request {
+  redirect?: RequestRedirect;
   path: string;
   method?: string;
   query?: string;
@@ -73,7 +74,7 @@ export function fakeServer(requests: Request[]) {
     expect(url.origin).toBe("https://api.github.com");
     expect(url.pathname + url.search).toBe(expected.path);
     expect(init?.method ?? "GET").toBe(expected.method ?? "POST");
-    expect(init?.redirect).toBe("error");
+    expect(init?.redirect).toBe(expected.redirect ?? "error");
     if (expected.query) {
       const payload = JSON.parse(String(init?.body)) as {
         query: string;

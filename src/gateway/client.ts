@@ -44,7 +44,8 @@ export class GitHubClient {
     method: "GET" | "POST",
     body?: unknown,
     accept?: string,
-    retry = true
+    retry = true,
+    redirect: RequestRedirect = "error"
   ): Promise<Response> {
     if (!path.startsWith("/") || path.startsWith("//") || /[\\\r\n]/.test(path)) {
       throw new Error("Invalid GitHub endpoint");
@@ -65,7 +66,7 @@ export class GitHubClient {
       try {
         response = await this.deps.fetch(url, {
           method,
-          redirect: "error",
+          redirect,
           signal: AbortSignal.timeout(30000),
           headers: {
             authorization: `Bearer ${this.token}`,
@@ -118,7 +119,7 @@ export class GitHubClient {
         await this.deps.sleep(1000 * 2 ** attempt);
         continue;
       }
-      if (!response.ok) {
+      if (!response.ok && !(redirect === "manual" && response.status === 302)) {
         throw new Error(`GitHub HTTP ${response.status}`);
       }
       return response;
@@ -141,6 +142,37 @@ export class GitHubClient {
 
   async diff(path: string): Promise<string> {
     return (await this.request(path, "GET", undefined, "application/vnd.github.diff")).text();
+  }
+
+  /** Job log redirects are signed URLs: never forward the API credential. */
+  async jobLog(path: string): Promise<string> {
+    const url = new URL(path, "https://api.github.com");
+    if (
+      url.origin !== "https://api.github.com" ||
+      !/^\/repos\/[^/]+\/[^/]+\/actions\/jobs\/\d+\/logs$/.test(path)
+    ) {
+      throw new Error("Invalid job log endpoint");
+    }
+    const response = await this.request(path, "GET", undefined, undefined, true, "manual");
+    if (response.ok) {
+      return this.redact(await response.text());
+    }
+    if (response.status !== 302) {
+      throw new Error(`GitHub HTTP ${response.status}`);
+    }
+    const destination = new URL(response.headers.get("location") ?? "");
+    if (destination.protocol !== "https:" || destination.username || destination.password) {
+      throw new Error("Invalid job log redirect");
+    }
+    await response.body?.cancel();
+    const log = await this.deps.fetch(destination, {
+      redirect: "error",
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!log.ok) {
+      throw new Error(`Log HTTP ${log.status}`);
+    }
+    return this.redact(await log.text());
   }
 
   async graphql(

@@ -47,6 +47,56 @@ function cliFixture() {
   return { root, cli, run };
 }
 
+test.each([0, 1, 2, 3])(
+  "wait-checks CLI preserves verdict exit %s and prints it last without real networking",
+  (code) => {
+    const f = cliFixture();
+    writeFileSync(join(f.root, "people.yaml"), stringify(people));
+    const sha = "a".repeat(40);
+    const pull = {
+      state: "open",
+      user: { login: "worker", id: 102, type: "User" },
+      head: { sha, ref: "3-task", repo: { full_name: "example/project" } },
+      base: { sha: "b".repeat(40), ref: "dev", repo: { full_name: "example/project" } },
+      mergeable: code !== 3,
+      mergeable_state: code === 3 ? "dirty" : "clean",
+    };
+    const runs = {
+      check_runs:
+        code >= 2
+          ? []
+          : [
+              {
+                id: 10,
+                head_sha: sha,
+                name: "ci",
+                app: { id: 909 },
+                status: "completed",
+                conclusion: code === 0 ? "success" : "failure",
+              },
+            ],
+    };
+    const responses = [pull, runs, ...(code < 2 ? [pull] : [])];
+    const paths = [
+      "/pulls/3",
+      `/commits/${sha}/check-runs?filter=all&per_page=100&page=1`,
+      ...(code < 2 ? ["/pulls/3"] : []),
+    ];
+    const preload = join(f.root, "offline.mjs");
+    writeFileSync(
+      preload,
+      `import assert from 'node:assert/strict'; const responses=${JSON.stringify(responses)}; const paths=${JSON.stringify(paths)}; globalThis.fetch=async (url, init)=> { assert.equal(String(url), 'https://api.github.com/repos/example/project'+paths.shift()); assert.equal(init.method,'GET'); assert.equal(init.redirect,'error'); assert.ok(responses.length); return new Response(JSON.stringify(responses.shift())); }; process.on('exit',()=>{ assert.equal(responses.length,0); assert.equal(paths.length,0); });`
+    );
+    const result = f.run(["wait-checks", "3", "0"], ["--import", preload], {
+      VMETHOD_TASK_PR: "3",
+      EXAMPLE_GITHUB_TOKEN: "fake-token",
+    });
+    expect(result.status, result.stderr).toBe(code);
+    expect(result.stdout.trim().split("\n").at(-1)).toMatch(/^checks:/);
+    expect(result.stderr).toBe("");
+  }
+);
+
 function peers(root: string) {
   const mermaid = join(root, "node_modules/mermaid");
   const jsdom = join(root, "node_modules/jsdom");
