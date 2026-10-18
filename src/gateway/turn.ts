@@ -1,4 +1,4 @@
-import type { GitHubClient } from "./client.js";
+import { GitHubHttpError, type GitHubClient } from "./client.js";
 import type { Person } from "./people.js";
 
 /** Management assignees encode whose move it is; workers retain their own assignments. */
@@ -37,12 +37,33 @@ export async function setTurn(
   next: string[]
 ): Promise<void> {
   const path = `/repos/${repo}/issues/${number}/assignees`;
-  const remove = current.filter((login) => !next.includes(login));
-  const add = next.filter((login) => !current.includes(login));
-  if (remove.length) {
-    await github.rest(path, "DELETE", { assignees: remove });
+  const apply = async (assignees: string[]) => {
+    const remove = assignees.filter((login) => !next.includes(login));
+    const add = next.filter((login) => !assignees.includes(login));
+    if (remove.length) {
+      await github.rest(path, "DELETE", { assignees: remove });
+    }
+    if (add.length) {
+      await github.rest(path, "POST", { assignees: add });
+    }
+  };
+  try {
+    await apply(current);
+  } catch (error) {
+    if (!(error instanceof GitHubHttpError) || error.status !== 422) {
+      throw error;
+    }
+    const response = (await github.rest(`/repos/${repo}/issues/${number}`)) as {
+      assignees?: { login?: string }[];
+    };
+    const latest = (response.assignees ?? []).flatMap((person) => person.login ?? []);
+    if (sameAssignees(latest, next)) {
+      return;
+    }
+    await apply(latest);
   }
-  if (add.length) {
-    await github.rest(path, "POST", { assignees: add });
-  }
+}
+
+function sameAssignees(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((login) => right.includes(login));
 }

@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { getConfig } from "../../src/config.js";
 import { GitHubClient, OpencodeClient } from "../../src/gateway/client.js";
+import { setTurn } from "../../src/gateway/turn.js";
 import { fakeServer, fixtureServer } from "./helpers.js";
 import recordedOpencode from "../fixtures/opencode/watch-status.json" with { type: "json" };
 import recordedCostSession from "../fixtures/usage/opencode-session.json" with { type: "json" };
@@ -286,6 +287,44 @@ test("network errors and 5xx retry with reported exponential backoff; failures p
   expect(fixture.sleeps).toEqual([1000, 2000]);
   expect(fixture.reports).toHaveLength(2);
   await expect(client.rest("/bad")).rejects.toThrow("401");
+  fixture.done();
+}, 15000);
+
+test("REST errors include bounded, redacted GitHub validation details", async () => {
+  const fixture = fixtureServer([
+    {
+      path: "/bad",
+      method: "GET",
+      status: 422,
+      json: {
+        message: "Validation Failed",
+        errors: [{ message: "secret is invalid", code: "unprocessable" }],
+      },
+    },
+  ]);
+  const client = new GitHubClient(getConfig(fixture.root, {}), fixture.env, fixture.deps);
+  await expect(client.rest("/bad")).rejects.toThrow(
+    /GitHub HTTP 422.*Valida.*Failed.*u p ocessable/
+  );
+  fixture.done();
+}, 15000);
+
+test("setTurn treats a concurrent update to its target as success after 422", async () => {
+  const fixture = fixtureServer([
+    {
+      path: "/repos/example/project/issues/6/assignees",
+      method: "POST",
+      status: 422,
+      json: { message: "Validation Failed" },
+    },
+    {
+      path: "/repos/example/project/issues/6",
+      method: "GET",
+      json: { assignees: [{ login: "owner" }] },
+    },
+  ]);
+  const client = new GitHubClient(getConfig(fixture.root, {}), fixture.env, fixture.deps);
+  await expect(setTurn(client, "example/project", 6, [], ["owner"])).resolves.toBeUndefined();
   fixture.done();
 }, 15000);
 

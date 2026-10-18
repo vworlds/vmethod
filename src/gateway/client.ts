@@ -55,9 +55,10 @@ export class GitHubHttpError extends Error {
   constructor(
     readonly status: number,
     method: string,
-    path: string
+    path: string,
+    detail = ""
   ) {
-    super(`GitHub HTTP ${status} on ${method} ${path}`);
+    super(`GitHub HTTP ${status} on ${method} ${path}${detail ? `: ${detail}` : ""}`);
   }
 }
 
@@ -207,7 +208,35 @@ export class GitHubClient {
         continue;
       }
       if (!response.ok && !(redirect === "manual" && response.status === 302)) {
-        throw new GitHubHttpError(response.status, method, path);
+        let detail = "";
+        try {
+          const data = object(await response.json());
+          const messages = [str(data.message)];
+          if (Array.isArray(data.errors)) {
+            for (const error of data.errors) {
+              const item = object(error);
+              const message = str(item.message);
+              const code = str(item.code);
+              if (message || code) {
+                messages.push(message && code ? `${message} (${code})` : message || code);
+              }
+            }
+          }
+          detail = messages
+            .filter(Boolean)
+            .map((message) =>
+              JSON.stringify(
+                this.redact(message)
+                  .replace(/[\\r\\n\\t]/g, " ")
+                  .slice(0, 200)
+              )
+            )
+            .join("; ")
+            .slice(0, 1000);
+        } catch {
+          // Non-JSON errors have no safe structured message to expose.
+        }
+        throw new GitHubHttpError(response.status, method, path, detail);
       }
       return response;
     }
