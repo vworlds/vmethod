@@ -9,6 +9,7 @@ import {
   openSync,
   copyFileSync,
   unlinkSync,
+  utimesSync,
 } from "node:fs";
 import { join } from "node:path";
 import {
@@ -60,6 +61,35 @@ test.each(["assignment", "progress", "both"])(
     expect(f.reports).toEqual([]);
   }
 );
+
+test("a same-session merge waits for a follow-up completed 30 seconds later", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  f.pulls = [];
+  f.gone = {
+    merged: true,
+    merged_at: f.iso(),
+    user: user(),
+    merged_by: { login: "me", id: 999, type: "User" },
+  };
+  const journal = join(f.dir, "merge-24.json");
+  writeFileSync(journal, JSON.stringify({ done: [] }));
+  utimesSync(journal, new Date(f.iso()), new Date(f.iso()));
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  f.advance(3_000);
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  f.advance(27_000);
+  writeFileSync(journal, JSON.stringify({ done: ["follow-up"] }));
+  const completed = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+  expect(completed).toHaveLength(1);
+  expect(completed[0].line).toContain("follow-up complete");
+  expect(completed[0].line).not.toContain("follow-up not run");
+  await f.ack(loop, completed);
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+});
 
 test("clearing an owner mirror retries an assignment failure without losing the mirror", async () => {
   const f = setup();
@@ -512,6 +542,60 @@ test.each(["live", "backfill", "pending", "quiet", "restart-pending", "restart-q
   }
 );
 
+test.each(
+  ["OWNER REVIEW", "OWNER QUESTION", "ANSWER", "GO"].flatMap((tag) =>
+    [false, true].map((journaled) => ({ tag, journaled }))
+  )
+)(
+  "own $tag (journaled: $journaled) changes Progress once and preserves a later owner approval across polls and restart",
+  async ({ tag, journaled }) => {
+    const f = setup();
+    f.task();
+    const card = f.cards[0];
+    const ownerHandover = tag.startsWith("OWNER");
+    card.status = { ...object(card.status), name: ownerHandover ? "In progress" : "In review" };
+    let loop = f.loop();
+    await f.once(loop);
+    f.advance();
+    const comment = f.comment(`[orchestrator] ${tag}`, 2);
+    comment.user = { login: "me", id: 999, type: "User" };
+    if (journaled) {
+      writeFileSync(
+        join(f.dir, "writes.jsonl"),
+        `${JSON.stringify({ at: f.iso(), kind: "comment", repo: "example/project", number: 24, commentId: comment.id })}\n`
+      );
+    }
+    await f.once(loop);
+    const statusWrites = () => f.writes.filter((write) => write.field === "Status");
+    expect(statusWrites()).toEqual([
+      expect.objectContaining({ value: ownerHandover ? "In review" : "In progress" }),
+    ]);
+    expect(object(card.progress).text).toContain(
+      tag === "OWNER REVIEW" ? "👤🔍" : tag === "OWNER QUESTION" ? "👤❓" : "🤖🔨"
+    );
+    for (let poll = 0; poll < 3; poll++) {
+      f.advance();
+      if (poll === 1) {
+        loop.close();
+        loop = f.loop();
+      }
+      // The owner moves the card after the comment's transition has been applied.
+      card.status = { ...object(card.status), name: "Approved", updatedAt: f.iso() };
+      await f.once(loop);
+      expect(object(card.status).name).toBe("Approved");
+      expect(statusWrites()).toHaveLength(1);
+    }
+    // A distinct comment with the same tag is still a new handover.
+    f.advance();
+    const next = f.comment(`[orchestrator] ${tag}`, 2);
+    next.user = comment.user;
+    await f.once(loop);
+    expect(object(card.status).name).toBe(ownerHandover ? "In review" : "In progress");
+    expect(statusWrites()).toHaveLength(2);
+    expect(f.reports).toEqual([]);
+  }
+);
+
 test("an older in-flight board listing cannot turn a completed Done write into Done → In review", async () => {
   const f = setup();
   f.cards = [f.card(24, "In review", "PullRequest")];
@@ -637,16 +721,48 @@ test.each([false, true])(
       );
     }
     expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
-    f.advance();
+    f.advance(10 * 60_000 - 1);
+    expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+    f.advance(1);
     const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
     expect(events).toHaveLength(1);
     expect(events[0].line).toContain("follow-up not run: run merge-task");
     expect(events[0].line.includes("this account, another session")).toBe(!matched);
     await f.ack(loop, events);
+    f.advance(20 * 60_000);
+    expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
     writeFileSync(join(f.dir, "merge-24.json"), JSON.stringify({ done: ["follow-up"] }));
     expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
   }
 );
+
+test("a recent incomplete merge journal defers a notice until it is ten minutes old", async () => {
+  const f = setup();
+  f.task();
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  f.pulls = [];
+  f.gone = {
+    merged: true,
+    merged_at: f.iso(-20 * 60_000),
+    user: user(),
+    merged_by: { login: "me", id: 999, type: "User" },
+  };
+  const journal = join(f.dir, "merge-24.json");
+  writeFileSync(journal, JSON.stringify({ done: [] }));
+  utimesSync(journal, new Date(f.iso()), new Date(f.iso()));
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  f.advance(10 * 60_000 - 1);
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+  f.advance(1);
+  const events = (await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events;
+  expect(events).toHaveLength(1);
+  expect(events[0].line).toContain("follow-up not run: run merge-task");
+  await f.ack(loop, events);
+  f.advance(20 * 60_000);
+  expect((await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true })).events).toEqual([]);
+});
 
 test("a same-session merge with completed follow-up is not deferred", async () => {
   const f = setup();

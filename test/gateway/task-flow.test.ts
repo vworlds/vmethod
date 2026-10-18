@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
@@ -17,6 +17,7 @@ import { WatchFake } from "./watch-fake.js";
 import { writeState } from "../../src/board/readme.js";
 import { taskFlowVerb } from "../../src/cli/task-flow.js";
 import type { Operations, Transport } from "../../src/gateway/transport.js";
+import { WorkerService } from "../../src/gateway/workers.js";
 
 const baseSha = "b".repeat(40),
   mergedSha = "c".repeat(40);
@@ -206,6 +207,7 @@ test.each(
       let events = await once();
       if (verb === "merge-task" && identity === "sibling") {
         expect(events.some((event) => event.kind === "button-merge")).toBe(false);
+        w.advance(10 * 60_000);
         events = await once();
       }
       if (verb.startsWith("review ")) {
@@ -309,6 +311,7 @@ function fixture() {
     issueApproved: boolean | "unknown" = true;
   let worker: "live" | "stopped" | "unknown" = "stopped";
   let fail = "",
+    liveBase = baseSha,
     currentHead = sha,
     title = "feat: task";
   let prState = "OPEN",
@@ -498,8 +501,8 @@ function fixture() {
       if (args.join(" ") === "rev-parse HEAD") {
         return checkoutHead;
       }
-      if (args.join(" ") === "rev-parse refs/remotes/origin/dev") {
-        return mergedSha;
+      if (args.join(" ") === `rev-parse refs/remotes/origin/${actualBase}`) {
+        return prState === "OPEN" ? liveBase : mergedSha;
       }
       if (args[0] === "merge" && args[1] === "--ff-only") {
         checkoutHead = String(args[2]);
@@ -613,6 +616,7 @@ function fixture() {
       worker?: typeof worker;
       fail?: string;
       head?: string;
+      liveBase?: string;
       title?: string;
       state?: string;
       base?: string;
@@ -630,6 +634,7 @@ function fixture() {
       worker = values.worker ?? worker;
       fail = values.fail ?? fail;
       currentHead = values.head ?? currentHead;
+      liveBase = values.liveBase ?? liveBase;
       title = values.title ?? title;
       prState = values.state ?? prState;
       actualBase = values.base ?? actualBase;
@@ -1716,12 +1721,134 @@ test("pack head requires merge commit and is kept", async () => {
   f.done();
 });
 
-test("requireCurrentBase false allows conflict-free green-head squash on moved base", async () => {
+test.each([true, false])("live base ancestry gates merge (current=%s)", async (current) => {
   const f = fixture();
-  f.set({ fail: "base" });
+  f.set({ liveBase: mergedSha });
+  const exec = f.deps.exec;
+  let checkedBase = "";
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args[0] === "merge-base" && args[1] === "--is-ancestor") {
+      checkedBase = String(args[2]);
+      // The PR snapshot still reports baseSha; only the fetched base is current.
+      if (args[2] === mergedSha && !current) {
+        throw new Error("live base is not an ancestor");
+      }
+      return "";
+    }
+    return exec(file, args, options);
+  };
+  if (current) {
+    await expect(f.flow().merge("27")).resolves.toBe("Merged #27");
+  } else {
+    await expect(f.flow().merge("27")).rejects.toThrow(
+      "CI tested an older base; run refresh-checks 27"
+    );
+    expect(f.writes.some((w) => w.path.endsWith("/merge"))).toBe(false);
+  }
+  expect(checkedBase).toBe(mergedSha);
+  f.done();
+});
+
+test.each(["pass", "fail", "missing", "conflict", "base moved"])(
+  "requireCurrentBase false verifies the live merge result: %s",
+  async (scenario) => {
+    const f = fixture();
+    f.set({ liveBase: mergedSha });
+    f.config.merge = { requireCurrentBase: false };
+    const exec = f.deps.exec;
+    let worktree = "",
+      removed = false,
+      ranHook = false;
+    f.deps.exec = async (file, args, options) => {
+      if (file === "git" && args[0] === "worktree") {
+        if (args[1] === "add") {
+          expect(args.slice(0, 3)).toEqual(["worktree", "add", "--detach"]);
+          expect(args[4]).toBe(mergedSha);
+          worktree = String(args[3]);
+          mkdirSync(join(worktree, "scripts/vmethod-hooks"), { recursive: true });
+          if (scenario !== "missing") {
+            writeFileSync(join(worktree, "scripts/vmethod-hooks/verify"), "fake hook");
+          }
+        } else {
+          expect(args).toEqual(["worktree", "remove", "--force", worktree]);
+          rmSync(worktree, { recursive: true });
+          removed = true;
+        }
+        return "";
+      }
+      if (file === "git" && args.includes("merge") && options?.cwd === worktree) {
+        expect(args.slice(-4)).toEqual(["merge", "-q", "--no-edit", sha]);
+        if (scenario === "conflict") {
+          throw new Error("conflict");
+        }
+        return "";
+      }
+      if (file === "/bin/sh") {
+        ranHook = true;
+        expect(options?.cwd).toBe(worktree);
+        expect(options?.env).not.toHaveProperty("EXAMPLE_GITHUB_TOKEN");
+        expect(options?.env).not.toHaveProperty("GIT_AUTHOR_NAME");
+        expect(args[4]).toBe(join(worktree, "scripts/vmethod-hooks/verify"));
+        expect(args[5]).toBe("--logs");
+        expect(args.slice(7)).toEqual(["--scope", "merge"]);
+        writeFileSync(String(args[3]), scenario === "fail" ? "typecheck FAILED" : "checks ok");
+        if (scenario === "base moved") {
+          f.set({ liveBase: "d".repeat(40) });
+        }
+        if (scenario === "fail") {
+          throw new Error("hook failed");
+        }
+        return "";
+      }
+      return exec(file, args, options);
+    };
+    if (scenario === "pass") {
+      await expect(f.flow().merge("27")).resolves.toBe("Merged #27");
+    } else {
+      await expect(f.flow().merge("27")).rejects.toThrow(
+        scenario === "fail"
+          ? "typecheck FAILED"
+          : scenario === "missing"
+            ? "requireCurrentBase is false but no verify hook is configured; run refresh-checks 27"
+            : scenario === "base moved"
+              ? "Head or base moved during merge checks"
+              : "does not merge cleanly"
+      );
+      expect(f.writes.some((w) => w.path.endsWith("/merge"))).toBe(false);
+    }
+    expect(worktree).not.toBe("");
+    expect(removed).toBe(true);
+    expect(ranHook).toBe(["pass", "fail", "base moved"].includes(scenario));
+    expect(existsSync(join(worktree, ".."))).toBe(false);
+    f.done();
+  }
+);
+
+test("a PR with no recorded worker session merges through the real session guard", async () => {
+  const f = fixture();
+  const unexpected = async (): Promise<never> => {
+    throw new Error("Unexpected worker hook");
+  };
+  const workers = new WorkerService(f.root, f.config, f.env, f.deps, {
+    metadata: unexpected,
+    prepare: unexpected,
+    setModel: unexpected,
+    setEstimate: unexpected,
+    workerIdentity: unexpected,
+    issue: unexpected,
+  });
+  f.deps.workers!.status = (pr, forMerge) => workers.mergeStatus(pr, forMerge);
+  await expect(f.flow().status("27")).resolves.toBe("unknown");
+  await expect(f.flow().merge("27")).resolves.toBe("Merged #27");
+  f.done();
+});
+
+test("an unknown recorded worker still blocks merging", async () => {
+  const f = fixture();
+  f.set({ worker: "unknown" });
   f.config.merge = { requireCurrentBase: false };
-  await f.flow().merge("27");
-  expect(f.events.some((event) => event.includes("merge-base --is-ancestor"))).toBe(false);
+  await expect(f.flow().merge("27")).rejects.toThrow("Stop the worker");
+  expect(f.writes.some((w) => w.path.endsWith("/merge"))).toBe(false);
   f.done();
 });
 
@@ -1837,7 +1964,7 @@ test.each([
       scenario === "red"
         ? "CI is not green"
         : scenario === "base"
-          ? "Base moved"
+          ? "CI tested an older base"
           : scenario === "worker"
             ? "Stop the worker"
             : scenario === "conflicting"

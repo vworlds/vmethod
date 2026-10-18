@@ -79,7 +79,7 @@ try {
         exec: async (file, args, options) =>
           (
             await promisify(execFile)(file, [...args], {
-              timeout: verb === "verify" ? 1800000 : 30000,
+              timeout: ["verify", "merge-task"].includes(verb) ? 1800000 : 30000,
               ...options,
             })
           ).stdout,

@@ -677,7 +677,7 @@ class GatewayServer {
     const deps: Dependencies = {
       ...this.deps,
       workers: this.deps.workers ?? {
-        status: (pr) => this.workers.mergeStatus(pr),
+        status: (pr, forMerge) => this.workers.mergeStatus(pr, forMerge),
         stop: (pr) => this.workers.command(["stop", String(pr)]),
         resume: (pr, prompt) => this.workers.resume(pr, prompt),
       },

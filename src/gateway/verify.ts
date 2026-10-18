@@ -1,19 +1,17 @@
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   realpathSync,
   rmdirSync,
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { homedir } from "node:os";
 import type { Config } from "../config.js";
 import type { Dependencies } from "./client.js";
 import { ChecksService } from "./checks.js";
 import { GitTransport } from "./git.js";
-import { untrusted } from "./people.js";
+import { runVerifyHook } from "./verify-hook.js";
 import type { Operations, Verdict } from "./transport.js";
 
 /** Orchestrator integration work; project recipes receive no gateway credentials. */
@@ -202,44 +200,15 @@ export class VerificationService {
     if (!existsSync(hook)) {
       throw new Error("verify: missing scripts/vmethod-hooks/verify hook");
     }
-    // The state path is server-validated by Digest at gateway construction.
-    const state = this.env.XDG_STATE_HOME || join(this.env.HOME || homedir(), ".local/state");
-    const logsParent = resolve(
-      state,
-      "vmethod",
-      String(this.config.stateName ?? String(this.config.repo).replace("/", "-")),
-      "verify"
-    );
-    mkdirSync(logsParent, { recursive: true, mode: 0o700 });
-    const logs = mkdtempSync(join(logsParent, `${this.deps.now()}-`));
     const args = [
-      "--logs",
-      logs,
       ...(input.packages ? ["--packages", input.packages.join(" ")] : []),
       ...(input.bench ? ["--bench"] : []),
     ];
-    const env: NodeJS.ProcessEnv = {};
-    for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"]) {
-      if (this.env[key]) {
-        env[key] = this.env[key];
-      }
-    }
-    const output = join(logs, "hook.log");
-    let code: 0 | 1 = 0;
-    try {
-      await this.deps.exec(
-        "/bin/sh",
-        ["-c", 'out=$1; shift; "$@" > "$out" 2>&1', "verify", output, hook, ...args],
-        { cwd: worktree, env }
-      );
-    } catch {
-      code = 1;
-    }
-    const text = readFileSync(output, "utf8");
+    const result = await runVerifyHook(worktree, this.config, this.env, this.deps, args);
     const commit = (await review.run("rev-parse", "--short", "HEAD")).trim();
     return {
-      code,
-      text: `${untrusted(text)}\nverify: ${code ? "FAILED" : "ok"} (${commit} = ${base} + PR ${prs.map((pr) => pr.target.number).join(" ")}; logs: ${logs})`,
+      code: result.code,
+      text: `${result.text}\nverify: ${result.code ? "FAILED" : "ok"} (${commit} = ${base} + PR ${prs.map((pr) => pr.target.number).join(" ")}; logs: ${result.logs})`,
     };
   }
 }

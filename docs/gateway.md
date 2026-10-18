@@ -373,7 +373,10 @@ session's gateway write journal match.
 System check runs update structured red-CI state, never expose free text.
 
 Cursor-based comment and subscribed-issue listings overlap the previous cursor by
-ten minutes to catch delayed indexing. Comment/new-item markers dedupe
+ten minutes to catch delayed indexing. Own ANSWER, GO, OWNER REVIEW and OWNER
+QUESTION comments apply their Progress/Status change once per comment, independently
+of notification delivery, so rereads cannot overwrite a later human board move.
+Comment/new-item markers dedupe
 the overlap and expire after twelve minutes relative to a successfully advanced
 cursor (ten minutes plus a two-minute margin). Initial baselines still suppress
 pre-existing history; pending unacknowledged events are retained independently.
@@ -526,7 +529,7 @@ Install an executable `scripts/vmethod-hooks/verify` in the consumer. It is call
 once, in the merged review worktree, with this argument interface:
 
 ```text
-scripts/vmethod-hooks/verify --logs <absolute-directory> [--packages "<ws>…"] [--bench]
+scripts/vmethod-hooks/verify --logs <absolute-directory> [--packages "<ws>…"] [--bench] [--scope merge]
 ```
 
 The hook owns the recipe: install dependencies, then run format, lint, typecheck,
@@ -536,6 +539,11 @@ to `<logs>/<step>.log`, print progress, and exit nonzero at the first failure. T
 gateway captures stdout and stderr in `hook.log` and returns exit 0/1 with the
 log directory. It passes only PATH, HOME, TMPDIR and SYSTEMROOT, never credentials.
 The legacy `checks.verify` recipe list is not executed by this command.
+
+`merge-task` calls the same hook with `--scope merge` so you can choose cheaper
+merge checks (for example installation, typecheck and lint). A hook that ignores
+this argument runs its full verification recipe. Ordinary `vmethod verify` does
+not pass a scope and retains the full recipe above.
 
 Logs persist in a fresh run directory under
 `$XDG_STATE_HOME/vmethod/<stateName>/verify/` (default
@@ -636,8 +644,19 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   `review answer` remains ANSWER for a worker. See [tracked owner questions](orchestrator-guide.md).
 - `merge-task <pr> [--merge-commit] [--carry-approval "<reason>"]` refuses live/unknown worker sessions before merging, stale
   approval, untrusted/red/missing CI, unknown/conflicting mergeability and a stale
-  tested base. `merge.requireCurrentBase` defaults to true; false allows a
-  conflict-free green-head squash onto a moved base. Pack heads require merge
+  tested base. No recorded worker session counts as stopped; a recorded session
+  that is unknown or unreachable still blocks. `merge.requireCurrentBase` defaults
+  to true: the head must contain the live base SHA fetched from
+  `refs/remotes/origin/<base>`, not merely the PR's recorded base. Otherwise it
+  refuses with `CI tested an older base; run refresh-checks <pr>`.
+  With false, it instead merges the pinned head onto the fetched base in a fresh
+  temporary worktree and runs the [verify hook](#verify-hook), with `--logs`, `--scope merge` and
+  the same credential-stripped environment. The hook owns installation and checks;
+  its failure output and persistent log path identify the failing step. There is
+  no CI rerun, and the temporary worktree is removed on success or failure. A
+  missing hook refuses with `requireCurrentBase is false but no verify hook is configured; run refresh-checks <pr>`;
+  legacy `checks.verify` strings are not used. Green current-head CI is still
+  required in both modes. Pack heads require merge
   commits and are retained. Track/pack-base deliveries leave linked issues and the
   main checkout alone. A final-base delivery closes linked issues and reports
   `revise estimates: …` for own-repository dependents. Missing native links never
@@ -658,7 +677,8 @@ end their turn after a status comment; they do not poll for review replies.
 The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `releaseHold`
 and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own their
 signatures. The gateway wires worker status, stop and resume to the recorded opencode
-or Claude session. Missing records remain unknown, never interpreted as stopped.
+or Claude session. Only the merge guard treats missing records as stopped;
+ordinary worker status still reports a missing session as unknown.
 
 Merge follow-up journals live in the per-user state directory. A partial failure
 resumes board, issue, branch and checkout work without merging again. Already-merged
@@ -679,9 +699,13 @@ are never issue relations and no sibling-PR scan is performed. Explicit legacy
 relations emit a `legacy link` notice; absent relations report `no linked issue`
 and leave issues unchanged. Old empty journals reconcile newly discoverable issues.
 Completed follow-up is checkpointed as `follow-up` in `merge-<pr>.json` before any
-reinstall; failed follow-up does not mark completion. A journal-matched own merge
-is silent only after that checkpoint. An unmatched self-merge reports another
-session and, unless complete, `follow-up not run: run merge-task`. Owner button
+reinstall; failed follow-up does not mark completion. For same-account merges,
+the watcher waits until ten minutes after the merge and while an incomplete journal
+was modified less than ten minutes ago. If follow-up remains incomplete after both
+grace periods, it reports `follow-up not run: run merge-task` once. An interrupted
+journal therefore ages out rather than suppressing the notice forever. Completed
+journal-matched own merges stay silent; unmatched self-merges report another
+session with `follow-up complete`. Owner button
 merges notify normally; after follow-up completes they stop repeating.
 Obsolete `.turn-*` and `merged-*` stamps are imported once to preserve old
 suppression state, not written by verbs anymore. Done capping ranks all board repositories but archives

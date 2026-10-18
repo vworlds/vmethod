@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmdirSync,
+  writeFileSync,
+  renameSync,
+} from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -15,6 +23,7 @@ import { approvalCarryFiles } from "./carry-approval.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
 import { setTurn, turnAssignees } from "./turn.js";
+import { runVerifyHook } from "./verify-hook.js";
 
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;
@@ -632,8 +641,8 @@ export class TaskFlow {
     return `Posted OWNER QUESTION on #${ref}`;
   }
 
-  async status(ref: string): Promise<"live" | "stopped" | "unknown"> {
-    const status = (await this.deps.workers?.status(this.number(ref))) ?? "unknown";
+  async status(ref: string, forMerge = false): Promise<"live" | "stopped" | "unknown"> {
+    const status = (await this.deps.workers?.status(this.number(ref), forMerge)) ?? "unknown";
     return ["live", "stopped", "unknown"].includes(status) ? status : "unknown";
   }
   async release(ref: string): Promise<string> {
@@ -759,7 +768,7 @@ export class TaskFlow {
     renameSync(`${file}.tmp`, file);
   }
 
-  /** Merge a stopped task; carryApproval certifies no behaviour change after base merges. */
+  /** Merge a stopped/session-less task against the live base; carryApproval certifies no behaviour change after base merges. */
   async merge(ref: string, mergeCommit = false, carryApproval?: string): Promise<string> {
     if (typeof mergeCommit !== "boolean") {
       throw new Error("Invalid merge-commit flag");
@@ -774,7 +783,7 @@ export class TaskFlow {
     if (!["OPEN", "MERGED"].includes(String(item.state))) {
       throw new Error("PR is closed without merging");
     }
-    if (item.state === "OPEN" && (await this.status(ref)) !== "stopped") {
+    if (item.state === "OPEN" && (await this.status(ref, true)) !== "stopped") {
       throw new Error("Stop the worker before merging (live or unknown session)");
     }
     const head = sha(item.headRefOid),
@@ -803,6 +812,7 @@ export class TaskFlow {
       ) {
         throw new Error("Fetch failed");
       }
+      const liveBase = sha((await git.run("rev-parse", `refs/remotes/origin/${base}`)).trim());
       let certification: string | undefined;
       if (carryApproval !== undefined) {
         for (const approved of await this.host.candidates(ref)) {
@@ -847,20 +857,28 @@ export class TaskFlow {
       }
       if (object(this.config.merge).requireCurrentBase !== false) {
         try {
-          await git.run("merge-base", "--is-ancestor", baseSha, head);
+          await git.run("merge-base", "--is-ancestor", liveBase, head);
         } catch {
-          throw new Error("Base moved: head was not tested against current base");
+          throw new Error(`CI tested an older base; run refresh-checks ${ref}`);
         }
+      } else {
+        await this.verifyMerge(ref, liveBase, head);
       }
       const current = await this.pr(ref);
+      // Hook execution can take minutes: re-fetch rather than trusting the PR's
+      // potentially stale baseRefOid to detect base movement during verification.
+      if (!(await git.transfer("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
+        throw new Error("Fetch failed");
+      }
       if (
         current.headRefOid !== head ||
         current.baseRefOid !== baseSha ||
-        current.baseRefName !== base
+        current.baseRefName !== base ||
+        (await git.run("rev-parse", `refs/remotes/origin/${base}`)).trim() !== liveBase
       ) {
         throw new Error("Head or base moved during merge checks");
       }
-      if ((await this.status(ref)) !== "stopped") {
+      if ((await this.status(ref, true)) !== "stopped") {
         throw new Error("Worker restarted before merge");
       }
       if (item.isDraft) {
@@ -1087,5 +1105,52 @@ export class TaskFlow {
       });
     }
     return output;
+  }
+
+  private async verifyMerge(ref: string, base: string, head: string): Promise<void> {
+    const parent = join(this.root, ".tmp");
+    mkdirSync(parent, { recursive: true });
+    const temporary = mkdtempSync(join(parent, "merge-verify-"));
+    const worktree = join(temporary, "worktree");
+    const git = this.git();
+    let added = false;
+    try {
+      await git.run("worktree", "add", "--detach", worktree, base);
+      added = true;
+      try {
+        await this.git(worktree).run(
+          "-c",
+          "user.name=orchestrator",
+          "-c",
+          "user.email=orchestrator@localhost",
+          "merge",
+          "-q",
+          "--no-edit",
+          head
+        );
+      } catch {
+        throw new Error(`PR #${ref} does not merge cleanly onto the live base`);
+      }
+      if (!existsSync(join(worktree, "scripts/vmethod-hooks/verify"))) {
+        throw new Error(
+          `requireCurrentBase is false but no verify hook is configured; run refresh-checks ${ref}`
+        );
+      }
+      const result = await runVerifyHook(worktree, this.config, this.env, this.deps, [
+        "--scope",
+        "merge",
+      ]);
+      if (result.code) {
+        throw new Error(
+          `Merge verification failed: scripts/vmethod-hooks/verify\n${result.text}\nlogs: ${result.logs}`
+        );
+      }
+      this.deps.report(`Merge verification passed\n${result.text}\nlogs: ${result.logs}`);
+    } finally {
+      if (added) {
+        await git.run("worktree", "remove", "--force", worktree);
+      }
+      rmdirSync(temporary);
+    }
   }
 }
