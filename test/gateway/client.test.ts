@@ -299,13 +299,13 @@ test("REST errors include bounded, redacted GitHub validation details", async ()
       status: 422,
       json: {
         message: "Validation Failed",
-        errors: [{ message: "secret is invalid", code: "unprocessable" }],
+        errors: [{ message: "invalid", code: "invalid" }],
       },
     },
   ]);
   const client = new GitHubClient(getConfig(fixture.root, {}), fixture.env, fixture.deps);
   await expect(client.rest("/bad")).rejects.toThrow(
-    /GitHub HTTP 422.*Valida.*Failed.*u p ocessable/
+    'GitHub HTTP 422 on GET /bad: "Validation Failed"; "invalid (invalid)"'
   );
   fixture.done();
 }, 15000);
@@ -321,7 +321,7 @@ test("setTurn treats a concurrent update to its target as success after 422", as
     {
       path: "/repos/example/project/issues/6",
       method: "GET",
-      json: { assignees: [{ login: "owner" }] },
+      json: { assignees: [{ login: "OWNER" }] },
     },
   ]);
   const client = new GitHubClient(getConfig(fixture.root, {}), fixture.env, fixture.deps);

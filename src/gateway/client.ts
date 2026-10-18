@@ -227,7 +227,7 @@ export class GitHubClient {
             .map((message) =>
               JSON.stringify(
                 this.redact(message)
-                  .replace(/[\\r\\n\\t]/g, " ")
+                  .replace(/[\r\n\t]/g, " ")
                   .slice(0, 200)
               )
             )

@@ -65,5 +65,6 @@ export async function setTurn(
 }
 
 function sameAssignees(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((login) => right.includes(login));
+  const normalized = new Set(right.map((login) => login.toLowerCase()));
+  return left.length === right.length && left.every((login) => normalized.has(login.toLowerCase()));
 }
