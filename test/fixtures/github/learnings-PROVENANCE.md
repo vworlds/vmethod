@@ -52,6 +52,15 @@ file lists reuse the captured file envelope with add-only project paths (or the
 legacy modified seed for read-only pending compatibility). Merged/closed states,
 stale fork refs and lost replies are scenario data, not additional recordings.
 Commit writes assert the fork's parent and tree, never central-only objects.
+Rolling submission scenarios derive ref-update responses from the same recorded
+ref envelope, retargeting the SHA and branch. Trees inherit the open PR's files,
+commits receive distinct SHAs, and staged files become visible only on ref creation
+or update. Tests assert the current parent, inherited tree and `force: false`;
+head movement and a lost successful update response are explicit scenario data.
+Worker-management gateway tests reuse these envelopes to model an already-shared
+grade: their central seed contains the grade's record and their open PR list is
+empty. This exercises production auto-submission wiring without duplicating the
+rolling-PR write fake.
 
 `test/gateway/learnings.test.ts` exercises these envelopes through the real
 `GitHubClient`, submission/show decoders, cursor persistence and central metadata

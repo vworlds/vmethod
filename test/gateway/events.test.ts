@@ -33,6 +33,34 @@ import { GitHubClient } from "../../src/gateway/client.js";
 import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
 import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
 
+test.each(["assignment", "progress", "both"])(
+  "watcher clears stale owner %s on linked issues without moving Status",
+  async (stale) => {
+    const f = setup();
+    f.task();
+    f.pulls[0].body = '<!-- vmethod-task {"issues":[6]} -->';
+    f.cards[0].progress = { text: "👤🔍" };
+    object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards.push(f.card(6, "In review"));
+    if (stale !== "assignment") {
+      f.cards[1].progress = { text: "👤❓" };
+    }
+    if (stale !== "progress") {
+      object(f.cards[1].content).assignees = { nodes: [{ login: "owner" }] };
+    }
+    const loop = f.loop();
+    await f.tick(loop);
+    expect(object(f.cards[1].progress).text ?? "").toBe("");
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
+    expect(object(f.cards[1].status).name).toBe("In review");
+    expect(object(f.cards[0].progress).text).toBe("👤🔍");
+    f.advance();
+    await f.tick(loop);
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
 test("clearing an owner mirror retries an assignment failure without losing the mirror", async () => {
   const f = setup();
   f.task();
@@ -40,8 +68,9 @@ test("clearing an owner mirror retries an assignment failure without losing the 
   f.cards[0].progress = { text: "👤❓" };
   object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
   f.cards.push(f.card(6, "In progress"));
+  f.cards[1].progress = { text: "👤❓" };
+  object(f.cards[1].content).assignees = { nodes: [{ login: "owner" }] };
   const loop = f.loop();
-  await f.once(loop);
   const fetch = f.deps.fetch;
   f.deps.fetch = async (input, init) => {
     if (String(input).endsWith("/issues/6/assignees") && init?.method === "DELETE") {
@@ -112,8 +141,8 @@ test.each(["READY", "QUESTION", "BLOCKED"])(
     f.cards.push(f.card(6, "In progress"));
     const loop = f.loop();
     await f.tick(loop);
-    expect(object(f.cards[1].progress).text).toBe("👤❓");
-    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([{ login: "owner" }]);
+    expect(object(f.cards[1].progress).text ?? "").toBe("");
+    expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
     f.advance();
     f.comment(`[worker] ${tag} (round 2)`);
     await f.tick(loop);
@@ -121,7 +150,7 @@ test.each(["READY", "QUESTION", "BLOCKED"])(
     expect(object(pr.progress).text).toContain(
       tag === "READY" ? "🤖👍" : tag === "QUESTION" ? "🤖❓" : "🤖🚫"
     );
-    expect(object(f.cards[1].progress).text).toBeNull();
+    expect(object(f.cards[1].progress).text ?? "").toBe("");
     expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
     expect(f.reports).toEqual([]);
   }
@@ -165,7 +194,7 @@ test.each(["reply", "issue reply", "approval"])(
     await f.tick(loop);
     expect(object(pr.progress).text).toContain("🧭🔍");
     expect(object(object(pr.content).assignees).nodes).toEqual([{ login: "peer" }]);
-    expect(object(f.cards[1].progress).text).toBeNull();
+    expect(object(f.cards[1].progress).text ?? "").toBe("");
     expect(object(object(f.cards[1].content).assignees).nodes).toEqual([]);
     expect(f.reports).toEqual([]);
   }
@@ -256,15 +285,15 @@ test.each(["auto-", "", "legacy"])(
   }
 );
 
-test("a worker idle without reply reports once per stop and again after recovery", async () => {
+test("a worker idle without reply sends one check-in per stop and again after recovery", async () => {
   const f = setup();
   f.task();
   f.worktree();
   f.staleWorker = { reason: "idle without reply", active: false, updated: f.clock };
   const loop = f.loop();
   const first = await f.once(loop);
-  expect(first.map((event) => event.kind)).toEqual(["worker"]);
-  expect(first[0].line).toContain("stopped without reply; send it a nudge");
+  expect(first).toEqual([]);
+  expect(f.workerSends).toHaveLength(1);
   for (let i = 0; i < 6; i++) {
     expect(await f.once(loop)).toEqual([]);
   }
@@ -277,8 +306,92 @@ test("a worker idle without reply reports once per stop and again after recovery
   for (let i = 0; i < 6; i++) {
     stops.push(...(await f.once(loop)));
   }
-  expect(stops.map((event) => event.kind)).toEqual(["worker"]);
+  expect(stops).toEqual([]);
+  expect(f.workerSends).toHaveLength(2);
   expect(f.reports).toEqual([]);
+});
+
+test("an idle worker with no protocol comment gets two check-ins then an alert", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  const loop = f.loop();
+  const events = [];
+  for (let turn = 1; turn <= 3; turn++) {
+    f.staleWorker = {
+      reason: "idle without reply",
+      active: false,
+      updated: f.clock + turn,
+    };
+    for (let i = 0; i < 7; i++) {
+      events.push(...(await f.once(loop)));
+    }
+  }
+  expect(f.workerSends).toHaveLength(2);
+  expect(f.workerSends[0].text).toBe(
+    "[orchestrator] CHECK-IN: your turn ended without a status comment on the PR. Post exactly one of READY, QUESTION, BLOCKED or DESIGN on PR #24 with `vmethod pr-comment`. If you are not done, finish only the remaining acceptance steps first, adding no new scope. If you are unsure or stuck, post QUESTION or BLOCKED and stop."
+  );
+  expect(events.filter((event) => event.line.includes("stopped without reply"))).toHaveLength(1);
+});
+
+test("a new orchestrator review prompt resets the check-in count", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  const loop = f.loop();
+  for (let turn = 1; turn <= 2; turn++) {
+    f.staleWorker = {
+      reason: "idle without reply",
+      active: false,
+      updated: f.clock + turn,
+    };
+    for (let i = 0; i < 7; i++) {
+      await f.once(loop);
+    }
+  }
+  expect(f.workerSends).toHaveLength(2);
+  f.advance();
+  const prompt = f.comment("[orchestrator] REVIEW round 2", 2);
+  prompt.user = f.writeActor;
+  f.staleWorker = { reason: "running", active: true, updated: f.clock };
+  for (let i = 0; i < 7; i++) {
+    await f.once(loop);
+  }
+  f.staleWorker = {
+    reason: "idle without reply",
+    active: false,
+    updated: f.clock + 1,
+  };
+  const events = [];
+  for (let i = 0; i < 7; i++) {
+    events.push(...(await f.once(loop)));
+  }
+  expect(f.workerSends).toHaveLength(3);
+  expect(events.some((event) => event.line.includes("stopped without reply"))).toBe(false);
+});
+
+test("an authenticated READY comment newer than the prompt prevents a check-in", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  const loop = f.loop();
+  f.staleWorker = { reason: "running", active: true, updated: f.clock };
+  for (let i = 0; i < 7; i++) {
+    await f.once(loop);
+  }
+  f.advance();
+  const prompt = f.comment("[orchestrator] REVIEW round 1", 2);
+  prompt.user = f.writeActor;
+  for (let i = 0; i < 7; i++) {
+    await f.once(loop);
+  }
+  f.advance();
+  f.comment("[worker] READY FOR REVIEW (round 1)", 1);
+  f.staleWorker = { reason: "idle", active: false, updated: f.clock };
+  for (let i = 0; i < 7; i++) {
+    await f.once(loop);
+  }
+  expect(f.workerSends).toHaveLength(0);
 });
 
 test("existing worker poll writes Cost to the PR, deduplicates and clears unknown values", async () => {
@@ -326,8 +439,8 @@ test("idle after an unanswered amendment reports stopped without reply using obs
   for (let i = 0; i < 6; i++) {
     events.push(...(await f.once(loop)));
   }
-  expect(events.map((event) => event.kind)).toEqual(["worker"]);
-  expect(events[0].line).toContain("stopped without reply; send it a nudge");
+  expect(events).toEqual([]);
+  expect(f.workerSends).toHaveLength(1);
   f.advance();
   f.comment("[worker] ACK");
   await f.once(loop);

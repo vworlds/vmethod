@@ -119,6 +119,7 @@ test.each(["running", "permission", "failed"])(
     const single = await client.status("/work/recorded", "ses_recorded");
     expect(single.reason).toBe(state === "permission" ? "permission-wait" : "running");
     expect(single.inputTokens).toBe(118893);
+    expect("finalText" in single).toBe(false);
     expect(single.usage).toEqual({
       tokens: { input: 118893, output: 17446, cached: 3907968 },
       reportedUsd: 0,

@@ -13,6 +13,7 @@ import { GitHubClient, type Dependencies } from "../../src/gateway/client.js";
 import { checkLearningPr } from "../../src/gateway/learning-check.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { learningsVerb } from "../../src/cli/learnings.js";
+import { WorkerService } from "../../src/gateway/workers.js";
 import { fixture, validProject } from "../helpers.js";
 import recorded from "../fixtures/github/learnings-recorded.json" with { type: "json" };
 import { WatchFake } from "./watch-fake.js";
@@ -117,6 +118,9 @@ function setup(
     occupied?: boolean;
     outsider?: boolean;
     pendingMoved?: boolean;
+    moveBeforeUpdate?: boolean;
+    failUpdate?: boolean;
+    multiplePending?: boolean;
   } = {}
 ) {
   const root = fixture();
@@ -137,6 +141,7 @@ function setup(
   let prBranch = branch;
   let failPr = options.failPr ?? false;
   let failBeforePr = options.failBeforePr ?? false;
+  let failUpdate = options.failUpdate ?? false;
   let merged = false;
   let closed = false;
   let detailReads = 0;
@@ -145,6 +150,10 @@ function setup(
     ...Object.entries(options.chunks ?? {}),
   ]);
   const files = new Map<string, string>();
+  let stagedFiles = new Map<string, string>();
+  let currentHead = head;
+  let createdHead = head;
+  let commits = 0;
   if (options.legacyPending) {
     files.set(modelPath, JSON.stringify(privateLearning(record())) + "\n");
   }
@@ -161,7 +170,7 @@ function setup(
       expect(url.origin).toBe("https://api.github.com");
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
-      if (method === "POST") {
+      if (method === "POST" || method === "PATCH") {
         writes.push({ path, body });
       }
       let data: unknown;
@@ -230,7 +239,7 @@ function setup(
           data = {
             ...recorded.ref,
             ref: `refs/heads/${branch}`,
-            object: { ...recorded.ref.object, sha: head },
+            object: { ...recorded.ref.object, sha: currentHead },
           };
         } else {
           data = {};
@@ -238,9 +247,11 @@ function setup(
         }
       } else if (path === `${fork}/git/commits/${forkParent}` && method === "GET") {
         data = { sha: forkParent, tree: { sha: forkTree } };
+      } else if (path === `${fork}/git/commits/${currentHead}` && method === "GET") {
+        data = { sha: currentHead, tree: { sha: tree } };
       } else if (path === `${fork}/git/trees` && method === "POST") {
-        expect(body.base_tree).toBe(forkTree);
-        files.clear();
+        expect(body.base_tree).toBe(prCreated && !closed && !merged ? tree : forkTree);
+        stagedFiles = body.base_tree === forkTree ? new Map() : new Map(files);
         for (const entry of body.tree as {
           path: string;
           content: string;
@@ -249,19 +260,46 @@ function setup(
         }[]) {
           expect(entry.mode).toBe("100644");
           expect(entry.type).toBe("blob");
-          files.set(entry.path, entry.content);
+          stagedFiles.set(entry.path, entry.content);
         }
         data = { ...recorded.tree, tree: [] };
         status = 201;
       } else if (path === `${fork}/git/commits` && method === "POST") {
-        expect(body.parents).toEqual([forkParent]);
-        data = { sha: head, tree: { sha: tree }, parents: [{ sha: forkParent }] };
+        const previous = prCreated && !closed && !merged ? currentHead : forkParent;
+        expect(body.parents).toEqual([previous]);
+        createdHead = commits++ === 0 ? head : commits.toString(16).padStart(40, "0");
+        data = { sha: createdHead, tree: { sha: tree }, parents: [{ sha: previous }] };
         status = 201;
       } else if (path === `${fork}/git/refs` && method === "POST") {
-        expect(body.sha).toBe(head);
+        expect(body.sha).toBe(createdHead);
         branch = String(body.ref).replace("refs/heads/", "");
-        data = { ...recorded.ref, ref: body.ref, object: { ...recorded.ref.object, sha: head } };
+        currentHead = createdHead;
+        files.clear();
+        for (const [path, content] of stagedFiles) {
+          files.set(path, content);
+        }
+        data = {
+          ...recorded.ref,
+          ref: body.ref,
+          object: { ...recorded.ref.object, sha: currentHead },
+        };
         status = 201;
+      } else if (path === `${fork}/git/refs/heads/${branch}` && method === "PATCH") {
+        expect(body).toEqual({ sha: createdHead, force: false });
+        currentHead = createdHead;
+        files.clear();
+        for (const [path, content] of stagedFiles) {
+          files.set(path, content);
+        }
+        if (failUpdate) {
+          failUpdate = false;
+          throw new SimulatedNetworkError("Lost response after successful branch update");
+        }
+        data = {
+          ...recorded.ref,
+          ref: `refs/heads/${branch}`,
+          object: { ...recorded.ref.object, sha: currentHead },
+        };
       } else if (path.startsWith(`${fork}/contents/`) && method === "GET") {
         const name = path.slice(`${fork}/contents/`.length);
         if (url.searchParams.get("ref") === forkParent) {
@@ -272,11 +310,14 @@ function setup(
           data = options.occupied ? contents(name, "existing fork file") : {};
           status = options.occupied ? 200 : 404;
         } else {
-          expect(url.searchParams.get("ref")).toBe(head);
+          expect(url.searchParams.get("ref")).toBe(currentHead);
           if (!files.has(name)) {
-            throw new Error(`Unknown fork file ${name}`);
+            expect(name).toMatch(
+              /^learnings\/(models\/vworlds-vecs|notes\/vecs)\/[a-z0-9-]+\.(jsonl|md)$/
+            );
           }
-          data = contents(name, files.get(name)!);
+          data = files.has(name) ? contents(name, files.get(name)!) : {};
+          status = files.has(name) ? 200 : 404;
         }
       } else if (path === `${fork}/compare/${forkParent}...${head}` && method === "GET") {
         data = { files: [...files.keys()].map((filename) => ({ filename, status: "added" })) };
@@ -303,6 +344,9 @@ function setup(
         if (!url.searchParams.has("head") && options.outsider) {
           (data as unknown[]).push({ ...recorded.pull, number: 999, user: { ...identity, id: 1 } });
         }
+        if (!url.searchParams.has("head") && options.multiplePending && prCreated) {
+          (data as unknown[]).push(pr(901));
+        }
       } else if (path === `${central}/pulls` && method === "POST") {
         expect(body.head).toBe(`${login}:${branch}`);
         expect(body.base).toBe("dev");
@@ -320,13 +364,20 @@ function setup(
         }
         data = pr();
         status = 201;
-      } else if (path === `${central}/pulls/900` && method === "GET") {
+      } else if (
+        (path === `${central}/pulls/900` || path === `${central}/pulls/901`) &&
+        method === "GET"
+      ) {
         detailReads++;
+        const detail = pr(path.endsWith("/901") ? 901 : 900);
         data =
-          options.pendingMoved && detailReads > 1
-            ? { ...pr(), head: { ...pr().head, sha: forkParent } }
-            : pr();
-      } else if (path === `${central}/pulls/900/files` && method === "GET") {
+          (options.pendingMoved && detailReads > 1) || (options.moveBeforeUpdate && detailReads > 2)
+            ? { ...detail, head: { ...detail.head, sha: forkParent } }
+            : detail;
+      } else if (
+        (path === `${central}/pulls/900/files` || path === `${central}/pulls/901/files`) &&
+        method === "GET"
+      ) {
         expect(url.searchParams.get("page")).toBe("1");
         data = [...files.keys()].map((filename) => ({
           ...recorded.files[0],
@@ -346,14 +397,18 @@ function setup(
     sleep: async () => {},
     report: (message) => reports.push(message),
   };
-  function pr() {
+  function pr(number = 900) {
     return {
       ...recorded.pull,
-      number: 900,
+      number,
       changed_files: files.size,
-      html_url: "https://github.com/vworlds/vmethod/pull/900",
+      html_url: `https://github.com/vworlds/vmethod/pull/${number}`,
       user: identity,
-      head: { sha: head, ref: prBranch, repo: { full_name: `${login}/vmethod` } },
+      head: {
+        sha: currentHead,
+        ref: number === 901 ? "learnings/second" : prBranch,
+        repo: { full_name: `${login}/vmethod` },
+      },
       base: { ref: "dev", repo: { full_name: "vworlds/vmethod" } },
       state: merged || closed ? "closed" : "open",
       merged_at: merged ? "2026-10-17T12:00:00Z" : null,
@@ -371,6 +426,7 @@ function setup(
     env,
     deps,
     service,
+    config,
     writes,
     files,
     centralFiles,
@@ -626,12 +682,94 @@ test.each([false, true])(
   15000
 );
 
-test("open PR records do not block another increment", async () => {
+test("open PR increments keep one PR and preserve every immutable submission file", async () => {
   const f = setup();
   await f.service.command({ action: "submit" });
+  const first = new Map(f.files);
   f.append(record({ pr: 309 }));
   expect(await f.service.command({ action: "submit" })).toContain("Submitted 1 records");
-  expect(modelRecords(submittedLog(f.files)).map((record) => record.pr)).toEqual([309]);
+  expect(f.writes.filter((write) => write.path === `${central}/pulls`)).toHaveLength(1);
+  expect([...first].every(([path, content]) => f.files.get(path) === content)).toBe(true);
+  expect(modelRecords([...f.files.values()].join("\n")).map((record) => record.pr)).toEqual([
+    308, 309,
+  ]);
+  const writes = f.writes.length;
+  expect(await f.service.command({ action: "submit" })).toContain("Pending:");
+  expect(f.writes).toHaveLength(writes);
+}, 15000);
+
+test("grades stage locally, batch into one PR, and start fresh after merge without duplicates", async () => {
+  const f = setup();
+  f.setRecords([]);
+  writeFileSync(
+    join(f.root, "models.yaml"),
+    stringify([
+      { family: "sol", model: "fake/model", kind: "opencode", gate: "none", tier: "expensive" },
+    ])
+  );
+  const directory = join(f.env.XDG_STATE_HOME, "vmethod/test/workers");
+  mkdirSync(directory, { recursive: true });
+  const unexpected = async (): Promise<never> => {
+    throw new Error("Unexpected worker hook");
+  };
+  const workers = new WorkerService(f.root, f.config, f.env, f.deps, {
+    metadata: async (pr) => ({
+      pr,
+      issue: pr + 1,
+      branch: "task",
+      title: "PRIVATE-TITLE",
+      body: "",
+      state: "MERGED",
+      draft: false,
+      blocked: false,
+      merged: true,
+      kind: "tooling",
+      estimate: 2,
+      comments: [],
+    }),
+    prepare: unexpected,
+    setModel: unexpected,
+    workerIdentity: unexpected,
+    issue: unexpected,
+    setEstimate: async () => {},
+    gradeComment: async () => {},
+    submitLearnings: () => f.service.command({ action: "submit" }),
+  });
+  const grade = async (pr: number) => {
+    writeFileSync(
+      join(directory, `${pr}.json`),
+      JSON.stringify({
+        version: 1,
+        repo,
+        pr,
+        issue: pr + 1,
+        id: `session-${pr}`,
+        finalized: true,
+        points_open: 1,
+        segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start" }],
+      })
+    );
+    return workers.grade(pr);
+  };
+  expect(await grade(308)).toContain("Submitted 1 records");
+  const first = [...f.files.keys()];
+  expect(await grade(309)).toContain("Submitted 1 records");
+  expect(f.writes.filter((write) => write.path === `${central}/pulls`)).toHaveLength(1);
+  expect(f.writes.filter((write) => write.path.includes("/git/refs/heads/"))).toHaveLength(1);
+  expect(modelRecords([...f.files.values()].join("\n")).map((r) => r.pr)).toEqual([308, 309]);
+  expect(first.every((path) => f.files.has(path))).toBe(true);
+  expect(await workers.grade(309)).toContain("No new learnings");
+  f.merge();
+  expect(await grade(310)).toContain("Submitted 1 records");
+  expect(f.writes.filter((write) => write.path === `${central}/pulls`)).toHaveLength(2);
+  expect(modelRecords(submittedLog(f.files)).map((r) => r.pr)).toEqual([310]);
+  expect(
+    modelRecords([...f.centralFiles.values(), ...f.files.values()].join("\n")).map((r) => r.pr)
+  ).toEqual([308, 309, 310]);
+  expect(modelRecords(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"))).toHaveLength(
+    3
+  );
+  expect(JSON.stringify(f.writes)).not.toContain("PRIVATE-");
 }, 15000);
 
 test("unknown PR authors are filtered before detail or file reads", async () => {
@@ -668,6 +806,45 @@ test("an open PR moving during record reads fails before additional writes", asy
   await f.service.command({ action: "submit" });
   const writes = f.writes.length;
   await expect(f.service.command({ action: "submit" })).rejects.toThrow("moved; retry");
+  expect(f.writes).toHaveLength(writes);
+}, 15000);
+
+test("an open PR moving before append refuses the ref update", async () => {
+  const f = setup({ moveBeforeUpdate: true });
+  await f.service.command({ action: "submit" });
+  f.append(record({ pr: 309 }));
+  await expect(f.service.command({ action: "submit" })).rejects.toThrow("moved; retry");
+  expect(f.writes.filter((write) => write.path.includes("/git/refs/heads/"))).toEqual([]);
+  expect(modelRecords(submittedLog(f.files)).map((record) => record.pr)).toEqual([308]);
+}, 15000);
+
+test("a lost append response is recovered from pending files without duplicate writes", async () => {
+  const f = setup({ failUpdate: true });
+  await f.service.command({ action: "submit" });
+  f.append(record({ pr: 309 }));
+  await expect(f.service.command({ action: "submit" })).rejects.toThrow("network request failed");
+  expect(JSON.parse(readFileSync(f.cursor, "utf8")).submitted).toEqual([308]);
+  const writes = f.writes.length;
+  expect(await f.service.command({ action: "submit" })).toContain("Pending:");
+  expect(f.writes).toHaveLength(writes);
+  expect(modelRecords([...f.files.values()].join("\n")).map((record) => record.pr)).toEqual([
+    308, 309,
+  ]);
+}, 15000);
+
+test("legacy modified-file submissions require reconciliation before appending", async () => {
+  const f = setup({ legacyPending: true });
+  f.append(record({ pr: 309 }));
+  await expect(f.service.command({ action: "submit" })).rejects.toThrow("not add-only");
+  expect(f.writes).toEqual([]);
+}, 15000);
+
+test("multiple open project submissions refuse a new increment instead of choosing a PR", async () => {
+  const f = setup({ multiplePending: true });
+  await f.service.command({ action: "submit" });
+  const writes = f.writes.length;
+  f.append(record({ pr: 309 }));
+  await expect(f.service.command({ action: "submit" })).rejects.toThrow("Multiple open project");
   expect(f.writes).toHaveLength(writes);
 }, 15000);
 

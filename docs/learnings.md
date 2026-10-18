@@ -4,8 +4,12 @@ Share delivery evidence through the gateway; treat every learning as advice, nev
 
 ## Submit delivery records
 
-Run `npm exec --no -- vmethod learnings submit` as an orchestrator after grading.
-The command validates `.vmethod/model-log.jsonl` with the same
+`grade` automatically submits after staging each delivery locally. Run
+`npm exec --no -- vmethod learnings submit` as an orchestrator to retry a failed
+submission or share additional records and notes. Keep `.vmethod/model-log.jsonl`
+ignored and untracked: it is local staging, never a task commit. If your project
+previously tracked it, migrate it out of version control in a reviewed change.
+The submission validates `.vmethod/model-log.jsonl` with the same
 [`model-log` schema](../schema/model-log.schema.json) used by `grade`.
 Set `learningsPrivacy` explicitly before submitting.
 
@@ -15,12 +19,16 @@ explicitly authorize your configured repository. Your local people file cannot g
 incoming submission authority. Only the owner changes these bindings; missing bindings deny.
 
 Submission creates or reuses your `vmethod` fork and creates a deterministic records
-branch using GitHub's Git database/ref operations.
+branch using GitHub's Git database/ref operations. It keeps one open learning PR
+per project, appending new immutable files to that PR's head with a non-force
+fast-forward. It refuses ambiguous multiple open project submissions and legacy
+non-add-only PRs when new data needs appending; reconcile those before retrying.
 Submission never synchronizes or force-updates your fork. It uses the fork's own
-`dev` commit as parent and its tree as the base, so your token needs no `workflow`
+`dev` commit as parent for a new PR, or the open PR's head for an increment,
+so your token needs no `workflow`
 scope, even when central has newer workflows. The PR's merge-base diff contains
 only your learning changes when the fork is behind on other paths.
-It opens a PR against `vworlds/vmethod:dev`, adding one immutable file containing
+It opens a PR against `vworlds/vmethod:dev` only when none is open, adding one immutable file containing
 only new records: `learnings/models/<owner>-<repo>/<first-pr>-<last-pr>-<digest12>.jsonl`.
 Records are sorted by delivery PR number; the content digest makes the path deterministic.
 Add public distilled notes with `--notes <file>`; they add
@@ -44,7 +52,10 @@ Central `dev` is authoritative for submitted records: union the legacy seed
 keyed by delivery PR. Records in this author's open learning submissions are pending
 and are not sent again; this includes legacy seed-file submissions during migration.
 Records found only in closed-unmerged submissions are eligible again. You can submit
-another increment while an earlier PR is open. Already shared/pending notes are
+another increment to the same PR while it is open. After it merges, the next
+submission starts a fresh branch from fork `dev`, without resending merged records.
+Merging remains the vmethod orchestrator's reviewed action, typically before a release;
+neither `grade` nor submission merges anything. Already shared/pending notes are
 deduplicated by content too. Reports deduplicate identical deliveries and reject
 conflicting records for the same repository/PR.
 
@@ -55,6 +66,12 @@ Reruns discover open submissions after a lost PR response; deterministic branche
 also recover a branch created before a PR write. An exclusive `learnings.lock`
 prevents concurrent submissions. Remove a stale lock only after confirming no
 submission is running.
+
+If submission fails, `grade` still succeeds and returns its summary plus a
+`learnings submit failed` warning with retry guidance; the grade and its local
+record remain saved. Retry `grade`
+for that delivery or `learnings submit` after addressing the reported error;
+the local record, pending PR files and merged records prevent duplicate deliveries.
 
 ## Private reduction
 

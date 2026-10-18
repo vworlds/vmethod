@@ -132,9 +132,10 @@ timing as BLOCKED. Local green does not overrule CI red.
 
 READY includes changes and reasons, deviations, commands/counts, exact CI outcome,
 relevant rule/search/guard evidence, unresolved questions and benchmarks where
-required. Never claim evidence you did not produce. Wait for review using
-`wait-review`. Each requested-change round gets point-by-point
-answers and READY at the next round number.
+required. Never claim evidence you did not produce. After posting READY, QUESTION,
+BLOCKED or DESIGN, end your turn. The orchestrator's review, answer or hold release
+wakes your session; read the task PR before acting. Each requested-change round
+gets point-by-point answers and READY at the next round number.
 
 ## Stop and ask
 

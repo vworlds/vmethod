@@ -4,3 +4,4 @@ dist/
 .worktrees/
 *.tgz
 coverage/
+.vmethod/model-log.jsonl

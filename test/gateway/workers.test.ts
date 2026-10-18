@@ -139,6 +139,7 @@ function fixture(requests: Request[] = [], priced = false) {
     setEstimate: vi.fn(async () => {}),
     setCost: vi.fn(async () => {}),
     gradeComment: vi.fn(async () => {}),
+    submitLearnings: vi.fn(async () => "Learning submission complete"),
     workerIdentity: vi.fn(async () => ({ GH_TOKEN: "worker-token", PATH: "fake-path" })),
     issue: vi.fn(async () => ({ estimate: 3, kind: "tooling" })),
   };
@@ -706,6 +707,89 @@ function status(active = false, messages: unknown[] = [], permissions: unknown[]
   ];
 }
 
+const wake = "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
+const wakeRequest: Request = {
+  path: "/api/session/ses_fake/prompt",
+  method: "POST",
+  body: { text: wake, delivery: "queue" },
+};
+
+test("resume without a recorded session reports absence without sending", async () => {
+  const f = fixture();
+  expect(await f.service.resume(31, wake)).toBe("no worker session for #31; nothing sent");
+  f.done();
+});
+
+test("resume wakes an idle session without steering", async () => {
+  const f = fixture([...start, ...status(), wakeRequest]);
+  await f.service.command(["start", "31"]);
+  expect(await f.service.resume(31, wake)).toBe("sent to #31");
+  f.done();
+});
+
+test("busy resume persists a queue, sends once after idle and never replays", async () => {
+  const f = fixture([
+    ...start,
+    ...status(true),
+    ...status(true),
+    ...status(),
+    wakeRequest,
+    ...status(),
+  ]);
+  await f.service.command(["start", "31"]);
+  expect(await f.service.resume(31, wake)).toBe("queued for #31");
+  expect(f.record().pendingWake).toEqual([wake]);
+  const restarted = new WorkerService(f.root, f.config, f.env, f.deps, f.hooks);
+  await restarted.watchStatus(31);
+  expect(f.record().pendingWake).toEqual([wake]);
+  await restarted.watchStatus(31);
+  expect(f.record().pendingWake).toBeUndefined();
+  await restarted.watchStatus(31);
+  f.done();
+});
+
+test("Claude busy resume waits for process exit and launches only once", async () => {
+  const f = fixture();
+  f.meta.model = "sonnet";
+  await f.service.command(["start", "31"]);
+  expect(await f.service.resume(31, wake)).toBe("queued for #31");
+  await f.service.watchStatus(31);
+  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(1);
+  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
+  writeFileSync(
+    join(f.directory, ".tmp/claude-worker.log"),
+    JSON.stringify(claudeResults[0]) + "\n"
+  );
+  await f.service.watchStatus(31);
+  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(2);
+  expect(f.deps.processes!.launch).toHaveBeenLastCalledWith(
+    expect.objectContaining({ prompt: wake })
+  );
+  await f.service.watchStatus(31);
+  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(2);
+  f.done();
+});
+
+test("failed queued delivery preserves the notification for the next idle poll", async () => {
+  const f = fixture([
+    ...start,
+    ...status(true),
+    ...status(),
+    { ...wakeRequest, status: 502 },
+    ...status(),
+    wakeRequest,
+    ...status(),
+  ]);
+  await f.service.command(["start", "31"]);
+  await f.service.resume(31, wake);
+  await expect(f.service.watchStatus(31)).rejects.toThrow("502");
+  expect(f.record().pendingWake).toEqual([wake]);
+  await f.service.watchStatus(31);
+  expect(f.record().pendingWake).toBeUndefined();
+  await f.service.watchStatus(31);
+  f.done();
+});
+
 test("start persists one session per PR, uses PR body and gateway model payload, and updates Model", async () => {
   const f = fixture([...start, ...status()]);
   expect(await f.service.command(["start", "31"])).toContain("ses_fake");
@@ -957,7 +1041,14 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
   expect(f.hooks.setModel).toHaveBeenLastCalledWith(31, "sol");
   f.meta.state = "MERGED";
   f.meta.merged = true;
-  expect(await f.service.grade(31, 20)).toContain("issue #9 Estimate 20");
+  vi.mocked(f.hooks.submitLearnings!).mockRejectedValueOnce(new Error("Submission unavailable"));
+  const stagedSummary = await f.service.grade(31, 20);
+  expect(stagedSummary).toContain("Graded PR #31: issue #9 Estimate 20");
+  expect(stagedSummary).toContain(
+    "\nlearnings submit failed: Submission unavailable; the record is staged locally, rerun vmethod learnings submit"
+  );
+  expect(f.record().finalized).toBe(true);
+  expect(f.record().gradePosted).toBe(true);
   expect(f.hooks.setEstimate).toHaveBeenCalledWith(9, 20);
   const records = readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8").trim().split("\n");
   expect(records).toHaveLength(1);
@@ -973,7 +1064,11 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
       { family: "sol", why: "quota", rounds: [2] },
     ],
   });
-  await f.service.grade(31, 20);
+  const summary = await f.service.grade(31, 20);
+  expect(summary).toContain("issue #9 Estimate 20");
+  expect(summary).toContain("Learning submission complete");
+  expect(f.hooks.submitLearnings).toHaveBeenCalledTimes(2);
+  expect(f.hooks.gradeComment).toHaveBeenCalledTimes(1);
   expect(
     readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8").trim().split("\n")
   ).toHaveLength(1);
