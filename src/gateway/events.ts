@@ -330,7 +330,7 @@ export class EventLoop {
   private readonly cycleStale = new Set<number>();
   private readonly cycleOwnMoves = new Set<string>();
   private inprogress: { number: number; branch: string; working: boolean }[] = [];
-  private costCards = new Map<number, string>();
+  private prCostCards = new Map<number, string>();
   private observedPrs: PrInfo[] = [];
   private nextBoardAt = 0;
   private lastBoardAt = 0;
@@ -2021,9 +2021,9 @@ export class EventLoop {
       throw new Error("Missing board configuration");
     }
     const cards = await this.readBoard(owner, number);
-    this.costCards = new Map(
+    this.prCostCards = new Map(
       cards.list
-        .filter((card) => card.repo === this.own && card.kind === "ISSUE")
+        .filter((card) => card.repo === this.own && card.kind === "PR")
         .map((card) => [card.number, card.id])
     );
     this.lastBoardAt = this.host.deps.now();
@@ -2646,8 +2646,8 @@ export class EventLoop {
       let updated: number | undefined;
       try {
         const recorded = await this.readWorkerStatus(pr.number);
-        if (recorded.issueCost) {
-          costs.set(recorded.issueCost.issue, recorded.issueCost.usd);
+        if (recorded.prCost) {
+          costs.set(pr.number, recorded.prCost.usd);
         }
         status = this.workerStop(pr.number, recorded);
         updated = recorded.updated;
@@ -2712,12 +2712,16 @@ export class EventLoop {
       }
       atomicWrite(stopPath, `${stop}\n`);
     }
-    for (const [issue, usd] of costs) {
-      const id = this.costCards.get(issue);
+    for (const [pr, usd] of costs) {
+      const id = this.prCostCards.get(pr);
       const value = JSON.stringify({ id, usd });
-      if (id && this.readMarker(`cost-${issue}`) !== value) {
-        await this.host.board.set({ itemId: id, field: "Cost", value: usd });
-        this.writeMarker(`cost-${issue}`, value);
+      if (id && this.readMarker(`cost-${pr}`) !== value) {
+        await this.host.board.set({
+          itemId: id,
+          field: "Cost",
+          value: usd === null ? null : `$${usd.toFixed(2)}`,
+        });
+        this.writeMarker(`cost-${pr}`, value);
       }
     }
   }

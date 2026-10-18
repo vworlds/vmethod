@@ -158,7 +158,7 @@ class GatewayServer {
       },
       setModel: (pr, family) => this.setWorkerField(pr, "pr", "Model", family),
       setEstimate: (issue, points) => this.setWorkerField(issue, "issue", "Estimate", points),
-      setCost: (issue, usd) => this.setWorkerField(issue, "issue", "Cost", usd),
+      setCost: (pr, cost) => this.setWorkerField(pr, "pr", "Cost", cost),
       gradeComment: async (issue, body) => {
         await checkMarkdown(this.root, body);
         guardClosingKeywords(body);

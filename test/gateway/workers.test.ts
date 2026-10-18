@@ -192,7 +192,7 @@ test("missing session totals fall back to complete assistant history, excluding 
   await f.service.command(["start", "31"]);
   const result = await f.service.watchStatus(31);
   expect(result.usage?.tokens).toEqual({ input: 1444, output: 130, cached: 167424 });
-  expect(result.issueCost?.usd).toBeCloseTo(0.0376728, 8);
+  expect(result.prCost?.usd).toBeCloseTo(0.0376728, 8);
   f.done();
 });
 
@@ -206,7 +206,7 @@ test("Claude polling and grading retain both resumed turns without double counti
     claudeResults.map((result) => JSON.stringify(result)).join("\n") + "\n"
   );
   for (let i = 0; i < 2; i++) {
-    expect((await f.service.watchStatus(31)).issueCost?.usd).toBeCloseTo(0.0810213, 8);
+    expect((await f.service.watchStatus(31)).prCost?.usd).toBeCloseTo(0.0810213, 8);
   }
   f.meta.state = "CLOSED";
   await f.service.grade(31, 3);
@@ -243,17 +243,24 @@ test("Claude replacement snapshots usage and cumulative reported cost across fre
   f.done();
 });
 
-test("status persists provider tokens and API dollars, grading rolls up other task PRs on the same issue", async () => {
-  const f = fixture([...start, ...measuredStatus(), ...measuredStatus(2)], true);
+test("status persists provider tokens and API dollars, grading uses only this PR even with another delivery on the same issue", async () => {
+  const f = fixture(
+    [...start, ...measuredStatus(), ...measuredStatus(2), ...measuredStatus(2)],
+    true
+  );
   await f.service.command(["start", "31"]);
   expect(await f.service.command(["status", "31"])).toContain("$1.193840");
   const other = f.record();
   other.pr = 32;
   writeFileSync(join(f.root, "state/vmethod/example-state/workers/32.json"), JSON.stringify(other));
+  expect((await f.service.watchStatus(31)).prCost).toEqual({
+    pr: 31,
+    usd: expect.closeTo(2.3876792, 8),
+  });
   f.meta.state = "MERGED";
   f.meta.merged = true;
   await f.service.grade(31, 5);
-  expect(f.hooks.setCost).toHaveBeenCalledWith(9, expect.closeTo(3.5815188, 8));
+  expect(f.hooks.setCost).toHaveBeenCalledWith(31, "$2.39");
   expect(f.hooks.gradeComment).toHaveBeenCalledWith(9, expect.stringContaining("$2.387679"));
   const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
   expect(record.usd).toBeCloseTo(2.3876792, 8);
@@ -262,12 +269,12 @@ test("status persists provider tokens and API dollars, grading rolls up other ta
   f.done();
 });
 
-test("watch poll computes issue rollup without GitHub reads and unknown price propagates", async () => {
+test("watch poll computes PR cost without GitHub reads and unknown price propagates", async () => {
   const f = fixture([...start, ...measuredStatus()]);
   await f.service.command(["start", "31"]);
   vi.mocked(f.hooks.metadata).mockClear();
   const result = await f.service.watchStatus(31);
-  expect(result.issueCost).toEqual({ issue: 9, usd: null });
+  expect(result.prCost).toEqual({ pr: 31, usd: null });
   expect(f.record().segments[0].usd).toBeNull();
   expect(f.hooks.metadata).not.toHaveBeenCalled();
   expect(f.hooks.setCost).not.toHaveBeenCalled();

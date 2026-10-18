@@ -54,11 +54,17 @@ opening Estimate. Clearing an issue Estimate remains distinct from assigning zer
 
 ## Cost
 
-`Cost` is an issue-only number in USD at configured API prices, not subscription
-charges. The existing worker poll updates it from all locally tracked task PRs for
-the issue, including partial deliveries; `grade` sets the final rollup. Unknown
-usage or missing prices clear the field rather than writing zero. Keep worker
-state for previous deliveries so the rollup retains their costs.
+`Cost` is per PR: text in `$0.00` format at configured API prices, not subscription
+charges. The existing worker poll updates the task PR's card from that PR's own
+segments; `grade` sets its final Cost. There is no rollup across PRs, even when they
+deliver the same issue. Unknown usage or missing prices clear the field rather than
+writing zero. Cost is formatted to two decimal places only for board writes; model-log
+and GRADE USD retain full precision. Both issue-card field-write paths refuse Cost,
+including null writes.
+
+Migration 0004 replaces the shipped numeric Cost field with text, clearing legacy
+issue rollups as part of the field replacement. Preview with `board migrate --dry-run`;
+it lists both the delete and add operations.
 
 Expand-only migration `0003` adds this field without changing existing cards or
 raising minimum compatibility, including on shared boards. Run the normal board

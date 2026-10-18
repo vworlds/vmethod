@@ -1,8 +1,10 @@
 import { expect, test } from "vitest";
 import {
   claudeUsage,
+  boardCost,
   dollars,
   opencodeUsage,
+  parseBoardCost,
   sumUsd,
   usageDelta,
   zeroTokens,
@@ -11,6 +13,19 @@ import { learningReport } from "../src/learnings.js";
 import { validateYaml } from "../src/config.js";
 import session from "./fixtures/usage/opencode-session.json" with { type: "json" };
 import results from "./fixtures/usage/claude-results.json" with { type: "json" };
+
+test.each([
+  [6.10557, "$6.11"],
+  [0.004, "$0.00"],
+  [4.2411964, "$4.24"],
+] as const)("board Cost formats %s as %s", (usd, expected) =>
+  expect(boardCost(usd)).toBe(expected)
+);
+
+test("board Cost reads formatted values and leaves malformed values unknown", () => {
+  expect(parseBoardCost("$6.11")).toBe(6.11);
+  expect(parseBoardCost("abc")).toBeNull();
+});
 
 test.each([
   { input: 1, output: 2 },

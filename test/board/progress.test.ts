@@ -40,17 +40,19 @@ test("migration 0002 expands the Progress table without contracting version-1 ca
   board.done();
 });
 
-test("migration 0003 adds numeric issue Cost without changing shared cards or compatibility", async () => {
+test("migration history preserves 0003 numeric Cost and dry-runs 0004 text replacement", async () => {
   const board = new FakeBoard();
   board.stamp(2, 1);
   const before = structuredClone(board.card());
   const migrations = loadMigrations();
   expect(migrations[2].up).toEqual([{ op: "add_field", field: "Cost", type: "number" }]);
-  const result = await board.service(migrations).migrate({});
-  expect(result.state.version).toBe(3);
-  expect(result.state.minCompatible).toBe(1);
-  expect(result.drift).toEqual([]);
-  expect(board.fields.find((field) => field.name === "Cost")?.type).toBe("number");
+  expect(migrations[3].up).toEqual([
+    { op: "remove_field", field: "Cost" },
+    { op: "add_field", field: "Cost", type: "text" },
+  ]);
+  const dry = await board.service(migrations).migrate({ dryRun: true });
+  expect(dry.message).toContain("v4: remove field Cost");
+  expect(dry.message).toContain("v4: add field Cost (text)");
   expect(board.cards).toEqual([before]);
   expect(() => compatibility(readState(board.readme), 1, () => {})).not.toThrow();
   board.done();
@@ -61,9 +63,11 @@ test("migration 0003 dry run on v2 names Cost and the version bump without write
   board.stamp(2, 1);
   const before = { readme: board.readme, fields: structuredClone(board.fields) };
   const result = await board.service(loadMigrations()).migrate({ dryRun: true });
-  expect(result.message).toBe("Dry run: 2 → 3; v3: add field Cost (number)");
+  expect(result.message).toBe(
+    "Dry run: 2 → 4; v3: add field Cost (number); v4: remove field Cost; v4: add field Cost (text)"
+  );
   expect(result.state.version).toBe(2);
-  expect(result.pending.map((migration) => migration.version)).toEqual([3]);
+  expect(result.pending.map((migration) => migration.version)).toEqual([3, 4]);
   expect(board.mutations).toEqual([]);
   expect({ readme: board.readme, fields: board.fields }).toEqual(before);
   board.done();

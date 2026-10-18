@@ -173,7 +173,7 @@ function fixture(prefix?: string, legacy = false) {
                     {
                       id: "F_COST",
                       name: "Cost",
-                      dataType: "NUMBER",
+                      dataType: "TEXT",
                       createdAt: recordedFields.node.fields.nodes[0].createdAt,
                     },
                   ],
@@ -450,7 +450,7 @@ test.each([false, true])(
   15000
 );
 
-test("gateway dispatches a draft PR and grades its delivery, writing Estimate only on linked issue", async () => {
+test("gateway grades a delivery with Estimate on the linked issue and Cost only on the PR", async () => {
   const f = fixture();
   await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
   expect(f.mutations[0]).toMatchObject({
@@ -470,7 +470,9 @@ test("gateway dispatches a draft PR and grades its delivery, writing Estimate on
     segments: [{ family: "glm", why: "start" }],
     usd: null,
   });
-  expect(f.mutations[2]).toMatchObject({ m0: { itemId: "CARD9", fieldId: "F_COST" } });
+  expect(f.mutations[2]).toMatchObject({
+    m0: { itemId: "CARD31", fieldId: "F_COST" },
+  });
   expect(f.gradePosts).toEqual([
     { body: "[orchestrator] GRADE\n\nGraded PR #31: issue #9 Estimate 20; USD unknown" },
   ]);

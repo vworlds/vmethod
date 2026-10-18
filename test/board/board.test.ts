@@ -446,11 +446,32 @@ test("card writes enforce content repo scope, Status+Progress, PR Estimate polic
   await expect(
     board.service().set({ itemId: card.id, field: "Estimate", value: 5 })
   ).rejects.toThrow("Never");
-  await expect(
-    board.service().set({ itemId: card.id, field: "Cost", value: 1.25 })
-  ).rejects.toThrow("Never set Cost on a PR");
   await board.service().archive(card.id);
   expect(board.cards).toEqual([foreign]);
+});
+
+test("Cost is per PR; both issue write paths refuse it without mutations", async () => {
+  const board = setup();
+  board.stamp(1);
+  board.fields.push({ id: "cost", name: "Cost", type: "text", createdAt: 1, options: [] });
+  const issue = board.card("issue");
+  issue.contentId = "issue-content";
+  const pr = board.card("pr");
+  pr.kind = "PullRequest";
+  for (const value of ["$1.25", null]) {
+    await expect(board.service().set({ itemId: issue.id, field: "Cost", value })).rejects.toThrow(
+      "Never set Cost on an issue"
+    );
+  }
+  await expect(board.service().setIssueField(issue.contentId, "Cost", "$1.25")).rejects.toThrow(
+    "Never set Cost on an issue"
+  );
+  expect(board.mutations).toEqual([]);
+  await board.service().set({ itemId: pr.id, field: "Cost", value: "$1.25" });
+  expect(pr.values.Cost).toBe("$1.25");
+  await board.service().set({ itemId: pr.id, field: "Cost", value: null });
+  expect(pr.values.Cost).toBeNull();
+  expect(issue.values.Cost).toBeUndefined();
 });
 
 test.each([4, 1.5, -1, Infinity, NaN])(

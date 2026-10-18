@@ -268,8 +268,10 @@ different existing grade requires explicit reconciliation. The default final
 points are the issue's current Estimate. Records are validated against the shared
 `schema/model-log.schema.json` before either the Estimate write or log append.
 Grading also snapshots final provider tokens and API-price USD, posts GRADE on the
-issue, and updates its Cost rollup. `worker status` displays tokens and USD so far;
-the existing watcher poll updates issue Cost automatically. Configure family prices
+issue, and updates the delivery PR's Cost. Cost is per PR, using only that PR's
+segments, never an issue rollup. `worker status` displays tokens and USD so far;
+the existing watcher poll updates the task PR card automatically, rounded to two
+formatted as `$0.00` on the board (the model log and GRADE text keep full precision). Configure family prices
 and migrate the board as described in [worker cost accounting](learnings.md#worker-cost-and-model-log-migration).
 No additional worker or orchestrator command is needed for collection.
 

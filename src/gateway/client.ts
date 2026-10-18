@@ -698,8 +698,8 @@ export interface WorkerSessionStatus {
   permissions?: number;
   /** Cumulative provider usage for this session, never inferred from message text. */
   usage?: Usage;
-  /** All locally tracked deliveries for the originating issue, for the existing board poll. */
-  issueCost?: { issue: number; usd: number | null };
+  /** This task PR's own segments, for the existing board poll; never an issue rollup. */
+  prCost?: { pr: number; usd: number | null };
 }
 
 export function classifyTurn(turn: ObjectData): WorkerSessionStatus {

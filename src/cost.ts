@@ -60,6 +60,20 @@ export function sumUsd(values: readonly (number | null | undefined)[]): number |
     : values.reduce<number>((sum, value) => sum + value!, 0);
 }
 
+/** Format known USD for the board's per-PR text Cost field. */
+export function boardCost(usd: number | null): string | null {
+  return usd === null ? null : `$${usd.toFixed(2)}`;
+}
+
+/** Parse board Cost text; malformed values stay unknown. */
+export function parseBoardCost(value: unknown): number | null {
+  if (typeof value !== "string" || !/^\$\d+(?:\.\d{2})$/.test(value)) {
+    return null;
+  }
+  const amount = Number(value.slice(1));
+  return Number.isFinite(amount) ? amount : null;
+}
+
 /** Decode cumulative OpenCode totals, using full-history fallback only for absent categories. */
 export function opencodeUsage(value: unknown, fallback?: Usage): Usage | undefined {
   const source = object(value);

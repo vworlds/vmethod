@@ -113,7 +113,10 @@ those repeated cumulative values. Its `modelUsage` totals are not per-turn usage
 `worker status` shows tokens and USD so far. `grade` snapshots final segment
 `tokens: { input, output, cached }`, segment `usd`, and delivery `usd`, and posts a
 GRADE comment on the issue. Unavailable usage or prices produce `null`, never a
-fabricated zero. See [issue Cost](board.md#cost) for the rollup.
+fabricated zero. Cost is per PR: both collection paths write only that task PR's
+own segments to its card. See [PR Cost](board.md#cost), including legacy issue-card
+cleanup; there is no issue rollup. Board writes use `$0.00`; the log and
+GRADE text retain full precision.
 
 **Migration:** old model-log records remain valid without the new fields; absent
 cost is unknown. Do not backfill zero or edit immutable submitted records. New

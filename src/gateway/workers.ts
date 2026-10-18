@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { estimateScale } from "../board/estimate.js";
 import {
   addTokens,
+  boardCost,
   claudeUsage,
   dollars,
   sumUsd,
@@ -47,6 +48,7 @@ interface Model {
   fallback?: string[];
   price?: Price;
 }
+
 interface Segment {
   family: string;
   model: string;
@@ -96,8 +98,8 @@ export interface WorkerHooks {
   prepare(pr: number): Promise<string>;
   setModel(pr: number, family: string): Promise<void>;
   setEstimate(issue: number, points: number): Promise<void>;
-  /** Grade-time issue-only rollup; null clears the board number rather than inventing zero. */
-  setCost?(issue: number, usd: number | null): Promise<void>;
+  /** Grade-time per-PR cost; null clears the board field rather than inventing zero. */
+  setCost?(pr: number, cost: string | null): Promise<void>;
   /** Post the validated GRADE summary on the originating issue. */
   gradeComment?(issue: number, text: string): Promise<void>;
   workerIdentity(): Promise<NodeJS.ProcessEnv>;
@@ -632,7 +634,7 @@ export class WorkerService {
           : "stopped";
     });
   }
-  /** Collect activity/usage and issue cost from recorded task history, without GitHub reads. */
+  /** Collect activity/usage and this PR's segment cost, without GitHub reads. */
   async watchStatus(pr: number): Promise<WorkerSessionStatus> {
     return this.locked(pr, async () => {
       const record = this.read(pr);
@@ -640,16 +642,9 @@ export class WorkerService {
         return { reason: "session unknown", active: false };
       }
       const status = await this.status(record, false);
-      status.issueCost = { issue: record.issue, usd: this.issueCost(record.issue) };
+      status.prCost = { pr, usd: sumUsd(record.segments.map((segment) => segment.usd)) };
       return status;
     });
-  }
-  private issueCost(issue: number): number | null {
-    const records = readdirSync(this.state)
-      .filter((file) => /^\d+\.json$/.test(file))
-      .map((file) => this.read(Number(file.slice(0, -5)))!)
-      .filter((record) => record.issue === issue);
-    return sumUsd(records.flatMap((record) => record.segments.map((segment) => segment.usd)));
   }
   async resume(pr: number, text: string): Promise<void> {
     await this.locked(pr, async () => {
@@ -1022,7 +1017,7 @@ export class WorkerService {
       }
       session.finalized = true;
       this.save(session);
-      await this.hooks.setCost?.(meta.issue, this.issueCost(meta.issue));
+      await this.hooks.setCost?.(pr, boardCost(record.usd));
       const summary = `Graded PR #${pr}: issue #${meta.issue} Estimate ${points}; USD ${record.usd === null ? "unknown" : `$${record.usd.toFixed(6)}`}`;
       if (!session.gradePosted) {
         await this.hooks.gradeComment?.(meta.issue, `[orchestrator] GRADE\n\n${summary}`);

@@ -390,7 +390,7 @@ export class BoardService implements BoardIO {
       }
     }
   }
-  /** Write a scoped card field; non-null issue Estimates must use the shared points scale. */
+  /** Write a scoped card field; Estimate is issue-only, Cost is per PR. */
   async set(input: {
     itemId: string;
     field: "Status" | "Estimate" | "Model" | "Progress" | "Cost";
@@ -405,8 +405,11 @@ export class BoardService implements BoardIO {
     }
     const card = await this.item(input.itemId);
     this.scope(card);
-    if (["Estimate", "Cost"].includes(input.field) && card.kind === "PullRequest") {
+    if (input.field === "Estimate" && card.kind === "PullRequest") {
       throw new Error(`Never set ${input.field} on a PR`);
+    }
+    if (input.field === "Cost" && card.kind === "Issue") {
+      throw new Error("Never set Cost on an issue");
     }
     if (input.field === "Status" && input.progress === undefined) {
       throw new Error("Status writes require Progress");
@@ -429,10 +432,13 @@ export class BoardService implements BoardIO {
     return "Board field updated";
   }
   /** Set a single-select/number field by issue content ID on the configured board only.
-   * Estimates must use the shared points scale. Status writes clear Progress;
+   * Estimates must use the shared points scale. Cost is refused. Status writes clear Progress;
    * GitHubClient journals the successful mutations.
    */
   async setIssueField(contentId: string, name: string, value: string): Promise<string> {
+    if (name === "Cost") {
+      throw new Error("Never set Cost on an issue");
+    }
     if (typeof name !== "string" || !name || typeof value !== "string" || !value.trim()) {
       throw new Error("Invalid board field/value");
     }
