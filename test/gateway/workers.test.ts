@@ -171,6 +171,7 @@ const start: Request[] = [
     method: "POST",
     body: { text: "PR description `data`", delivery: "steer" },
   },
+  { path: "/api/session/ses_fake", data: { id: "ses_fake", title: "project#31" } },
 ];
 function measuredStatus(multiplier = 1): Request[] {
   const data = structuredClone(captured.data);
@@ -206,6 +207,7 @@ test("Claude polling and grading retain both resumed turns without double counti
   const f = fixture([], true);
   f.meta.model = "sonnet";
   await f.service.command(["start", "31"]);
+  expect(vi.mocked(f.deps.processes!.launch).mock.calls[0][0].prompt).toMatch(/^project#31\n\n/);
   vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
   writeFileSync(
     join(f.directory, ".tmp/claude-worker.log"),
@@ -297,6 +299,7 @@ test("model switch snapshots cumulative baseline and grades each family's delta"
         method: "POST",
         body: { model: { providerID: "fake", id: "sol" } },
       },
+      { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
       ...measuredStatus(2),
     ],
     true
@@ -337,13 +340,17 @@ test("watch status uses the recorded task session and client update time without
 test("adopt records an existing session without creating or prompting it", async () => {
   const f = fixture();
   // The session must belong to the prepared task worktree.
-  f.deps.fetch = vi.fn(async () =>
+  f.deps.fetch = vi.fn(async (_url, init) =>
     Response.json({
-      data: {
-        id: "ses_existing",
-        directory: f.directory,
-        model: { providerID: "fake", id: "glm" },
-      },
+      data:
+        init?.method === "PATCH"
+          ? {}
+          : {
+              id: "ses_existing",
+              directory: f.directory,
+              model: { providerID: "fake", id: "glm" },
+              title: "old title",
+            },
     })
   );
   expect(await f.service.command(["adopt", "31", "ses_existing"])).toContain("Adopted");
@@ -353,7 +360,10 @@ test("adopt records an existing session without creating or prompting it", async
     points_open: 8,
     segments: [{ why: "adopt", model: "fake/glm" }],
   });
-  expect(f.deps.fetch).toHaveBeenCalledTimes(1);
+  expect(f.deps.fetch).toHaveBeenCalledTimes(2);
+  expect(JSON.parse(String(vi.mocked(f.deps.fetch).mock.calls[1][1]?.body))).toEqual({
+    title: "project#31",
+  });
   expect(f.hooks.setModel).toHaveBeenCalledWith(31, "glm");
   await expect(f.service.command(["adopt", "31", "ses_other"])).rejects.toThrow("already recorded");
 });
@@ -477,6 +487,10 @@ test.each([legacyFiles.vecs, ...legacyFiles.spacerocks.slice(1)])(
     const f = legacyFixture(record);
     f.deps.fetch = vi.fn(async (url, init) => {
       expect(new URL(String(url)).pathname).toBe(`/api/session/${f.id}`);
+      if (init?.method === "PATCH") {
+        expect(JSON.parse(String(init.body))).toEqual({ title: `project#${f.pr}` });
+        return Response.json({ data: {} });
+      }
       expect(init?.method).toBe("GET");
       return Response.json({ data: f.session });
     });
@@ -490,9 +504,9 @@ test.each([legacyFiles.vecs, ...legacyFiles.spacerocks.slice(1)])(
       model: { model: "fake/glm" },
     });
     expect(readFileSync(join(f.legacy, f.key), "utf8")).toBe(record.content);
-    expect(f.deps.fetch).toHaveBeenCalledTimes(1);
+    expect(f.deps.fetch).toHaveBeenCalledTimes(2);
     expect(await f.service.command(["adopt", "--from-legacy"])).toContain("already recorded");
-    expect(f.deps.fetch).toHaveBeenCalledTimes(1);
+    expect(f.deps.fetch).toHaveBeenCalledTimes(2);
   }
 );
 
@@ -707,6 +721,21 @@ function status(active = false, messages: unknown[] = [], permissions: unknown[]
   ];
 }
 
+test("status flags an OpenCode session title that differs from the project and PR", async () => {
+  const f = fixture([
+    ...start,
+    ...status().map((request) =>
+      request.path === "/api/session/ses_fake"
+        ? { ...request, data: { id: "ses_fake", title: "generated title" } }
+        : request
+    ),
+  ]);
+  await f.service.command(["start", "31"]);
+  const output = await f.service.command(["status", "31"]);
+  expect(output).toContain('TITLE MISMATCH expected "project#31"');
+  f.done();
+});
+
 const wake = "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
 const wakeRequest: Request = {
   path: "/api/session/ses_fake/prompt",
@@ -763,7 +792,7 @@ test("Claude busy resume waits for process exit and launches only once", async (
   await f.service.watchStatus(31);
   expect(f.deps.processes!.launch).toHaveBeenCalledTimes(2);
   expect(f.deps.processes!.launch).toHaveBeenLastCalledWith(
-    expect.objectContaining({ prompt: wake })
+    expect.objectContaining({ prompt: `project#31\n\n${wake}` })
   );
   await f.service.watchStatus(31);
   expect(f.deps.processes!.launch).toHaveBeenCalledTimes(2);
@@ -802,6 +831,25 @@ test("start persists one session per PR, uses PR body and gateway model payload,
   });
   expect(f.hooks.setModel).toHaveBeenCalledWith(31, "glm");
   await expect(f.service.command(["start", "31"])).rejects.toThrow("live session");
+  f.done();
+});
+
+test("start restores the explicit title when OpenCode retitles after the first prompt", async () => {
+  const f = fixture([
+    { path: "/api/session", method: "POST", data: { id: "ses_fake" } },
+    {
+      path: "/api/session/ses_fake/prompt",
+      method: "POST",
+      body: { text: "PR description `data`", delivery: "steer" },
+    },
+    { path: "/api/session/ses_fake", data: { id: "ses_fake", title: "generated title" } },
+    {
+      path: "/api/session/ses_fake",
+      method: "PATCH",
+      body: { title: "project#31" },
+    },
+  ]);
+  await expect(f.service.command(["start", "31"])).resolves.toContain("Started");
   f.done();
 });
 
@@ -987,6 +1035,7 @@ test("unknown session starts a re-entry session with only latest orchestrator am
         delivery: "steer",
       },
     },
+    { path: "/api/session/ses_resumed", data: { id: "ses_resumed", title: "project#31" } },
   ]);
   await f.service.command(["start", "31"]);
   f.meta.comments = [
@@ -1029,6 +1078,7 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
       method: "POST",
       body: { model: { providerID: "fake", id: "sol" } },
     },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
     ...usageStatus(),
   ]);
   await f.service.command(["start", "31"]);

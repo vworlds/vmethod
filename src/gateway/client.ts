@@ -440,7 +440,7 @@ export class OpencodeClient {
   }
 
   async request(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PATCH",
     path: string,
     body?: unknown,
     deadline?: number

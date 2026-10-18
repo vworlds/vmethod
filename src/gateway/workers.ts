@@ -339,7 +339,19 @@ export class WorkerService {
     const tokenText = record.segments.some((segment) => !segment.usage)
       ? "unknown"
       : `input ${tokens.input} output ${tokens.output} cached ${tokens.cached}`;
-    return `#${record.pr} ${record.id} ${status.reason}${details} | tokens ${tokenText} | USD ${usd === null ? "unknown" : `$${usd.toFixed(6)}`}${status.error ? ` ${untrusted(status.error)}` : ""}${advice}`;
+    const titleMismatch =
+      record.model.kind === "opencode" && status.title !== this.sessionTitle(record.pr)
+        ? ` | TITLE MISMATCH expected ${JSON.stringify(this.sessionTitle(record.pr))}`
+        : "";
+    return `#${record.pr} ${record.id} ${status.reason}${details}${titleMismatch} | tokens ${tokenText} | USD ${usd === null ? "unknown" : `$${usd.toFixed(6)}`}${status.error ? ` ${untrusted(status.error)}` : ""}${advice}`;
+  }
+  private sessionTitle(pr: number): string {
+    return `${String(this.config.repo).split("/").at(-1)}#${pr}`;
+  }
+  private async setOpenCodeTitle(record: Session): Promise<void> {
+    await this.client().request("PATCH", `${this.idPath(record)}`, {
+      title: this.sessionTitle(record.pr),
+    });
   }
   private claudeLog(record: Session): string[] {
     const file = join(record.directory, ".tmp/claude-worker.log");
@@ -401,7 +413,7 @@ export class WorkerService {
         ],
         cwd: record.directory,
         env: { ...env, VMETHOD_TASK_PR: String(record.pr) },
-        prompt: text,
+        prompt: `${this.sessionTitle(record.pr)}\n\n${text}`,
         log,
       });
       this.save(record);
@@ -520,6 +532,9 @@ export class WorkerService {
           throw new Error("Cannot switch backend and retain context");
         }
         if (model.family === record.model.family && model.model === record.model.model) {
+          if (record.model.kind === "opencode") {
+            await this.setOpenCodeTitle(record);
+          }
           await this.hooks.setModel(pr, model.family);
           return `Model unchanged for ${record.id}; PR Model synchronized`;
         }
@@ -533,6 +548,7 @@ export class WorkerService {
         }
         if (model.kind === "opencode") {
           await this.client().request("POST", `${path}/model`, { model: this.apiModel(model) });
+          await this.setOpenCodeTitle(record);
         }
         record.model = model;
         record.segments.push({
@@ -767,6 +783,17 @@ export class WorkerService {
       ],
     });
     await this.hooks.setModel(pr, model.family);
+    await this.setOpenCodeTitle({
+      version: 1,
+      repo: String(this.config.repo),
+      pr,
+      issue: meta.issue,
+      directory,
+      id,
+      model,
+      points_open: points,
+      segments: [],
+    });
     return `Adopted ${id} for #${pr} on ${model.family}${legacySnapshot ? ` (legacy snapshot at adoption: ${points})` : ""}`;
   }
   private async adoptLegacy(): Promise<string> {
@@ -923,7 +950,7 @@ export class WorkerService {
               await this.client().request("POST", "/api/session", {
                 location: { directory },
                 model: this.apiModel(model),
-                title: `${String(this.config.repo).split("/").at(-1)}#${pr}`,
+                title: this.sessionTitle(pr),
               })
             ).data
           )
@@ -973,6 +1000,14 @@ export class WorkerService {
       ? `The PR description is your prompt: https://github.com/${String(this.config.repo)}/pull/${pr}\n\n${amendment?.body ?? "No orchestrator amendment."}`
       : meta.body;
     await this.prompt(record, prompt, "steer", false);
+    if (model.kind === "opencode") {
+      const firstTurn = object(
+        object(await this.client().request("GET", this.idPath(record))).data
+      );
+      if (firstTurn.title !== this.sessionTitle(pr)) {
+        await this.setOpenCodeTitle(record);
+      }
+    }
     await this.hooks.setModel(pr, model.family);
     return `Started ${record.id} for #${pr} on ${model.family}`;
   }
