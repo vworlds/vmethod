@@ -64,7 +64,6 @@ try {
     case "read-pr":
     case "pr-comment":
     case "push":
-    case "wait-review":
     case "open-task":
     case "review":
     case "ask":
@@ -104,7 +103,7 @@ try {
         process.exitCode = result.code;
         break;
       }
-      const output = ["start-task", "read-pr", "pr-comment", "push", "wait-review"].includes(verb)
+      const output = ["start-task", "read-pr", "pr-comment", "push"].includes(verb)
         ? await workerVerb(transport, root(), verb, args, env, {
             exec: async (file, args, options) =>
               (

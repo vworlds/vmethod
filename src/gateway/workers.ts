@@ -74,6 +74,7 @@ interface Session {
   logOffset?: number;
   finalized?: boolean;
   gradePosted?: boolean;
+  pendingWake?: string[];
 }
 export interface TaskMetadata {
   pr: number;
@@ -308,6 +309,16 @@ export class WorkerService {
         this.models.find((m) => m.family === segment.family)?.price
       );
       this.save(record);
+    }
+    if (
+      record.pendingWake?.length &&
+      !status.active &&
+      !["permission-wait", "session unknown"].includes(status.reason)
+    ) {
+      await this.prompt(record, record.pendingWake.join("\n"), "queue");
+      delete record.pendingWake;
+      this.save(record);
+      return { ...status, reason: "running", active: true };
     }
     return status;
   }
@@ -649,13 +660,24 @@ export class WorkerService {
       return status;
     });
   }
-  async resume(pr: number, text: string): Promise<void> {
-    await this.locked(pr, async () => {
+  /** Wake without steering; persisted busy-session messages drain on the next idle status poll. */
+  async resume(pr: number, text: string): Promise<string> {
+    return this.locked(pr, async () => {
       const record = this.read(pr);
       if (!record) {
-        throw new Error(`No session recorded for PR #${pr}`);
+        return `no worker session for #${pr}; nothing sent`;
       }
-      await this.prompt(record, text);
+      const status = await this.status(record, false);
+      if (status.reason === "session unknown") {
+        return `no worker session for #${pr}; nothing sent`;
+      }
+      if (status.active || status.reason === "permission-wait") {
+        record.pendingWake = [...(record.pendingWake ?? []), text];
+        this.save(record);
+        return `queued for #${pr}`;
+      }
+      await this.prompt(record, text, "queue");
+      return `sent to #${pr}`;
     });
   }
   private async adopt(pr: number, id: string, legacy?: { key?: string }): Promise<string> {

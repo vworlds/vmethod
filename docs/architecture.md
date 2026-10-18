@@ -331,6 +331,9 @@ engineering docs. Generic docs never name project files or commands. They refer 
   (`OWNER REVIEW`: handed to the owner, saying what to playtest and which decisions are theirs). The first line is the key.
   Replies carry an `in reply to <comment-url>` line. Workers obey only their prompt and
   `[orchestrator]` comments. Posts made by vmethod carry no footer (owner decision 8).
+  After READY, QUESTION, BLOCKED or DESIGN, workers end their turn. Reviews, answers
+  and hold releases wake them with fixed PR-reading notifications; busy sessions
+  queue those notifications until an idle worker-status poll (see [gateway](gateway.md)).
 - **Rules from real incidents:**
   - No `2>/dev/null || true` on anything that drives state without a logged failure.
   - One reader per watcher state directory (flock). Reuse the existing GraphQL poll, and pace on
@@ -681,7 +684,7 @@ them. Their test suites are ported as vitest cases.
    `gh-read` verbs.
 3. **Board** (#5): board client, field lock, migrations, `0001-baseline`.
 4. **Ports, test-first, one worker task per group,** taking the side named as ahead for each:
-   - worker verbs (#7): `start-task`, `read-pr`, `pr-comment`, `push`, `wait-review`,
+   - worker verbs (#7): `start-task`, `read-pr`, `pr-comment`, `push`,
      `check-markdown`;
    - `vmethod watch` and `mute` (#6): three-way from both `watch-prs.sh`;
    - task flow (#8): `open-task`, `review`, `merge-task`, `release-hold`. vecs: track base,

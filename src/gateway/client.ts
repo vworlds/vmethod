@@ -10,7 +10,7 @@ export interface Dependencies {
   /** #9 supplies both backends; absent/unknown status must never permit a merge. */
   workers?: {
     status(pr: number): Promise<"stopped" | "live" | "unknown">;
-    resume(pr: number, prompt: string): Promise<void>;
+    resume(pr: number, prompt: string): Promise<string | void>;
     stop?(pr: number): Promise<string | void>;
   };
   fetch: typeof fetch;

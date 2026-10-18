@@ -83,19 +83,6 @@ export async function workerVerb(
       rmSync(directory, { recursive: true, force: true });
     }
   }
-  if (verb === "wait-review") {
-    if (args.length < 1 || args.length > 2) {
-      throw new Error("usage: wait-review.sh <pr> [poll-seconds]");
-    }
-    return transport.call(
-      "waitReview",
-      {
-        ref: args[0],
-        pollSeconds: args[1] === undefined ? 120 : Number(args[1]),
-      },
-      ctx
-    );
-  }
   if (args.length !== 1) {
     throw new Error(`usage: ${verb}.sh <pr>`);
   }

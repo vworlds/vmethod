@@ -669,8 +669,11 @@ test.each(["owner", "ask"] as const)(
 );
 
 test.each([
-  ["changes", "[orchestrator] REVIEW round 1\nRead your task PR and act on the review."],
-  ["answer", "[orchestrator] ANSWER\nRead your task PR and act on the review."],
+  [
+    "changes",
+    "[orchestrator] REVIEW round 1 is on your PR; read it with vmethod read pr 27 and act.",
+  ],
+  ["answer", "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 27 and act."],
 ] as const)("review %s resumes the worker", async (outcome, prompt) => {
   const f = fixture();
   const file = join(f.root, "review.md");
@@ -680,13 +683,67 @@ test.each([
   f.done();
 });
 
-test("review changes works without worker control", async () => {
+test.each(["changes", "answer"] as const)(
+  "review %s works without worker control",
+  async (outcome) => {
+    const f = fixture();
+    f.deps.workers = undefined;
+    const file = join(f.root, "review.md");
+    writeFileSync(file, "Please address this.\n");
+    await f.flow().review({ ref: "27", outcome, file });
+    expect(f.resumes).toEqual([]);
+    f.done();
+  }
+);
+
+test.each(["changes", "answer"] as const)(
+  "review %s reports no session after posting",
+  async (outcome) => {
+    const f = fixture();
+    f.deps.workers!.resume = async () => "no worker session for #27; nothing sent";
+    const file = join(f.root, "review.md");
+    writeFileSync(file, "Please address this.\n");
+    expect(await f.flow().review({ ref: "27", outcome, file })).toContain(
+      "no worker session for #27; nothing sent"
+    );
+    expect(f.writes).toContainEqual({
+      path: "/repos/example/project/issues/27/comments",
+      body: { body: expect.stringContaining("Please address this.") },
+    });
+    f.done();
+  }
+);
+
+test("review reports queued delivery and uses the next review round", async () => {
   const f = fixture();
-  f.deps.workers = undefined;
+  f.comments.push({ body: "[orchestrator] REVIEW round 3" });
+  f.deps.workers!.resume = async (pr, prompt) => {
+    expect(pr).toBe(27);
+    expect(prompt).toBe(
+      "[orchestrator] REVIEW round 4 is on your PR; read it with vmethod read pr 27 and act."
+    );
+    return "queued for #27";
+  };
   const file = join(f.root, "review.md");
   writeFileSync(file, "Please address this.\n");
-  await f.flow().review({ ref: "27", outcome: "changes", file });
-  expect(f.resumes).toEqual([]);
+  expect(await f.flow().review({ ref: "27", outcome: "changes", file })).toBe(
+    "Posted REVIEW round 4 on #27\nqueued for #27"
+  );
+  f.done();
+});
+
+test.each([false, true])("release without session/control still posts GO (%s)", async (control) => {
+  const f = fixture();
+  if (control) {
+    f.deps.workers!.resume = async () => "no worker session for #27; nothing sent";
+  } else {
+    f.deps.workers = undefined;
+  }
+  const output = await f.flow().release("27");
+  expect(output).toBe(
+    "Released #27" + (control ? "\nno worker session for #27; nothing sent" : "")
+  );
+  expect(f.writes.some((w) => String(w.body.body).startsWith("[orchestrator] GO"))).toBe(true);
   f.done();
 });
 
@@ -1876,6 +1933,12 @@ test("unchanged lockfile avoids install; release-hold posts GO, clears hold and 
   await f.flow().release("27");
   expect(f.writes.some((w) => String(w.body.body).startsWith("[orchestrator] GO"))).toBe(true);
   expect(f.events.at(-1)).toBe("worker-resume");
+  expect(f.resumes).toEqual([
+    {
+      pr: 27,
+      prompt: "[orchestrator] GO is on your PR; read it with vmethod read pr 27 and act.",
+    },
+  ]);
   f.done();
 });
 

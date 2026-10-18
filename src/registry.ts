@@ -31,7 +31,6 @@ export const verbs = [
   { name: "read-pr", stub: "scripts/agent/read-pr.sh" },
   { name: "pr-comment", stub: "scripts/agent/pr-comment.sh" },
   { name: "push", stub: "scripts/agent/push.sh" },
-  { name: "wait-review", stub: "scripts/agent/wait-review.sh" },
   { name: "check-markdown", stub: "scripts/agent/check-markdown.sh" },
 ] as const;
 

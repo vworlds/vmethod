@@ -1266,78 +1266,6 @@ class GatewayServer {
     return `pushed ${branch} at ${commit.slice(0, 7)}`;
   };
 
-  waitReview: Handlers["waitReview"] = async ({ ref, pollSeconds }) => {
-    if (!Number.isFinite(pollSeconds) || pollSeconds <= 0 || pollSeconds > 86400) {
-      throw new Error("poll-seconds must be between 0 and 86400");
-    }
-    for (;;) {
-      try {
-        const { item, person, link } = await this.thread(ref, "pr");
-        if (!person) {
-          throw new Error("No accepted task PR");
-        }
-        if (!["OPEN", "CLOSED", "MERGED"].includes(String(item.state))) {
-          throw new Error("Invalid PR state");
-        }
-        if (item.state !== "OPEN") {
-          return `PR #${reference(ref, this.config).number} is ${String(item.state)}: you are dismissed`;
-        }
-        const comments: {
-          body: string;
-          date: string;
-          role: string;
-          rendered: string;
-        }[] = [];
-        for (const meta of await this.collection(String(item.id), "PullRequest", "comments")) {
-          if (!this.filter.accept(meta, repoOf(meta).owner, link)) {
-            continue;
-          }
-          const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
-          const author = this.filter.accept(comment, repoOf(comment).owner, link);
-          const original = this.filter.identity(comment.author);
-          if (
-            !author ||
-            original?.role !== author.role ||
-            typeof comment.body !== "string" ||
-            typeof comment.createdAt !== "string" ||
-            !Number.isFinite(Date.parse(comment.createdAt))
-          ) {
-            continue;
-          }
-          comments.push({
-            body: comment.body,
-            date: String(comment.lastEditedAt ?? comment.createdAt),
-            role: author.role,
-            rendered: labelled(author, comment.body),
-          });
-        }
-        const mine =
-          comments
-            .filter((comment) => comment.role === "worker" && comment.body.startsWith("[worker]"))
-            .map((comment) => comment.date)
-            .sort()
-            .at(-1) ?? "";
-        const replies = comments
-          .filter(
-            (comment) =>
-              comment.role === "orchestrator" &&
-              comment.body.startsWith("[orchestrator]") &&
-              comment.date > mine
-          )
-          .sort((a, b) => a.date.localeCompare(b.date));
-        if (replies.length) {
-          return replies.map((comment) => comment.rendered).join("\n\n---\n\n");
-        }
-      } catch (error) {
-        if (!(error instanceof Error) || !error.message.startsWith("GitHub ")) {
-          throw error;
-        }
-        this.deps.report("wait-review: GitHub read failed; retrying after poll interval");
-      }
-      await this.deps.sleep(pollSeconds * 1000);
-    }
-  };
-
   ghRead: Handlers["ghRead"] = async ({ source }) => {
     const counts = { dropped: 0, redacted: 0 };
     if (source.endsWith(".graphql")) {
@@ -1583,7 +1511,6 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     post: server.post,
     push: server.push,
     task: server.task,
-    waitReview: server.waitReview,
     ghRead: server.ghRead,
     dropped: server.dropped,
     ownerApproved: server.ownerApproved,
@@ -1624,7 +1551,6 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     push: ["worker", "orchestrator"],
     resolveTask: ["worker", "orchestrator"],
     task: ["worker", "orchestrator"],
-    waitReview: ["worker", "orchestrator"],
     ghRead: ["orchestrator"],
     dropped: ["orchestrator"],
     ownerApproved: ["orchestrator"],
@@ -1659,7 +1585,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     ) {
       throw new Error("Learning writes require orchestrator role");
     }
-    if (ctx.role === "worker" && ["post", "task", "waitReview", "waitChecks"].includes(operation)) {
+    if (ctx.role === "worker" && ["post", "task", "waitChecks"].includes(operation)) {
       const target = reference((input as Operations["post"]["input"]).ref, config);
       if (
         !Number.isSafeInteger(ctx.taskPr) ||
