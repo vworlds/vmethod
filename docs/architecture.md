@@ -203,7 +203,9 @@ changes. Its `expect` lists only the fields vmethod owns, with their exact optio
   blocked 🤖🚫, ready 🤖👍, verifying 🧭🔍, owner-review 👤🔍, owner-question 👤❓, conflict 💥,
   silent ⏳, permission 🔑, failed 🪫, idle 💤. A round is `🔁` plus keycap digits, and red CI is
   🔴. The stuck states are silent, permission, failed, idle and conflict. vecs and SpaceRocks
-  have identical tables today.
+  have identical tables today. Owner states and assignment appear only where the
+  action belongs: on the task PR, not its linked issues. Linked issues stay In review
+  without an owner mirror; standalone issue questions still use 👤❓.
 - **Policy:** Done keeps the 6 most recently closed cards across repos; each repo archives only
   its own cards.
 
@@ -331,6 +333,9 @@ engineering docs. Generic docs never name project files or commands. They refer 
   (`OWNER REVIEW`: handed to the owner, saying what to playtest and which decisions are theirs). The first line is the key.
   Replies carry an `in reply to <comment-url>` line. Workers obey only their prompt and
   `[orchestrator]` comments. Posts made by vmethod carry no footer (owner decision 8).
+  After READY, QUESTION, BLOCKED or DESIGN, workers end their turn. Reviews, answers
+  and hold releases wake them with fixed PR-reading notifications; busy sessions
+  queue those notifications until an idle worker-status poll (see [gateway](gateway.md)).
 - **Rules from real incidents:**
   - No `2>/dev/null || true` on anything that drives state without a logged failure.
   - One reader per watcher state directory (flock). Reuse the existing GraphQL poll, and pace on
@@ -360,9 +365,13 @@ pools these, so a lesson paid for in one project is free in the others.
 
 ### The model log (per project, shared format)
 
-Each project keeps its raw log at `.vmethod/model-log.jsonl`. It is project data, written by
-`grade.sh` after every closed delivery (merged or not). One record per delivery, in a format
-vmethod defines and validates:
+Each project stages its raw log at `.vmethod/model-log.jsonl`, ignored and untracked.
+`grade` appends after every closed delivery (merged or not), then runs the same
+[submission pipeline](learnings.md#submit-delivery-records) as `learnings submit`.
+Reviewed durable records live in vmethod's per-submission project files, batched into
+one open learning PR per project. Only the vmethod orchestrator merges it; the next
+grade after a merge starts a fresh PR without duplicating shared records.
+One record per delivery, in a format vmethod defines and validates:
 
 ```json
 {"date":"2026-10-15","repo":"vworlds/spacerocks","pr":319,"task":"…","kind":"gameplay",
@@ -681,7 +690,7 @@ them. Their test suites are ported as vitest cases.
    `gh-read` verbs.
 3. **Board** (#5): board client, field lock, migrations, `0001-baseline`.
 4. **Ports, test-first, one worker task per group,** taking the side named as ahead for each:
-   - worker verbs (#7): `start-task`, `read-pr`, `pr-comment`, `push`, `wait-review`,
+   - worker verbs (#7): `start-task`, `read-pr`, `pr-comment`, `push`,
      `check-markdown`;
    - `vmethod watch` and `mute` (#6): three-way from both `watch-prs.sh`;
    - task flow (#8): `open-task`, `review`, `merge-task`, `release-hold`. vecs: track base,

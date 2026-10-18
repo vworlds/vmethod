@@ -18,7 +18,6 @@ const verbIssues = new Map<string, number | null>([
   ["read-pr", 7],
   ["pr-comment", 7],
   ["push", 7],
-  ["wait-review", 7],
   ["check-markdown", 7],
   ["open-task", 8],
   ["review", 8],
@@ -38,6 +37,12 @@ const verbIssues = new Map<string, number | null>([
   ["learnings report", 11],
   ["propose", null],
 ]);
+
+test("worker task template ends status turns instead of review polling", () => {
+  const template = readFileSync("templates/task-pr.md", "utf8");
+  expect(template).not.toContain("wait-review");
+  expect(template).toContain("After posting READY, QUESTION, BLOCKED or DESIGN, end your");
+});
 
 test("all future-verb annotations in docs and templates name the implementation issue", () => {
   let references = 0;

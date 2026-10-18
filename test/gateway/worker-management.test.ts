@@ -5,6 +5,7 @@ import { stringify } from "yaml";
 import { expect, test, vi } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
 import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
+import learningCapture from "../fixtures/github/learnings-recorded.json" with { type: "json" };
 import legacyRecords from "../fixtures/legacy-workers/records.json" with { type: "json" };
 import type { Dependencies } from "../../src/gateway/client.js";
 import { object } from "../../src/gateway/people.js";
@@ -121,6 +122,50 @@ function fixture(prefix?: string, legacy = false) {
         gradePosts.push(JSON.parse(String(init.body)));
         // The gateway does not consume response fields for a comment write.
         return Response.json({});
+      } else if (url.origin === "https://api.github.com" && init?.method === "GET") {
+        // Grade submits through the real learning service. This fixture models a
+        // delivery already shared centrally; rolling fork writes have their own fake.
+        const central = "/repos/vworlds/vmethod";
+        const log = "learnings/models/example-project.jsonl";
+        const content = (path: string, text: string) => ({
+          ...learningCapture.people,
+          path,
+          content: Buffer.from(text).toString("base64"),
+        });
+        if (url.pathname === `${central}/contents/people.yaml`) {
+          return Response.json(
+            content("people.yaml", stringify([{ ...people[2], repos: ["example/project"] }]))
+          );
+        }
+        if (url.pathname === "/user") {
+          return Response.json({ ...learningCapture.pull.user, ...people[2] });
+        }
+        if (url.pathname === `${central}/git/ref/heads/dev`) {
+          return Response.json(learningCapture.ref);
+        }
+        if (url.pathname === `${central}/git/commits/${learningCapture.ref.object.sha}`) {
+          return Response.json({
+            sha: learningCapture.ref.object.sha,
+            tree: { sha: learningCapture.tree.sha },
+          });
+        }
+        if (url.pathname === `${central}/git/trees/${learningCapture.tree.sha}`) {
+          return Response.json({
+            ...learningCapture.tree,
+            truncated: false,
+            tree: [{ ...learningCapture.tree.tree[0], path: log }],
+          });
+        }
+        if (url.pathname === `${central}/contents/${log}`) {
+          return Response.json(
+            content(log, readFileSync(join(root, ".vmethod/model-log.jsonl"), "utf8"))
+          );
+        }
+        if (url.pathname === `${central}/pulls` && url.searchParams.get("state") === "open") {
+          return Response.json([]);
+        }
+        unexpected.push(`GET ${url.pathname}`);
+        throw new Error(unexpected.at(-1));
       } else if (url.origin === "https://api.github.com" && url.pathname === "/graphql") {
         const { query, variables } = JSON.parse(String(init?.body));
         parse(query);
@@ -361,14 +406,15 @@ test.each(["auto-", "", "legacy"])(
         for (let i = 0; i < 12; i++) {
           events.push(...(await w.once(loop)));
         }
-        expect(events.map((event) => event.kind)).toEqual(["worker"]);
-        expect(events[0].line).toContain(
-          state === "failed"
-            ? "its turn failed"
-            : state === "permission"
-              ? "waits for a permission"
-              : "stopped without reply; send it a nudge"
-        );
+        if (state === "idle") {
+          expect(events).toEqual([]);
+          expect(w.workerSends).toHaveLength(1);
+        } else {
+          expect(events.map((event) => event.kind)).toEqual(["worker"]);
+          expect(events[0].line).toContain(
+            state === "failed" ? "its turn failed" : "waits for a permission"
+          );
+        }
         expect(w.reports).toEqual([]);
         f.done();
       } finally {
@@ -458,7 +504,9 @@ test("gateway grades a delivery with Estimate on the linked issue and Cost only 
   });
   f.pr.state = "MERGED";
   f.pr.merged = true;
-  await f.transport.call("grade", { ref: "31", points: 20 }, f.ctx);
+  expect(await f.transport.call("grade", { ref: "31", points: 20 }, f.ctx)).toContain(
+    "No new learnings to submit"
+  );
   expect(f.mutations[1]).toMatchObject({
     m0: { itemId: "CARD9", fieldId: "F_ESTIMATE", value: { number: 20 } },
   });

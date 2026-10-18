@@ -32,9 +32,10 @@ workers only implement agreed specs.
 
 Ask owner questions only with `vmethod review <pr> ask .tmp/question.md`.
 For an issue without an open task PR, use `vmethod ask <issue> .tmp/question.md`.
-These commands post OWNER QUESTION, assign the owner and set `👤❓`; a PR wait
-also appears on its linked issue. A question asked in chat is not tracked.
-Never leave an In review card unassigned: the assignee is exactly whose move it
+These commands post OWNER QUESTION, assign the owner and set `👤❓` only where
+the answer belongs. A PR wait leaves linked issues In review without owner
+assignment or Progress; follow Development to the PR. A question asked in chat is not tracked.
+Except for linked task issues, never leave an In review card unassigned: the assignee is exactly whose move it
 is. Review commands and the watcher maintain this invariant and report ambiguous
 or mismatched board state rather than relying on your memory.
 
@@ -172,7 +173,14 @@ segments and reasons, rounds and causes, outcome, prompt defects, stalls and fin
 Separate worker defects from design changes, owner questions, integration and prompt
 defects so calibration is fair. Grade outcomes rather than task size; owner rejection
 despite green metrics is valuable evidence. Revise model guidance from experience.
-Submit reduced private learnings using the [change process](change-process.md).
+`grade` stages the raw record in the ignored, untracked `.vmethod/model-log.jsonl`
+and automatically submits through the [learning pipeline](learnings.md#submit-delivery-records),
+including private reduction. New grades append immutable files to the project's
+one open learning PR; after merge, the next grade opens a fresh PR. Do not commit
+the staging log or merge from this command: the vmethod orchestrator reviews and
+merges learning PRs. Submission failures do not fail the saved grade: its summary
+includes a warning and retry guidance. Retry `grade`
+or `learnings submit` after addressing the error.
 
 ## Watch without wasting budget
 

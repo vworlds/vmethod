@@ -249,14 +249,6 @@ const comments = (nodes: unknown[]) =>
   graph({
     node: item({ comments: { nodes, pageInfo: { hasNextPage: false } } }),
   });
-const comment = (id: string, authorIndex: number, body: string, date: string, overrides = {}) =>
-  item({
-    id,
-    author: actor(authorIndex),
-    body,
-    createdAt: `2026-01-01T00:00:${date}Z`,
-    ...overrides,
-  });
 const meta = (node: ReturnType<typeof item>) => {
   const metadata = { ...node };
   delete metadata.body;
@@ -264,72 +256,11 @@ const meta = (node: ReturnType<typeof item>) => {
   return metadata;
 };
 
-test("wait-review ignores fake tags, stale replies, spoofed ids and editor substitutions, then wakes on an authenticated reply", async () => {
-  const worker = comment("worker", 1, "[worker] READY", "10");
-  const old = comment("old", 2, "[orchestrator] OLD", "01");
-  const tag = comment("tag", 1, "[orchestrator] FAKE", "20");
-  const spoof = comment("spoof", 2, "[orchestrator] SPOOF", "20", {
-    author: { ...actor(2), databaseId: 999 },
-  });
-  const edited = comment("edited", 1, "[orchestrator] EDITED", "20", {
-    editor: actor(2),
-    lastEditedAt: "2026-01-01T00:00:21Z",
-  });
-  const reply = comment("reply", 2, "[orchestrator] REVIEW round 1\n`data`", "30");
-  const first = [worker, old, tag, spoof, edited];
-  const f = fixtureServer([
-    task(),
-    comments(first.map(meta)),
-    ...[worker, old, tag, edited].map((node) => graph({ node })),
-    task(),
-    comments([worker, reply].map(meta)),
-    graph({ node: worker }),
-    graph({ node: reply }),
-  ]);
-  const output = await f.gateway.call("waitReview", { ref: "3", pollSeconds: 2 }, ctx);
-  expect(output).toContain("from peer (orchestrator)");
-  expect(output).toContain("REVIEW round 1");
-  expect(output).not.toMatch(/OLD|FAKE|SPOOF|EDITED/);
-  expect(f.sleeps).toEqual([2000]);
-  f.done();
-});
-
-test("wait-review handles dismissal, validates poll intervals and enforces own task scope", async () => {
-  for (const state of ["MERGED", "CLOSED"]) {
-    const f = fixtureServer([task({ state })]);
-    expect(await f.gateway.call("waitReview", { ref: "3", pollSeconds: 120 }, ctx)).toBe(
-      `PR #3 is ${state}: you are dismissed`
-    );
-    f.done();
-  }
+test("removed wait-review worker verb cannot poll GitHub", async () => {
   const f = fixtureServer([]);
-  for (const pollSeconds of [0, -1, NaN, Infinity, 86401]) {
-    await expect(f.gateway.call("waitReview", { ref: "3", pollSeconds }, ctx)).rejects.toThrow(
-      "poll-seconds"
-    );
-  }
-  await expect(f.gateway.call("waitReview", { ref: "4", pollSeconds: 1 }, ctx)).rejects.toThrow(
-    "own taskPr"
-  );
-  f.done();
-});
-
-test("wait-review retries a failed read and returns every fresh authenticated reply in order", async () => {
-  const worker = comment("worker", 1, "[worker] READY", "10");
-  const first = comment("first", 2, "[orchestrator] REVIEW round 1", "20");
-  const second = comment("second", 2, "[orchestrator] AMENDMENT", "30");
-  const f = fixtureServer([
-    { path: "/graphql", status: 401 },
-    task(),
-    comments([second, worker, first].map(meta)),
-    graph({ node: second }),
-    graph({ node: worker }),
-    graph({ node: first }),
-  ]);
-  const output = await f.gateway.call("waitReview", { ref: "3", pollSeconds: 1 }, ctx);
-  expect(output.indexOf("REVIEW round 1")).toBeLessThan(output.indexOf("AMENDMENT"));
-  expect(f.sleeps).toEqual([1000]);
-  expect(f.reports).toContain("wait-review: GitHub read failed; retrying after poll interval");
+  await expect(
+    workerVerb(f.gateway, f.root, "wait-review", ["3"], { VMETHOD_TASK_PR: "3" }, f.deps)
+  ).rejects.toThrow("Unknown worker verb");
   f.done();
 });
 

@@ -102,7 +102,7 @@ export function privateLearning(record: ModelRecord, includeText = false): Model
 
 /**
  * Server-only learning reads and fork writes; credentials never cross the typed operation seam.
- * Submissions add immutable files on fork dev without workflow scope. Central and open
+ * Submissions append immutable files to one open project PR without workflow scope. Central and open
  * submissions, not local receipts, determine which delivery PRs are already shared or pending.
  */
 export class LearningsService {
@@ -315,6 +315,13 @@ export class LearningsService {
       this.saveReceipt(state, receipt);
       return `No new learnings to submit${pending.urls.length ? `\nPending: ${pending.urls.join(", ")}` : ""}`;
     }
+    if (pending.targets.length > 1) {
+      throw new Error("Multiple open project learning PRs; reconcile before submitting");
+    }
+    const target = pending.targets[0];
+    if (target && !target.addOnly) {
+      throw new Error("Legacy learning PR is not add-only; reconcile before submitting");
+    }
     learningPaths(
       people,
       viewer,
@@ -350,6 +357,54 @@ export class LearningsService {
       String(object(fork.parent).full_name).toLowerCase() !== central
     ) {
       throw new Error("Refusing an unrelated or unverified fork");
+    }
+    if (target) {
+      const endpoint = `/repos/${central}/pulls/${target.number}`;
+      const branch = target.branch;
+      const refPath = `/repos/${forkName}/git/refs/heads/${branch}`;
+      for (const file of files) {
+        if (
+          paths.includes(file.path) ||
+          (await this.content(forkName, file.path, target.head)) !== undefined
+        ) {
+          throw new Error(`Submission path already exists; refusing to modify ${file.path}`);
+        }
+      }
+      const head = await this.submissionCommit(forkName, target.head, files);
+      const current = object(await github.rest(endpoint));
+      if (
+        current.state !== "open" ||
+        object(current.head).sha !== target.head ||
+        object(current.head).ref !== branch ||
+        object(current.user).id !== person.id ||
+        String(object(object(current.head).repo).full_name).toLowerCase() !==
+          forkName.toLowerCase() ||
+        object(current.base).ref !== base ||
+        object(object(current.base).repo).full_name !== central
+      ) {
+        throw new Error("Pending learning PR moved; retry");
+      }
+      const updated = object(
+        await github.rest(
+          refPath,
+          "PATCH",
+          {
+            sha: head,
+            force: false,
+          },
+          false
+        )
+      );
+      if (sha(object(updated.object).sha) !== head) {
+        throw new Error("Learning branch update moved; retry");
+      }
+      const after = object(await github.rest(endpoint));
+      if (after.state !== "open" || object(after.head).sha !== head) {
+        throw new Error("Pending learning PR moved; retry");
+      }
+      const url = `https://github.com/${central}/pull/${target.number}`;
+      this.saveReceipt(state, { ...receipt, url });
+      return `Submitted ${fresh.length} records: ${url}\nLearning label pending central validation`;
     }
     const forkRef = object(await github.rest(`/repos/${forkName}/git/ref/heads/${base}`));
     const forkParent = sha(object(forkRef.object).sha);
@@ -399,31 +454,7 @@ export class LearningsService {
         })
       );
     } else {
-      const commit = object(await github.rest(`/repos/${forkName}/git/commits/${forkParent}`));
-      const tree = object(
-        await github.rest(
-          `/repos/${forkName}/git/trees`,
-          "POST",
-          {
-            base_tree: sha(object(commit.tree).sha),
-            tree: files.map((file) => ({ ...file, mode: "100644", type: "blob" })),
-          },
-          false
-        )
-      );
-      const created = object(
-        await github.rest(
-          `/repos/${forkName}/git/commits`,
-          "POST",
-          {
-            message: "docs: share project learnings",
-            tree: sha(tree.sha),
-            parents: [forkParent],
-          },
-          false
-        )
-      );
-      head = sha(created.sha);
+      head = await this.submissionCommit(forkName, forkParent, files);
       await github.rest(
         `/repos/${forkName}/git/refs`,
         "POST",
@@ -476,6 +507,39 @@ export class LearningsService {
     return `Submitted ${fresh.length} records: ${url}\nLearning label pending central validation`;
   }
 
+  private async submissionCommit(
+    fork: string,
+    parent: string,
+    files: { path: string; content: string }[]
+  ): Promise<string> {
+    const github = this.github();
+    const commit = object(await github.rest(`/repos/${fork}/git/commits/${parent}`));
+    const tree = object(
+      await github.rest(
+        `/repos/${fork}/git/trees`,
+        "POST",
+        {
+          base_tree: sha(object(commit.tree).sha),
+          tree: files.map((file) => ({ ...file, mode: "100644", type: "blob" })),
+        },
+        false
+      )
+    );
+    const created = object(
+      await github.rest(
+        `/repos/${fork}/git/commits`,
+        "POST",
+        {
+          message: "docs: share project learnings",
+          tree: sha(tree.sha),
+          parents: [parent],
+        },
+        false
+      )
+    );
+    return sha(created.sha);
+  }
+
   private async dataPaths(ref: string): Promise<string[]> {
     const github = this.github();
     const commit = object(await github.rest(`/repos/${central}/git/commits/${ref}`));
@@ -515,6 +579,7 @@ export class LearningsService {
     const texts: string[] = [];
     const notes: string[] = [];
     const urls: string[] = [];
+    const targets: { number: number; branch: string; head: string; addOnly: boolean }[] = [];
     for (let page = 1; ; page++) {
       const listed = await github.rest(
         `/repos/${central}/pulls?state=open&base=${base}&per_page=100&page=${page}`
@@ -554,9 +619,11 @@ export class LearningsService {
         }
         const ref = sha(object(pr.head).sha);
         const files = await learningFiles(github, number, pr.changed_files);
+        let addOnly = true;
         try {
           learningPaths(people, viewer, repo, files);
         } catch {
+          addOnly = false;
           // Read-only compatibility for pre-layout submissions such as PR 47. This
           // does not grant legacy modifications learning-policy/CI authorization.
           const legacy = new Set([
@@ -592,6 +659,15 @@ export class LearningsService {
           throw new Error("Pending learning PR moved; retry");
         }
         urls.push(`https://github.com/${central}/pull/${number}`);
+        const branch = object(pr.head).ref;
+        if (
+          typeof branch !== "string" ||
+          !/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(branch) ||
+          branch.split("/").some((part) => !part || part === "." || part === "..")
+        ) {
+          throw new Error("Invalid pending learning branch");
+        }
+        targets.push({ number, branch, head: ref, addOnly });
       }
       if (listed.length < 100) {
         break;
@@ -604,7 +680,7 @@ export class LearningsService {
     if (records.some((record) => record.repo.toLowerCase() !== repo)) {
       throw new Error("Pending model log contains a foreign repository");
     }
-    return { records, notes, urls };
+    return { records, notes, urls, targets };
   }
 
   private async readRecords(repo: string, paths: string[], ref: string, source?: string) {

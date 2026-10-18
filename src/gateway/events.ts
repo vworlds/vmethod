@@ -79,6 +79,7 @@ export interface LoopHost {
   filter: PeopleFilter;
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
+  workerSend?: (pr: number, text: string) => Promise<string | void>;
   board: Pick<BoardService, "set">;
   digest: Digest;
 }
@@ -2182,7 +2183,7 @@ export class EventLoop {
         approved.push(card);
       }
     }
-    await this.mirrorOwnerTurns(currentCards);
+    await this.clearStaleOwnerMirrors(currentCards);
     this.writeMarker("unestimated.json", JSON.stringify(nextUnestimated));
     for (const name of readdirSync(join(this.dir, "board"))) {
       if (
@@ -2525,9 +2526,15 @@ export class EventLoop {
 
   private async reconcileTurn(card: CardInfo, report = true): Promise<void> {
     const state = parseProgress(card.progress).state;
+    const linkedIssue =
+      this.isOwn(card.repo) &&
+      card.kind === "ISSUE" &&
+      [...this.taskIssues.values()].some((issues) => issues.includes(card.number));
     const role =
       state === "owner-review" || state === "owner-question"
-        ? "owner"
+        ? linkedIssue
+          ? null
+          : "owner"
         : ["ready", "question", "blocked", "verifying", "design", "handoff"].includes(state ?? "")
           ? "orchestrator"
           : state === "working"
@@ -2538,7 +2545,11 @@ export class EventLoop {
         ? undefined
         : turnAssignees(this.host.filter.people, card.repo, card.assignees, role);
     const mismatch = next && [...next].sort().join(",") !== [...card.assignees].sort().join(",");
-    if (report && ((card.column === "In review" && card.assignees.length !== 1) || mismatch)) {
+    if (
+      report &&
+      !linkedIssue &&
+      ((card.column === "In review" && card.assignees.length !== 1) || mismatch)
+    ) {
       this.produceOnce(
         `turn-${card.id}@${key(`${card.column}:${card.progress}:${card.assignees.join(",")}`)}`,
         "board-violation",
@@ -2560,8 +2571,8 @@ export class EventLoop {
     }
   }
 
-  private async mirrorOwnerTurns(cards: CardInfo[]): Promise<void> {
-    const mirrors = new Map<number, string>();
+  private async clearStaleOwnerMirrors(cards: CardInfo[]): Promise<void> {
+    const linkedIssues = new Set<number>();
     for (const [pr, issues] of this.taskIssues) {
       if (!this.inScope(pr)) {
         continue;
@@ -2572,17 +2583,11 @@ export class EventLoop {
       if (!task) {
         continue;
       }
-      const owner = ["owner-review", "owner-question"].includes(
-        parseProgress(task.progress).state ?? ""
-      );
       for (const number of issues) {
-        if (!mirrors.has(number) || owner) {
-          mirrors.set(number, owner ? task.progress : "");
-        }
+        linkedIssues.add(number);
       }
     }
-    for (const [number, text] of mirrors) {
-      const owner = Boolean(text);
+    for (const number of linkedIssues) {
       const issue = cards.find(
         (card) => this.isOwn(card.repo) && card.number === number && card.kind === "ISSUE"
       );
@@ -2592,31 +2597,23 @@ export class EventLoop {
       const mirrored = ["owner-review", "owner-question"].includes(
         parseProgress(issue.progress).state ?? ""
       );
-      if (!owner && !mirrored) {
+      const ownerAssigned = this.host.filter.people.some(
+        (person) =>
+          person.role === "owner" &&
+          issue.assignees.some((login) => login.toLowerCase() === person.login.toLowerCase())
+      );
+      if (!ownerAssigned && !mirrored) {
         continue;
       }
       // Retain the owner-state marker until assignment succeeds, so a failed
       // clear is discoverable and retried on the next board poll.
-      const next = turnAssignees(
-        this.host.filter.people,
-        issue.repo,
-        issue.assignees,
-        owner ? "owner" : null
-      );
+      const next = turnAssignees(this.host.filter.people, issue.repo, issue.assignees, null);
       await setTurn(this.host.github, issue.repo, issue.number, issue.assignees, next);
       issue.assignees = next;
-      if (!owner && issue.column === "In review") {
-        await this.host.board.set({
-          itemId: issue.id,
-          field: "Status",
-          value: "In progress",
-          progress: null,
-        });
-        issue.column = "In progress";
-      } else if (issue.progress !== text) {
-        await this.host.board.set({ itemId: issue.id, field: "Progress", value: text || null });
+      if (mirrored) {
+        await this.host.board.set({ itemId: issue.id, field: "Progress", value: null });
+        issue.progress = "";
       }
-      issue.progress = text;
     }
   }
 
@@ -2728,12 +2725,13 @@ export class EventLoop {
     const prompt = object(safeJson(this.readMarker(`worker-prompt-${number}`)));
     const review = this.readReview(number);
     const at = str(prompt.at) || review?.at;
-    const activity = this.activityAt(number);
-    if (
-      status.reason === "idle without reply" ||
-      (status.reason === "idle" && at && activity && activity <= at)
-    ) {
-      return { state: "idle", detail: str(prompt.id) || review?.id };
+    const protocolReply = object(safeJson(this.readMarker(`worker-protocol-${number}`)));
+    const hasReply =
+      protocolReply.role === "worker" &&
+      ["READY", "QUESTION", "BLOCKED", "DESIGN", "HANDOFF"].includes(str(protocolReply.tag)) &&
+      str(protocolReply.at) >= (at ?? "");
+    if ((status.reason === "idle without reply" || status.reason === "idle") && !hasReply) {
+      return { state: "idle", detail: str(prompt.id) || review?.id || status.updated?.toString() };
     }
     return { state: "other" };
   }
@@ -2754,18 +2752,23 @@ export class EventLoop {
     }
   }
 
-  /** Persist the newest verified, unedited protocol turn, independently of activity/CI. */
+  /** Persist the newest verified worker reply tag, independently of activity/CI. */
   private rememberWorkerProtocol(number: number, comment: ObjectData): void {
     const at = str(comment.created_at);
-    if (!at || at !== str(comment.updated_at)) {
+    if (!at) {
       return;
     }
     const person = this.host.filter.identity(restActor(comment.user));
     const role = this.isSelf(comment) ? "orchestrator" : person?.role;
+    if (at !== str(comment.updated_at)) {
+      return;
+    }
     const first = str(comment.body).split(/\r?\n/)[0];
     let active: boolean;
+    let workerTag: string | undefined;
     if (role === "worker") {
-      active = !/^\[worker\] (?:BLOCKED|QUESTION|READY|DESIGN|HANDOFF)\b/.test(first);
+      workerTag = /^\[worker\] (READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.exec(first)?.[1];
+      active = !workerTag;
     } else if (
       role === "orchestrator" &&
       /^\[orchestrator\] (?:REVIEW|CHANGES|ANSWER|AMENDMENT|GO)\b/.test(first)
@@ -2781,7 +2784,10 @@ export class EventLoop {
     }
     const previous = object(safeJson(this.readMarker(`worker-protocol-${number}`)));
     if (at >= str(previous.at)) {
-      this.writeMarker(`worker-protocol-${number}`, JSON.stringify({ at, active }));
+      this.writeMarker(
+        `worker-protocol-${number}`,
+        JSON.stringify({ at, active, role, ...(workerTag ? { tag: workerTag } : {}) })
+      );
       this.touchActivity(number, at);
     }
   }
@@ -2854,8 +2860,9 @@ export class EventLoop {
       }
       let status: WorkerStatus;
       let updated: number | undefined;
+      let recorded: WorkerSessionStatus;
       try {
-        const recorded = await this.readWorkerStatus(pr.number);
+        recorded = await this.readWorkerStatus(pr.number);
         if (recorded.prCost) {
           costs.set(pr.number, recorded.prCost.usd);
         }
@@ -2916,12 +2923,23 @@ export class EventLoop {
           });
         }
       } else if (status.state === "idle") {
-        this.emit(
-          `w-${pr.number}@${this.host.deps.now()}`,
-          "worker",
-          `WORKER #${pr.number} (${pr.branch}): stopped without reply; send it a nudge ${url}`
-        );
-        this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
+        const prompt = object(safeJson(this.readMarker(`worker-prompt-${pr.number}`)));
+        const round = str(prompt.id) || "unknown";
+        const count = Number(this.readMarker(`worker-checkin-${pr.number}-${key(round)}`) || 0);
+        if (count < 2 && this.host.workerSend) {
+          await this.host.workerSend(
+            pr.number,
+            `[orchestrator] CHECK-IN: your turn ended without a status comment on the PR. Post exactly one of READY, QUESTION, BLOCKED or DESIGN on PR #${pr.number} with \`vmethod pr-comment\`. If you are not done, finish only the remaining acceptance steps first, adding no new scope. If you are unsure or stuck, post QUESTION or BLOCKED and stop.`
+          );
+          this.writeMarker(`worker-checkin-${pr.number}-${key(round)}`, String(count + 1));
+        } else {
+          this.emit(
+            `w-${pr.number}@${this.host.deps.now()}`,
+            "worker",
+            `WORKER #${pr.number}: stopped without reply; send it a nudge ${url}`
+          );
+          this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
+        }
       }
       atomicWrite(stopPath, `${stop}\n`);
     }

@@ -21,9 +21,10 @@ they must read, try, answer or decide. Assign the orchestrator when it must act,
 even if only to reply. No assignee means a worker has it or no human action is pending.
 Remove yourself or hand over when done. Every Status or Assignee change also sets
 Progress; do not leave stale state or manually patch Progress.
-In review always has exactly one assignee. The protocol scripts and watcher keep
-the next actor synchronized with Progress and mirror a task PR's owner wait on
-its issue; see [protocol transitions](protocol.md). Use `board set` only for
+In review has exactly one assignee, except linked task issues. Owner waits belong
+only on the task PR: linked issues stay In review without an owner assignee or
+owner Progress; follow their Development link. The watcher clears stale owner
+mirrors; see [protocol transitions](protocol.md). Use `board set` only for
 explicit housekeeping with validated Progress, not as a substitute for the
 [tracked owner-question commands](orchestrator-guide.md).
 

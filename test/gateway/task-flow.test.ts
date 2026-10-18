@@ -90,6 +90,7 @@ test.each(
         w.pulls = [
           {
             number: 27,
+            body: '<!-- vmethod-task {"issues":[8]} -->',
             head: { ref: "8-task", sha },
             base: { ref: "dev" },
             created_at: w.iso(),
@@ -214,12 +215,8 @@ test.each(
         expect(object(object(prCard.content).assignees).nodes).toEqual(
           ownerTurn ? [{ login: "owner" }] : verb === "review approve" ? [{ login: "me" }] : []
         );
-        expect(object(object(issueCard.content).assignees).nodes).toEqual(
-          ownerTurn ? [{ login: "owner" }] : []
-        );
-        expect(object(issueCard.progress).text).toBe(
-          ownerTurn ? (verb === "review ask" ? "👤❓" : "👤🔍") : null
-        );
+        expect(object(object(issueCard.content).assignees).nodes).toEqual([]);
+        expect(object(issueCard.progress).text).toBeNull();
         expect(object(prCard.progress).text ?? "").toBe(
           verb === "review changes"
             ? "🤖🔨 🔁1️⃣"
@@ -306,6 +303,7 @@ function fixture() {
   );
   const config = getConfig(root, {});
   const events: string[] = [];
+  const resumes: { pr: number; prompt: string }[] = [];
   const writes: { path: string; body: ObjectData }[] = [];
   let approved: boolean | "unknown" = true,
     issueApproved: boolean | "unknown" = true;
@@ -525,8 +523,9 @@ function fixture() {
         events.push("worker-status");
         return worker;
       },
-      resume: async () => {
+      resume: async (pr, prompt) => {
         events.push("worker-resume");
+        resumes.push({ pr, prompt });
       },
     },
   };
@@ -599,6 +598,7 @@ function fixture() {
     root,
     config,
     events,
+    resumes,
     writes,
     touched,
     host,
@@ -659,7 +659,7 @@ test.each([
   { outcome: "ask", draft: true },
   { outcome: "approve", draft: false },
 ] as const)(
-  "review %s sets draft state and mirrors the owner's turn on the issue",
+  "review %s sets draft state and keeps the owner's turn only on the PR",
   async ({ outcome, draft }) => {
     const f = fixture();
     f.set({ isDraft: !draft });
@@ -671,11 +671,15 @@ test.each([
       expect(f.touched).toContainEqual(
         expect.objectContaining({
           id: "issue",
-          field: "Progress",
-          value: outcome === "ask" ? "👤❓" : "👤🔍",
+          field: "Status",
+          value: "In review",
+          progress: null,
         })
       );
-      expect(f.writes).toContainEqual({
+      expect(f.touched).toContainEqual(
+        expect.objectContaining({ id: "pr", progress: outcome === "ask" ? "👤❓" : "👤🔍" })
+      );
+      expect(f.writes).not.toContainEqual({
         path: "/repos/example/project/issues/8/assignees",
         body: { assignees: ["owner"] },
       });
@@ -688,6 +692,85 @@ test.each([
     f.done();
   }
 );
+
+test.each([
+  [
+    "changes",
+    "[orchestrator] REVIEW round 1 is on your PR; read it with vmethod read pr 27 and act.",
+  ],
+  ["answer", "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 27 and act."],
+] as const)("review %s resumes the worker", async (outcome, prompt) => {
+  const f = fixture();
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Please address this.\n");
+  await f.flow().review({ ref: "27", outcome, file });
+  expect(f.resumes).toEqual([{ pr: 27, prompt }]);
+  f.done();
+});
+
+test.each(["changes", "answer"] as const)(
+  "review %s works without worker control",
+  async (outcome) => {
+    const f = fixture();
+    f.deps.workers = undefined;
+    const file = join(f.root, "review.md");
+    writeFileSync(file, "Please address this.\n");
+    await f.flow().review({ ref: "27", outcome, file });
+    expect(f.resumes).toEqual([]);
+    f.done();
+  }
+);
+
+test.each(["changes", "answer"] as const)(
+  "review %s reports no session after posting",
+  async (outcome) => {
+    const f = fixture();
+    f.deps.workers!.resume = async () => "no worker session for #27; nothing sent";
+    const file = join(f.root, "review.md");
+    writeFileSync(file, "Please address this.\n");
+    expect(await f.flow().review({ ref: "27", outcome, file })).toContain(
+      "no worker session for #27; nothing sent"
+    );
+    expect(f.writes).toContainEqual({
+      path: "/repos/example/project/issues/27/comments",
+      body: { body: expect.stringContaining("Please address this.") },
+    });
+    f.done();
+  }
+);
+
+test("review reports queued delivery and uses the next review round", async () => {
+  const f = fixture();
+  f.comments.push({ body: "[orchestrator] REVIEW round 3" });
+  f.deps.workers!.resume = async (pr, prompt) => {
+    expect(pr).toBe(27);
+    expect(prompt).toBe(
+      "[orchestrator] REVIEW round 4 is on your PR; read it with vmethod read pr 27 and act."
+    );
+    return "queued for #27";
+  };
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Please address this.\n");
+  expect(await f.flow().review({ ref: "27", outcome: "changes", file })).toBe(
+    "Posted REVIEW round 4 on #27\nqueued for #27"
+  );
+  f.done();
+});
+
+test.each([false, true])("release without session/control still posts GO (%s)", async (control) => {
+  const f = fixture();
+  if (control) {
+    f.deps.workers!.resume = async () => "no worker session for #27; nothing sent";
+  } else {
+    f.deps.workers = undefined;
+  }
+  const output = await f.flow().release("27");
+  expect(output).toBe(
+    "Released #27" + (control ? "\nno worker session for #27; nothing sent" : "")
+  );
+  expect(f.writes.some((w) => String(w.body.body).startsWith("[orchestrator] GO"))).toBe(true);
+  f.done();
+});
 
 test.each([false, true])(
   "issue ask refuses a live task (%s) and otherwise tracks the owner",
@@ -1875,6 +1958,12 @@ test("unchanged lockfile avoids install; release-hold posts GO, clears hold and 
   await f.flow().release("27");
   expect(f.writes.some((w) => String(w.body.body).startsWith("[orchestrator] GO"))).toBe(true);
   expect(f.events.at(-1)).toBe("worker-resume");
+  expect(f.resumes).toEqual([
+    {
+      pr: 27,
+      prompt: "[orchestrator] GO is on your PR; read it with vmethod read pr 27 and act.",
+    },
+  ]);
   f.done();
 });
 
