@@ -899,7 +899,7 @@ export class WorkerService {
               await this.client().request("POST", "/api/session", {
                 location: { directory },
                 model: this.apiModel(model),
-                title: meta.title,
+                title: `${String(this.config.repo).split("/").at(-1)}#${pr}`,
               })
             ).data
           )

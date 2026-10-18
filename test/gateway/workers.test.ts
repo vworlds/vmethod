@@ -104,6 +104,11 @@ function fixture(requests: Request[] = [], priced = false) {
       expect(init?.headers).toMatchObject({
         authorization: `Basic ${Buffer.from("fake-user:secret-password").toString("base64")}`,
       });
+      if (target.pathname === "/api/session" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body)).title).toBe(
+          `${String(config.repo).split("/").at(-1)}#31`
+        );
+      }
       if (expected.body !== undefined) {
         expect(JSON.parse(String(init?.body))).toEqual(expected.body);
       }
