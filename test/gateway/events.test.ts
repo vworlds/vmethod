@@ -406,15 +406,24 @@ test("existing worker poll writes Cost to the PR, deduplicates and clears unknow
   expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
     { itemId: taskPr.id, field: "Cost", value: "$1.26" },
   ]);
+  f.staleWorker = { reason: "running", active: true, prCost: { pr: 24, usd: 1.259 } };
   for (let i = 0; i < 6; i++) {
     await f.once(loop);
   }
   expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(1);
+  f.staleWorker = { reason: "running", active: true, prCost: { pr: 24, usd: 1.266 } };
+  for (let i = 0; i < 6; i++) {
+    await f.once(loop);
+  }
+  expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
+    { itemId: taskPr.id, field: "Cost", value: "$1.26" },
+    { itemId: taskPr.id, field: "Cost", value: "$1.27" },
+  ]);
   f.staleWorker = { reason: "running", active: true, prCost: { pr: 24, usd: null } };
   for (let i = 0; i < 6; i++) {
     await f.once(loop);
   }
-  expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(2);
+  expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(3);
   expect(f.writes.filter((write) => write.field === "Cost").at(-1)).toEqual({
     itemId: taskPr.id,
     field: "Cost",

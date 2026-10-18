@@ -15,6 +15,7 @@ import {
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import type { Config } from "../config.js";
+import { boardCost } from "../cost.js";
 import { parseProgress, renderProgress, revivedProgressStates } from "../board/progress.js";
 import { readState } from "../board/readme.js";
 import type { BoardService } from "./board.js";
@@ -2945,12 +2946,13 @@ export class EventLoop {
     }
     for (const [pr, usd] of costs) {
       const id = this.prCostCards.get(pr);
-      const value = JSON.stringify({ id, usd });
+      const text = boardCost(usd);
+      const value = JSON.stringify({ id, text });
       if (id && this.readMarker(`cost-${pr}`) !== value) {
         await this.host.board.set({
           itemId: id,
           field: "Cost",
-          value: usd === null ? null : `$${usd.toFixed(2)}`,
+          value: text,
         });
         this.writeMarker(`cost-${pr}`, value);
       }
