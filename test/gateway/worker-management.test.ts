@@ -7,6 +7,7 @@ import { createGateway } from "../../src/gateway/server.js";
 import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
 import learningCapture from "../fixtures/github/learnings-recorded.json" with { type: "json" };
 import legacyRecords from "../fixtures/legacy-workers/records.json" with { type: "json" };
+import sessionCapture from "../fixtures/usage/opencode-session.json" with { type: "json" };
 import type { Dependencies } from "../../src/gateway/client.js";
 import { object } from "../../src/gateway/people.js";
 import { validProject } from "../helpers.js";
@@ -36,6 +37,7 @@ function fixture(prefix?: string, legacy = false) {
     join(root, "models.yaml"),
     stringify([
       { family: "glm", model: "fake/glm", kind: "opencode", gate: "none", tier: "cheap" },
+      { family: "sol", model: "fake/sol", kind: "opencode", gate: "none", tier: "standard" },
       { family: "sonnet", model: "claude-fake", kind: "claude", gate: "none", tier: "standard" },
     ])
   );
@@ -57,6 +59,7 @@ function fixture(prefix?: string, legacy = false) {
     ],
     pageInfo: { hasNextPage: false },
   });
+  const prProjects = projects("CARD31", "Model", "glm");
   const pr = item({
     id: "PR31",
     title: "Task",
@@ -68,7 +71,7 @@ function fixture(prefix?: string, legacy = false) {
     baseRefName: "dev",
     headRepository: { nameWithOwner: "example/project" },
     closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } },
-    projectItems: projects("CARD31", "Model", "glm"),
+    projectItems: prProjects,
   });
   const issue = item({
     id: "ISSUE9",
@@ -83,6 +86,7 @@ function fixture(prefix?: string, legacy = false) {
   const mutations: Record<string, unknown>[] = [];
   const requests: string[] = [];
   const gradePosts: unknown[] = [];
+  const modelPosts: unknown[] = [];
   const unexpected: string[] = [];
   let viewer = actor(1),
     active = false,
@@ -114,6 +118,13 @@ function fixture(prefix?: string, legacy = false) {
             data: turnError ? [{ type: "idle", outcome: "failed", error: turnError }] : [],
           });
         }
+      } else if (
+        url.origin === "https://api.github.com" &&
+        url.pathname === "/repos/example/project/issues/31/comments" &&
+        init?.method === "POST"
+      ) {
+        modelPosts.push(JSON.parse(String(init.body)));
+        return Response.json({});
       } else if (
         url.origin === "https://api.github.com" &&
         url.pathname === "/repos/example/project/issues/9/comments" &&
@@ -202,7 +213,7 @@ function fixture(prefix?: string, legacy = false) {
                       name: "Model",
                       dataType: "SINGLE_SELECT",
                       createdAt: recordedFields.node.fields.nodes[0].createdAt,
-                      options: ["glm", "sonnet"].map((name) => ({
+                      options: ["glm", "sol", "sonnet"].map((name) => ({
                         id: `O_${name}`,
                         name,
                         color: "GRAY",
@@ -328,12 +339,16 @@ function fixture(prefix?: string, legacy = false) {
     issue,
     comments,
     gradePosts,
+    modelPosts,
     mutations,
     requests,
     deps,
     env,
     transport,
     ctx,
+    setProgress: (name: string) => {
+      prProjects.nodes[0].fieldValues.nodes.push({ field: { name: "Progress" }, name });
+    },
     setViewer: (index: number) => {
       viewer = actor(index);
     },
@@ -347,6 +362,58 @@ function fixture(prefix?: string, legacy = false) {
     done: () => expect(unexpected).toEqual([]),
   };
 }
+
+test("send reads the PR card's blocked Progress and refuses before contacting the worker", async () => {
+  const f = fixture();
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  f.setProgress("🤖🚫 🔁2️⃣ 🔴");
+  const before = f.requests.filter((request) => request.includes("opencode.invalid"));
+  const file = join(f.root, ".tmp", "recovery.md");
+  mkdirSync(join(f.root, ".tmp"), { recursive: true });
+  writeFileSync(file, "Recovery guidance");
+  await expect(
+    f.transport.call("worker", { args: ["send", "31", file, "--now"] }, f.ctx)
+  ).rejects.toThrow("answer on the PR: review 31 answer|changes <file>");
+  expect(f.requests.filter((request) => request.includes("opencode.invalid"))).toEqual(before);
+  f.done();
+});
+
+test("model switch posts its note through the gateway and changes only Model, not Progress", async () => {
+  const f = fixture();
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.origin === "https://opencode.invalid") {
+      if (url.pathname === "/api/session/ses_test" && init?.method === "GET") {
+        return Response.json({ data: { ...sessionCapture.data, id: "ses_test" } });
+      }
+      if (url.pathname === "/api/session/ses_test/model" && init?.method === "POST") {
+        expect(JSON.parse(String(init.body))).toEqual({ model: { providerID: "fake", id: "sol" } });
+        return Response.json({ data: {} });
+      }
+      if (url.pathname === "/api/session/ses_test" && init?.method === "PATCH") {
+        expect(JSON.parse(String(init.body))).toEqual({ title: "project#31" });
+        return Response.json({ data: {} });
+      }
+    }
+    return fetch(input, init);
+  };
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  f.mutations.length = 0;
+  f.setProgress("🤖🚫");
+  await f.transport.call("worker", { args: ["model", "31", "sol", "--why", "quota"] }, f.ctx);
+  expect(f.modelPosts).toEqual([{ body: "[orchestrator] NOTE: model switched to sol (quota)" }]);
+  expect(f.mutations).toHaveLength(1);
+  expect(f.mutations[0]).toEqual({
+    m0: {
+      projectId: "PVT",
+      itemId: "CARD31",
+      fieldId: "F_MODEL",
+      value: { singleSelectOptionId: "O_sol" },
+    },
+  });
+  f.done();
+});
 
 test.each(["auto-", "", "legacy"])(
   "started workers report each stop once via watch (prefix=%s)",
@@ -384,6 +451,7 @@ test.each(["auto-", "", "legacy"])(
           metadata: unexpected,
           prepare: unexpected,
           setModel: unexpected,
+          modelComment: unexpected,
           setEstimate: unexpected,
           workerIdentity: unexpected,
           issue: unexpected,

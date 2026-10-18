@@ -1833,6 +1833,7 @@ test("a PR with no recorded worker session merges through the real session guard
     metadata: unexpected,
     prepare: unexpected,
     setModel: unexpected,
+    modelComment: unexpected,
     setEstimate: unexpected,
     workerIdentity: unexpected,
     issue: unexpected,

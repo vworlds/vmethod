@@ -729,6 +729,7 @@ test("grades stage locally, batch into one PR, and start fresh after merge witho
     }),
     prepare: unexpected,
     setModel: unexpected,
+    modelComment: unexpected,
     workerIdentity: unexpected,
     issue: unexpected,
     setEstimate: async () => {},

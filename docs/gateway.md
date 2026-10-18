@@ -311,13 +311,22 @@ They never trigger an automatic switch. The shared `OpencodeClient.status`
 preserves the watcher's directory-only permission/failure contract; its explicit
 session-id overload returns the detailed worker-control reasons.
 
+Use `worker send` only for permission prompts and recovery, never free-text task
+steering. When the PR card's Progress is BLOCKED, QUESTION, READY or DESIGN, every
+send mode refuses with `answer on the PR: review <pr> answer|changes <file>`.
+Use the review commands to record guidance and hand the turn back on the board.
+
 `send --now` interrupts and confirms idle under one 30-second deadline. If it
 cannot confirm idle, it explicitly did not send. `--queue` submits opencode's
 queue delivery; default sends steer the active turn. Claude defaults refuse busy
 turns; queue waits for idle, and now interrupts before resuming. `wait` defaults
 to 600 seconds; permission waits are not completion. `permit` without a decision
 lists pending requests. Model changes preserve the session id, synchronize the
-PR's Model card, and add a segment with `--why` (default `owner-request`). A
+PR's Model card, and add a segment with `--why` (default `owner-request`). Each
+switch posts `[orchestrator] NOTE: model switched to <family> (<why>)` on the PR
+without changing Progress; follow with `review <pr> answer <file>` to hand back
+the turn. Selecting the unchanged model only synchronizes Model and the session
+title; it does not post a switch note. A
 cross-backend switch cannot preserve context and is refused. Gates apply equally
 to family names and configured raw ids; unconfigured provider/id selections need
 an explicit `other` family policy. `models` lists configured gates/fallbacks and

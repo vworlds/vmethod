@@ -159,6 +159,17 @@ class GatewayServer {
         return directory;
       },
       setModel: (pr, family) => this.setWorkerField(pr, "pr", "Model", family),
+      modelComment: async (pr, body) => {
+        await checkMarkdown(this.root, body);
+        guardClosingKeywords(body);
+        const { person } = await this.thread(String(pr), "pr");
+        if (!person) {
+          throw new Error("Refusing model note on unaccepted PR");
+        }
+        await this.github.rest(`/repos/${String(this.config.repo)}/issues/${pr}/comments`, "POST", {
+          body,
+        });
+      },
       setEstimate: (issue, points) => this.setWorkerField(issue, "issue", "Estimate", points),
       setCost: (pr, cost) => this.setWorkerField(pr, "pr", "Cost", cost),
       gradeComment: async (issue, body) => {
@@ -424,6 +435,7 @@ class GatewayServer {
       /<!--\s*points_open:\s*(\d+(?:\.\d+)?)\s*-->/.exec(body) ??
       /\*\*Estimate:\*\*\s*(\d+(?:\.\d+)?)/.exec(body);
     const model = this.projectValue(item, "Model") ?? /\*\*Model:\*\*\s*`?([\w-]+)/.exec(body)?.[1];
+    const progress = this.projectValue(item, "Progress");
     return {
       pr,
       issue,
@@ -433,6 +445,7 @@ class GatewayServer {
       state: String(item.state),
       draft: item.isDraft === true,
       blocked,
+      progress: typeof progress === "string" ? progress : undefined,
       estimate,
       pointsOpen: snapshot ? Number(snapshot[1]) : undefined,
       model: typeof model === "string" ? model : undefined,

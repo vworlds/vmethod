@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { estimateScale } from "../board/estimate.js";
+import { parseProgress } from "../board/progress.js";
 import {
   addTokens,
   boardCost,
@@ -85,6 +86,8 @@ export interface TaskMetadata {
   state: string;
   draft: boolean;
   blocked: boolean;
+  /** Raw PR-card Progress, including optional round and red-check suffixes. */
+  progress?: string;
   /** Current board Estimate of the linked issue, not a historical opening snapshot. */
   estimate?: number;
   /** Opening snapshot from the PR; only legacy import may fall back to estimate. */
@@ -98,6 +101,8 @@ export interface WorkerHooks {
   metadata(pr: number): Promise<TaskMetadata>;
   prepare(pr: number): Promise<string>;
   setModel(pr: number, family: string): Promise<void>;
+  /** Post a model-switch audit note without handing back the protocol turn. */
+  modelComment(pr: number, text: string): Promise<void>;
   setEstimate(issue: number, points: number): Promise<void>;
   /** Grade-time per-PR cost; null clears the board field rather than inventing zero. */
   setCost?(pr: number, cost: string | null): Promise<void>;
@@ -561,6 +566,10 @@ export class WorkerService {
         });
         this.save(record);
         await this.hooks.setModel(pr, model.family);
+        await this.hooks.modelComment(
+          pr,
+          `[orchestrator] NOTE: model switched to ${model.family} (${why.replace(/\s+/g, " ").trim()})`
+        );
         return `Switched ${record.id} to ${model.family}`;
       }
       if (verb === "send") {
@@ -570,6 +579,14 @@ export class WorkerService {
           (rest[1] && !["--queue", "--now"].includes(rest[1]))
         ) {
           throw new Error("Usage: worker send <pr> <file> [--queue|--now]");
+        }
+        const meta = await this.hooks.metadata(pr);
+        if (
+          ["blocked", "question", "ready", "design"].includes(
+            parseProgress(meta.progress).state ?? ""
+          )
+        ) {
+          throw new Error(`answer on the PR: review ${pr} answer|changes <file>`);
         }
         const text = readFileSync(rest[0], "utf8");
         if (!text.trim()) {
@@ -591,7 +608,6 @@ export class WorkerService {
           }
         }
         await this.prompt(record, text, rest[1] === "--queue" ? "queue" : "steer");
-        const meta = await this.hooks.metadata(pr);
         const round = this.round(meta);
         const segment = record.segments.at(-1)!;
         if (!segment.rounds.includes(round)) {
