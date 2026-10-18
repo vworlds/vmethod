@@ -594,6 +594,12 @@ export class TaskFlow {
           ? "owner"
           : null
     );
+    if ((input.outcome === "changes" || input.outcome === "answer") && this.deps.workers) {
+      await this.deps.workers.resume(
+        this.number(input.ref),
+        `[orchestrator] ${input.outcome === "changes" ? `REVIEW round ${round}` : "ANSWER"}\nRead your task PR and act on the review.`
+      );
+    }
     for (const number of taskIssueNumbers(String(item.body)) ?? []) {
       const issue = await this.host.thread(String(number), "issue");
       const owner = input.outcome === "owner" || input.outcome === "ask";

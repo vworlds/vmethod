@@ -306,6 +306,7 @@ function fixture() {
   );
   const config = getConfig(root, {});
   const events: string[] = [];
+  const resumes: { pr: number; prompt: string }[] = [];
   const writes: { path: string; body: ObjectData }[] = [];
   let approved: boolean | "unknown" = true,
     issueApproved: boolean | "unknown" = true;
@@ -513,8 +514,9 @@ function fixture() {
         events.push("worker-status");
         return worker;
       },
-      resume: async () => {
+      resume: async (pr, prompt) => {
         events.push("worker-resume");
+        resumes.push({ pr, prompt });
       },
     },
   };
@@ -587,6 +589,7 @@ function fixture() {
     root,
     config,
     events,
+    resumes,
     writes,
     touched,
     host,
@@ -664,6 +667,28 @@ test.each(["owner", "ask"] as const)(
     f.done();
   }
 );
+
+test.each([
+  ["changes", "[orchestrator] REVIEW round 1\nRead your task PR and act on the review."],
+  ["answer", "[orchestrator] ANSWER\nRead your task PR and act on the review."],
+] as const)("review %s resumes the worker", async (outcome, prompt) => {
+  const f = fixture();
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Please address this.\n");
+  await f.flow().review({ ref: "27", outcome, file });
+  expect(f.resumes).toEqual([{ pr: 27, prompt }]);
+  f.done();
+});
+
+test("review changes works without worker control", async () => {
+  const f = fixture();
+  f.deps.workers = undefined;
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Please address this.\n");
+  await f.flow().review({ ref: "27", outcome: "changes", file });
+  expect(f.resumes).toEqual([]);
+  f.done();
+});
 
 test.each([false, true])(
   "issue ask refuses a live task (%s) and otherwise tracks the owner",
