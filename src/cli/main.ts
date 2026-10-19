@@ -47,6 +47,7 @@ try {
   switch (verb) {
     case "learnings":
     case "worker":
+    case "worktrees":
     case "suggest-model":
     case "grade":
     case "cost":

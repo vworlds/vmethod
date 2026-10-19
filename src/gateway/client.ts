@@ -24,7 +24,7 @@ export interface Dependencies {
   exec: (
     file: string,
     args: readonly string[],
-    options?: { cwd?: string; env?: NodeJS.ProcessEnv }
+    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number }
   ) => Promise<string>;
   now: () => number;
   sleep: (ms: number) => Promise<void>;

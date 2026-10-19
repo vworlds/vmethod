@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
@@ -558,6 +559,14 @@ function fixture() {
       }
       if (args[0] === "commit-tree") {
         return sha;
+      }
+      if (
+        (args[0] === "for-each-ref" &&
+          args[1] === "--format=%(objectname)" &&
+          args[2]?.startsWith("refs/heads/")) ||
+        (args[0] === "worktree" && args[1] === "prune")
+      ) {
+        return "";
       }
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         if (fail === "base") {
@@ -1159,6 +1168,76 @@ test.each([
   expect(f.writes).toEqual([]);
   f.done();
 });
+
+test("merge follow-up journals an idempotent worktree cleanup step", async () => {
+  const f = fixture();
+  await f.flow().merge("27");
+  await f.flow().merge("27");
+  const journal = JSON.parse(
+    readFileSync(
+      join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+      "utf8"
+    )
+  );
+  expect(journal.done.filter((step: string) => step === "worktree")).toEqual(["worktree"]);
+  f.done();
+});
+
+test("merged follow-up stops before removing the real task directory and branch, and retry is a no-op", async () => {
+  const f = fixture();
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: f.root,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  git("init", "-b", "dev");
+  git("config", "user.name", "Test");
+  git("config", "user.email", "test@example.invalid");
+  writeFileSync(join(f.root, ".gitignore"), "node_modules/\n.tmp/\n.worktrees/\n");
+  git("add", ".gitignore");
+  git("commit", "-m", "initial");
+  f.set({ state: "MERGED", head: git("rev-parse", "HEAD"), changed: false });
+  const path = join(f.root, ".worktrees/auto-8-task");
+  git("worktree", "add", "-b", "8-task", path);
+  mkdirSync(join(path, "node_modules"));
+  writeFileSync(join(path, "node_modules/payload"), "ignored");
+  let stops = 0,
+    removals = 0;
+  f.deps.workers!.stop = async () => {
+    stops++;
+  };
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (
+      file === "git" &&
+      (["worktree", "for-each-ref", "symbolic-ref", "rev-list", "branch", "update-ref"].includes(
+        args[0]
+      ) ||
+        args.join(" ") === "rev-parse --git-common-dir" ||
+        args.join(" ") === "status --porcelain --untracked-files=all")
+    ) {
+      if (args[0] === "worktree" && args[1] === "remove") {
+        expect(stops).toBeGreaterThan(0);
+        removals++;
+      }
+      return execFileSync(file, [...args], {
+        cwd: options?.cwd,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+    return exec(file, args, options);
+  };
+  await f.flow().merge("27");
+  expect(existsSync(path)).toBe(false);
+  expect(git("for-each-ref", "--format=%(refname)", "refs/heads/8-task")).toBe("");
+  await f.flow().merge("27");
+  expect(removals).toBe(1);
+  f.done();
+}, 15000);
 
 test("merge follow-up completes a GitHub-auto-closed issue without closing or commenting again", async () => {
   const f = fixture();
