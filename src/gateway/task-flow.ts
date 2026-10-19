@@ -6,11 +6,12 @@ import {
   rmdirSync,
   writeFileSync,
   renameSync,
+  rmSync,
 } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
 import { renderProgress } from "../board/progress.js";
 import { dirname, join, matchesGlob, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { loadYaml, type Config } from "../config.js";
@@ -27,6 +28,7 @@ import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
 import { runVerifyHook } from "./verify-hook.js";
+import { assertLockfileInSync, npmCiEnvironment } from "./lockfile.js";
 import packageInfo from "../../package.json" with { type: "json" };
 import { WorktreeService } from "./worktrees.js";
 
@@ -184,7 +186,7 @@ export class TaskFlow {
         throw new Error("Invalid task flags");
       }
     }
-    for (const value of [input.issue, input.direct, input.model, input.unapproved]) {
+    for (const value of [input.issue, input.direct, input.model, input.unapproved, input.from]) {
       if (value !== undefined && (typeof value !== "string" || !value.trim())) {
         throw new Error("Invalid task text argument");
       }
@@ -194,6 +196,25 @@ export class TaskFlow {
       (input.unapproved !== undefined && !input.unapproved.trim())
     ) {
       throw new Error("Issue/direct title and nonempty exception reason required");
+    }
+    if (input.from !== undefined) {
+      try {
+        validateBranch(input.from);
+      } catch (error) {
+        throw new Error("open-task --from: invalid branch name", { cause: error });
+      }
+      if (
+        [
+          "dev",
+          "master",
+          "main",
+          "HEAD",
+          String(this.config.baseBranch),
+          String(this.config.releaseBranch),
+        ].includes(input.from)
+      ) {
+        throw new Error("open-task --from refuses the base, release or default branch");
+      }
     }
     const issue = input.issue
       ? await this.host.thread(String(this.number(input.issue)), "issue")
@@ -287,9 +308,11 @@ export class TaskFlow {
       version: packageInfo.version,
       "hold banner": input.hold ? `${holdBanner}\n\n` : "",
       "task specification": spec,
+      "started from": input.from ? `Started from ${input.from}.\n` : "",
       "task metadata": JSON.stringify({
         issues: issue ? [Number(input.issue)] : [],
         ...(input.part ? { part: true } : {}),
+        ...(input.from ? { from: input.from } : {}),
         ...(input.unapproved ? { scopeException: input.unapproved } : {}),
       }),
     };
@@ -308,7 +331,7 @@ export class TaskFlow {
     if (!(await git.transfer("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
       throw new Error("Fetch failed");
     }
-    const commit = sha(
+    let head = sha(
       (
         await git.run(
           "commit-tree",
@@ -320,7 +343,10 @@ export class TaskFlow {
         )
       ).trim()
     );
-    if (!(await git.transfer("push", [`${commit}:refs/heads/${branch}`]))) {
+    if (input.from) {
+      head = await this.mergeFromBranch(git, head, input.from, branch, base);
+    }
+    if (!(await git.transfer("push", [`${head}:refs/heads/${branch}`]))) {
       throw new Error("Task branch push failed");
     }
     const created = object(
@@ -360,6 +386,87 @@ export class TaskFlow {
       await this.turn(input.issue!, null);
     }
     return `Opened draft PR #${ref} (${branch})`;
+  }
+
+  /** Start from existing work: merge origin/<from> into the fresh task branch with a true merge
+   * commit (never squash/rebase), so the original authors' commits survive in the delivery. */
+  private async mergeFromBranch(
+    git: GitTransport,
+    head: string,
+    from: string,
+    branch: string,
+    base: string
+  ): Promise<string> {
+    if (!(await git.transfer("fetch", [`+refs/heads/${from}:refs/remotes/origin/${from}`]))) {
+      throw new Error(`open-task --from: no branch ${from} in ${this.repo}`);
+    }
+    const fromHead = sha((await git.run("rev-parse", `refs/remotes/origin/${from}`)).trim());
+    const preview = await git.mergePreview(head, fromHead);
+    if (preview.conflicts.length) {
+      throw new Error(
+        `open-task --from: merging origin/${from} into ${branch} conflicts; ` +
+          `conflicting files: ${preview.conflicts.join(", ")}. Nothing was pushed; ` +
+          `resolve the conflicts first, for example by merging ${base} into ${from}.`
+      );
+    }
+    this.deps.report("--from: checking merged-tree lockfile sync");
+    await this.checkMergedTreeLockfile(git, preview.tree);
+    return sha(
+      (
+        await git.run(
+          "commit-tree",
+          preview.tree,
+          "-p",
+          head,
+          "-p",
+          fromHead,
+          "-m",
+          `Merge branch '${from}' into ${branch}`
+        )
+      ).trim()
+    );
+  }
+
+  /** Lockfile check on the merged task branch content, before the task branch or any worker exists. */
+  private async checkMergedTreeLockfile(git: GitTransport, tree: string): Promise<void> {
+    const entries = (await git.run("ls-tree", tree, "--", "package.json", "package-lock.json"))
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    const blobs = new Map(
+      entries.flatMap((entry) => {
+        const [metadata, path] = entry.split("\t");
+        const match = /^(?:100644|100755) blob ([a-f\d]{40})$/.exec(metadata);
+        if (!match) {
+          // A directory named like a manifest is not extractable here; the worker
+          // install path still fails visibly on it.
+          return [];
+        }
+        if (!["package.json", "package-lock.json"].includes(path)) {
+          throw new Error("Invalid merged-tree lockfile listing");
+        }
+        return [[path, match[1]] as const];
+      })
+    );
+    const lockfile = blobs.get("package-lock.json");
+    if (!blobs.has("package.json") || !lockfile) {
+      // No manifest pair on the branch; the worker's own install path still fails visibly there.
+      return;
+    }
+    const scratch = mkdtempSync(join(tmpdir(), "vmethod-lockfile-"));
+    try {
+      writeFileSync(
+        join(scratch, "package.json"),
+        await git.run("cat-file", "blob", blobs.get("package.json")!)
+      );
+      writeFileSync(
+        join(scratch, "package-lock.json"),
+        await git.run("cat-file", "blob", lockfile)
+      );
+      await assertLockfileInSync(this.deps, scratch, npmCiEnvironment(this.env));
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   }
 
   /** Backfill Development links; complete promotes, unlink demotes to a partial task. */

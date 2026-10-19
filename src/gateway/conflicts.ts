@@ -124,7 +124,7 @@ export class ConflictService {
       }
       return old.phase === "waiting" ? this.finish(pr, old, snapshot) : this.event(pr, old);
     }
-    const files = await git.mergeConflicts(snapshot.head, snapshot.baseSha);
+    const files = (await git.mergePreview(snapshot.head, snapshot.baseSha)).conflicts;
     const record: Resolution = {
       head: snapshot.head,
       base: snapshot.baseSha,

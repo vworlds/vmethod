@@ -407,13 +407,13 @@ test.each(["auto-", ""])(
     writeFileSync(steps, JSON.stringify(git));
     writeFileSync(
       join(bin, "git"),
-      `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; const file=${JSON.stringify(steps)}; const steps=JSON.parse(fs.readFileSync(file)); const step=steps.shift(); assert.ok(step, 'Unexpected git call'); assert.deepEqual(process.argv.slice(2), step.args); fs.writeFileSync(file, JSON.stringify(steps)); if(step.create) { fs.mkdirSync(${JSON.stringify(target)}, {recursive:true}); fs.writeFileSync(${JSON.stringify(join(target, "package-lock.json"))}, 'lock-v1'); } process.stdout.write(step.output ?? '');`,
+      `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; const file=${JSON.stringify(steps)}; const steps=JSON.parse(fs.readFileSync(file)); const step=steps.shift(); assert.ok(step, 'Unexpected git call'); assert.deepEqual(process.argv.slice(2), step.args); fs.writeFileSync(file, JSON.stringify(steps)); if(step.create) { fs.mkdirSync(${JSON.stringify(target)}, {recursive:true}); fs.writeFileSync(${JSON.stringify(join(target, "package.json"))}, '{"name":"example/project","version":"1.0.0"}'); fs.writeFileSync(${JSON.stringify(join(target, "package-lock.json"))}, 'lock-v1'); } process.stdout.write(step.output ?? '');`,
       { mode: 0o755 }
     );
     const installs = join(f.root, "installs");
     writeFileSync(
       join(bin, "npm"),
-      `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; assert.deepEqual(process.argv.slice(2), ['ci']); assert.equal(process.cwd(), ${JSON.stringify(target)}); assert.equal(process.env.HUSKY,'0'); assert.equal(process.env.EXAMPLE_GITHUB_TOKEN, undefined); fs.appendFileSync(${JSON.stringify(installs)}, 'ci\\n'); fs.writeFileSync(${JSON.stringify(f.cli)}, 'throw new Error("NEW VERSION WAS LOADED");');`,
+      `#!${process.execPath}\nimport fs from 'node:fs'; import assert from 'node:assert/strict'; const args=process.argv.slice(2); assert.ok(args.length >= 1 && args[0] === 'ci', JSON.stringify(args)); assert.equal(process.cwd(), ${JSON.stringify(target)}); assert.equal(process.env.HUSKY,'0'); assert.equal(process.env.EXAMPLE_GITHUB_TOKEN, undefined); if (args.length === 1) { fs.appendFileSync(${JSON.stringify(installs)}, 'ci\\n'); fs.writeFileSync(${JSON.stringify(f.cli)}, 'throw new Error("NEW VERSION WAS LOADED");'); } else { assert.deepEqual(args, ['ci','--dry-run','--no-audit','--no-fund','--ignore-scripts']); fs.appendFileSync(${JSON.stringify(installs)}, 'dry\\n'); }`,
       { mode: 0o755 }
     );
     const preload = join(f.root, "offline.mjs");
@@ -444,10 +444,11 @@ test.each(["auto-", ""])(
     expect(first.status, first.stderr).toBe(0);
     expect(first.stdout).toContain("ready. Next: scripts/agent/read-pr.sh 3");
     expect(first.stderr).toContain("branch 7-task keeps its 1 commit(s); 2 behind origin/pack/x");
+    expect(first.stderr).toContain("checking lockfile sync");
     expect(readFileSync(f.cli, "utf8")).toContain("NEW VERSION WAS LOADED");
     expect(existsSync(join(target, "node_modules/.package-lock.sha"))).toBe(true);
     expect(readFileSync(steps, "utf8")).toBe("[]");
-    expect(readFileSync(installs, "utf8")).toBe("ci\n");
+    expect(readFileSync(installs, "utf8")).toBe("dry\nci\n");
     // A subsequent run loads the new version, while the first run completed entirely on the old one.
     expect(f.run(["version"]).stderr).toContain("NEW VERSION WAS LOADED");
     copyFileSync(bundle, f.cli);
@@ -455,16 +456,38 @@ test.each(["auto-", ""])(
     const second = run();
     expect(second.status, second.stderr).toBe(0);
     expect(second.stderr).toContain("dependencies already match package-lock.json");
-    expect(readFileSync(installs, "utf8")).toBe("ci\n");
+    expect(readFileSync(installs, "utf8")).toBe("dry\nci\ndry\n");
     const stamp = readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8");
     writeFileSync(join(target, "package-lock.json"), "lock-v2");
-    writeFileSync(join(bin, "npm"), `#!${process.execPath}\nprocess.exit(7);`, {
-      mode: 0o755,
-    });
+    writeFileSync(
+      join(bin, "npm"),
+      `#!${process.execPath}\nconst dry = process.argv.slice(2)[1] === '--dry-run'; if (dry) { process.exit(0); } process.exit(7);`,
+      {
+        mode: 0o755,
+      }
+    );
     writeFileSync(steps, JSON.stringify([git[0], ...git.slice(3)]));
     const failedInstall = run();
     expect(failedInstall.status).toBe(1);
     expect(failedInstall.stdout).not.toContain("ready.");
+    expect(readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8")).toBe(stamp);
+    // An out-of-sync lockfile stops before the install, with the one-line refusal.
+    writeFileSync(
+      join(bin, "npm"),
+      `#!${process.execPath}\nimport fs from 'node:fs'; if (process.argv.slice(2)[1] === '--dry-run') { process.stderr.write("npm error code EUSAGE\\nnpm error \`npm ci\` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync. Please update your lock file with \`npm install\` before continuing.\\nnpm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0\\n"); process.exit(1); } process.exit(7);`,
+      {
+        mode: 0o755,
+      }
+    );
+    writeFileSync(steps, JSON.stringify([git[0], ...git.slice(3)]));
+    const refused = run();
+    expect(refused.status).toBe(1);
+    expect(refused.stdout).not.toContain("ready.");
+    expect(refused.stderr).toContain(
+      "lockfile out of sync with package.json: regenerate it on the task branch before starting"
+    );
+    expect(refused.stderr).toContain("Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0");
+    expect(refused.stderr).not.toContain("npm error code EUSAGE");
     expect(readFileSync(join(target, "node_modules/.package-lock.sha"), "utf8")).toBe(stamp);
   },
   15000

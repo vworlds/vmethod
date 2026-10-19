@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
@@ -1344,6 +1345,145 @@ test("merged follow-up stops before removing the real task directory and branch,
   f.done();
 }, 15000);
 
+test("open-task --from merges the source branch with a merge commit that keeps its commits and authors", async () => {
+  const f = fixture();
+  // The orchestrator session exports GIT_AUTHOR_*/GIT_COMMITTER_*; strip them so
+  // commit authors come only from the test's own repo-local identity.
+  const cleanEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+  };
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: f.root,
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: cleanEnv,
+    }).trim();
+  git("init", "-b", "dev");
+  git("config", "user.name", "Committer");
+  git("config", "user.email", "committer@example.invalid");
+  writeFileSync(join(f.root, ".gitignore"), ".tmp/\n");
+  git("add", ".gitignore");
+  git("commit", "-m", "initial");
+  git("checkout", "-b", "owner-side");
+  writeFileSync(join(f.root, "notes.md"), "owner notes\n");
+  git("add", "notes.md");
+  git("commit", "-m", "owner first", "--author", "Owner <owner@example.invalid>");
+  writeFileSync(join(f.root, "spec.md"), "owner spec\n");
+  git("add", "spec.md");
+  git("commit", "-m", "owner second", "--author", "Owner <owner@example.invalid>");
+  const ownerSha = git("rev-parse", "owner-side");
+  git("checkout", "dev");
+  writeFileSync(join(f.root, "dev.md"), "dev work\n");
+  git("add", "dev.md");
+  git("commit", "-m", "dev work");
+  git("update-ref", "refs/remotes/origin/dev", git("rev-parse", "dev"));
+  git("update-ref", "refs/remotes/origin/owner-side", ownerSha);
+  const pushes: string[] = [];
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args.includes("push")) {
+      pushes.push(String(args.at(-1)));
+      return "";
+    }
+    if (file === "git" && args.includes("fetch")) {
+      return "";
+    }
+    if (file === "git" || file === "/bin/sh") {
+      return (
+        await promisify(execFile)(file, [...args], {
+          cwd: options?.cwd,
+          env: options?.env,
+          timeout: 10000,
+        })
+      ).stdout;
+    }
+    return exec(file, args, options);
+  };
+  await expect(f.flow().open({ issue: "8", from: "owner-side" })).resolves.toContain("27");
+  expect(pushes).toHaveLength(1);
+  expect(pushes[0]).toMatch(/^[a-f\d]{40}:refs\/heads\/8-task$/);
+  const head = pushes[0].split(":")[0];
+  expect(head).not.toBe(ownerSha);
+  const merge = git("cat-file", "-p", head);
+  expect(merge).toContain("Merge branch 'owner-side' into 8-task");
+  expect(merge).toContain(`parent ${ownerSha}`);
+  expect(git("rev-parse", `${head}^2`)).toBe(ownerSha);
+  expect(git("log", "-1", "--format=%s", `${head}^1`)).toBe("chore: open task 8");
+  expect(git("rev-parse", `${head}^1^1`)).toBe(git("rev-parse", "refs/remotes/origin/dev"));
+  expect(git("ls-tree", "--name-only", head).split("\n").sort()).toEqual([
+    ".gitignore",
+    "dev.md",
+    "notes.md",
+    "spec.md",
+  ]);
+  expect(git("log", "--format=%an", ownerSha)).toBe("Owner\nOwner\nCommitter");
+  const created = f.writes.find((write) => write.path === "/repos/example/project/pulls");
+  expect(created?.body.body).toContain("Started from owner-side.");
+  f.done();
+}, 30000);
+
+test("open-task --from refuses a conflicting source branch, names the files and pushes nothing", async () => {
+  const f = fixture();
+  const cleanEnv = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+  };
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: f.root,
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: cleanEnv,
+    }).trim();
+  git("init", "-b", "dev");
+  git("config", "user.name", "Committer");
+  git("config", "user.email", "committer@example.invalid");
+  writeFileSync(join(f.root, "shared.md"), "v0\n");
+  git("add", "shared.md");
+  git("commit", "-m", "initial");
+  git("checkout", "-b", "owner-side");
+  writeFileSync(join(f.root, "shared.md"), "owner\n");
+  git("commit", "-am", "owner edit", "--author", "Owner <owner@example.invalid>");
+  const ownerSha = git("rev-parse", "owner-side");
+  git("checkout", "dev");
+  writeFileSync(join(f.root, "shared.md"), "base\n");
+  git("commit", "-am", "base edit");
+  git("update-ref", "refs/remotes/origin/dev", git("rev-parse", "dev"));
+  git("update-ref", "refs/remotes/origin/owner-side", ownerSha);
+  const pushes: string[] = [];
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && (args.includes("push") || args.includes("fetch"))) {
+      if (args.includes("push")) {
+        pushes.push(String(args.at(-1)));
+      }
+      return "";
+    }
+    if (file === "git" || file === "/bin/sh") {
+      return (
+        await promisify(execFile)(file, [...args], {
+          cwd: options?.cwd,
+          env: options?.env,
+          timeout: 10000,
+        })
+      ).stdout;
+    }
+    return exec(file, args, options);
+  };
+  await expect(f.flow().open({ issue: "8", from: "owner-side" })).rejects.toThrow(
+    /open-task --from: merging origin\/owner-side into 8-task conflicts; conflicting files: shared\.md/
+  );
+  expect(pushes).toEqual([]);
+  expect(f.writes.filter((write) => write.path === "/repos/example/project/pulls")).toEqual([]);
+  f.done();
+}, 30000);
+
 test("merge follow-up completes a GitHub-auto-closed issue without closing or commenting again", async () => {
   const f = fixture();
   f.set({ issueClosed: true });
@@ -1375,6 +1515,185 @@ test("orchestrator reviews cannot use task-body keyword exceptions", async () =>
   writeFileSync(file, "Closes #8");
   await expect(f.flow().review({ ref: "27", outcome: "answer", file })).rejects.toThrow();
   expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test.each(["dev", "master", "main", "HEAD"])(
+  "open-task --from refuses the base, release or default branch: %s",
+  async (from) => {
+    const f = fixture();
+    await expect(f.flow().open({ issue: "8", from })).rejects.toThrow(
+      "open-task --from refuses the base, release or default branch"
+    );
+    expect(f.writes).toEqual([]);
+    f.done();
+  }
+);
+
+test("open-task --from refuses a branch name that git cannot hold", async () => {
+  const f = fixture();
+  await expect(f.flow().open({ issue: "8", from: "release..1" })).rejects.toThrow(
+    "open-task --from: invalid branch name"
+  );
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test("open-task --from names the missing source branch without creating anything", async () => {
+  const f = fixture();
+  const exec = f.deps.exec;
+  let attempts = 0;
+  f.deps.sleep = async () => {};
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args.includes("fetch")) {
+      if (args.includes("+refs/heads/owner-side:refs/remotes/origin/owner-side")) {
+        attempts++;
+        throw new Error("fatal: Remote branch owner-side not found in upstream origin");
+      }
+      return "";
+    }
+    return exec(file, args, options);
+  };
+  await expect(f.flow().open({ issue: "8", from: "owner-side" })).rejects.toThrow(
+    "open-task --from: no branch owner-side in example/project"
+  );
+  expect(attempts).toBe(3);
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test("open-task --from merges the source branch, checks the lockfile and pushes the merge commit", async () => {
+  const f = fixture();
+  const fromSha = "d".repeat(40);
+  const tree = "e".repeat(40);
+  const packageJson = '{"name":"example","version":"1.0.0"}';
+  const packageLock = '{"lockfileVersion":3,"packages":{}}';
+  const npm: { args: string[]; cwd: string; env: NodeJS.ProcessEnv | undefined }[] = [];
+  let scratch = "";
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args[0] === "rev-parse") {
+      expect(args[1]).toBe("refs/remotes/origin/owner-side");
+      return fromSha;
+    }
+    if (file === "/bin/sh") {
+      expect(args[0]).toBe("-c");
+      expect(args[3]).toBe(sha);
+      expect(args[4]).toBe(fromSha);
+      return `${tree}\0`;
+    }
+    if (file === "git" && args[0] === "ls-tree") {
+      expect(args[1]).toBe(tree);
+      expect(args.slice(2)).toEqual(["--", "package.json", "package-lock.json"]);
+      return [
+        `100644 blob ${"f".repeat(40)}\tpackage.json`,
+        `100644 blob ${"1".repeat(40)}\tpackage-lock.json`,
+        "",
+      ].join("\n");
+    }
+    if (file === "git" && args[0] === "cat-file") {
+      expect(args[1]).toBe("blob");
+      return args[2] === "f".repeat(40) ? packageJson : packageLock;
+    }
+    if (file === "npm") {
+      npm.push({ args: [...args], cwd: String(options?.cwd), env: { ...options?.env } });
+      scratch = String(options?.cwd);
+      return "";
+    }
+    return exec(file, args, options);
+  };
+  await expect(f.flow().open({ issue: "8", from: "owner-side" })).resolves.toContain("27");
+  expect(npm).toHaveLength(1);
+  expect(npm[0].args).toEqual(["ci", "--dry-run", "--no-audit", "--no-fund", "--ignore-scripts"]);
+  expect(npm[0].env).not.toHaveProperty("EXAMPLE_GITHUB_TOKEN");
+  expect(npm[0].env?.HUSKY).toBe("0");
+  expect(scratch.startsWith(f.root)).toBe(false);
+  expect(existsSync(scratch)).toBe(false);
+  expect(f.events.some((event) => event.includes(`${sha}:refs/heads/8-task`))).toBe(true);
+  const created = f.writes.find((write) => write.path === "/repos/example/project/pulls");
+  expect(created?.body.body).toContain("Started from owner-side.");
+  expect(created?.body.body).toContain('<!-- vmethod-task {"issues":[8],"from":"owner-side"} -->');
+  f.done();
+});
+
+test("open-task --from refuses an out-of-sync lockfile before pushing the task branch", async () => {
+  const f = fixture();
+  const fromSha = "d".repeat(40);
+  const tree = "e".repeat(40);
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args[0] === "rev-parse") {
+      expect(args[1]).toBe("refs/remotes/origin/owner-side");
+      return fromSha;
+    }
+    if (file === "/bin/sh") {
+      expect(args[0]).toBe("-c");
+      expect(args[3]).toBe(sha);
+      expect(args[4]).toBe(fromSha);
+      return `${tree}\0`;
+    }
+    if (file === "git" && args[0] === "ls-tree") {
+      expect(args[1]).toBe(tree);
+      expect(args.slice(2)).toEqual(["--", "package.json", "package-lock.json"]);
+      return [
+        `100644 blob ${"f".repeat(40)}\tpackage.json`,
+        `100644 blob ${"1".repeat(40)}\tpackage-lock.json`,
+        "",
+      ].join("\n");
+    }
+    if (file === "git" && args[0] === "cat-file") {
+      expect(args[1]).toBe("blob");
+      return '{"name":"example","version":"1.0.0"}';
+    }
+    if (file === "npm") {
+      const error = new Error("Command failed: npm ci") as Error & { stderr?: string };
+      error.stderr = [
+        "npm error code EUSAGE",
+        "npm error",
+        "npm error `npm ci` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync. Please update your lock file with `npm install` before continuing.",
+        "npm error",
+        "npm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0",
+        "npm error Missing: yaml@2.9.1 from lock file",
+      ].join("\n");
+      throw error;
+    }
+    return exec(file, args, options);
+  };
+  await expect(f.flow().open({ issue: "8", from: "owner-side" })).rejects.toThrow(
+    "lockfile out of sync with package.json: regenerate it on the task branch before starting\nnpm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0"
+  );
+  expect(f.writes).toEqual([]);
+  expect(f.events.filter((event) => event.includes("push --porcelain"))).toEqual([]);
+  f.done();
+});
+
+test("open-task --from skips the lockfile check when the merged tree installs no manifests", async () => {
+  const f = fixture();
+  const fromSha = "d".repeat(40);
+  const tree = "e".repeat(40);
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args[0] === "rev-parse") {
+      expect(args[1]).toBe("refs/remotes/origin/owner-side");
+      return fromSha;
+    }
+    if (file === "/bin/sh") {
+      expect(args[0]).toBe("-c");
+      expect(args[3]).toBe(sha);
+      expect(args[4]).toBe(fromSha);
+      return `${tree}\0`;
+    }
+    if (file === "git" && args[0] === "ls-tree") {
+      expect(args[1]).toBe(tree);
+      expect(args.slice(2)).toEqual(["--", "package.json", "package-lock.json"]);
+      return "";
+    }
+    if (file === "npm") {
+      throw new Error("Unexpected lockfile check without manifests");
+    }
+    return exec(file, args, options);
+  };
+  await expect(f.flow().open({ issue: "8", from: "owner-side" })).resolves.toContain("27");
   f.done();
 });
 

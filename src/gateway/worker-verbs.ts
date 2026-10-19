@@ -11,6 +11,7 @@ import {
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { configValue, getConfig } from "../config.js";
 import { checkMarkdown, MarkdownDependencyError } from "../gateway/markdown.js";
+import { assertLockfileInSync, lockfileCheckable, npmCiEnvironment } from "../gateway/lockfile.js";
 import type { CallContext, Transport } from "../gateway/transport.js";
 import { context } from "./transport.js";
 import { workerWorktree } from "./worker-path.js";
@@ -178,18 +179,17 @@ export async function startTask(
   if (config.workerUser || config.workerGroup) {
     await transport.call("workerAccess", { directory: target }, ctx);
   }
+  if (lockfileCheckable(target)) {
+    deps.report(`checking lockfile sync in ${target}`);
+    await assertLockfileInSync(deps, target, npmCiEnvironment(env));
+  }
   const stamp = join(target, "node_modules/.package-lock.sha");
   const want = createHash("sha256")
     .update(readFileSync(join(target, "package-lock.json")))
     .digest("hex");
   if (!existsSync(stamp) || readFileSync(stamp, "utf8").trim() !== want) {
     // Do not pass gateway credentials to package lifecycle scripts.
-    const installEnv: NodeJS.ProcessEnv = { HUSKY: "0" };
-    for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"]) {
-      if (env[key]) {
-        installEnv[key] = env[key];
-      }
-    }
+    const installEnv = npmCiEnvironment(env);
     const output = await deps.exec(
       config.workerGroup ? "sh" : "npm",
       config.workerGroup ? ["-c", "umask 002\nexec npm ci"] : ["ci"],

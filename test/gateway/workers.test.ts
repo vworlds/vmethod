@@ -14,6 +14,7 @@ import { getConfig } from "../../src/config.js";
 import { OpencodeClient, type Dependencies } from "../../src/gateway/client.js";
 import { WorkerService, type TaskMetadata, type WorkerHooks } from "../../src/gateway/workers.js";
 import { workerAccess } from "../../src/gateway/access.js";
+import { lockfileOutOfSync, npmCiCheckArguments } from "../../src/gateway/lockfile.js";
 import { validProject } from "../helpers.js";
 import captured from "../fixtures/usage/opencode-session.json" with { type: "json" };
 import messageCapture from "../fixtures/usage/opencode-message.json" with { type: "json" };
@@ -1123,6 +1124,71 @@ test("self-hosted worker start installs and builds before accepting dist binary"
   ]);
   expect(f.prompts[0]).toContain(join(f.directory, "docs/worker-guide.md"));
   expect(f.prompts[0]).not.toContain("node_modules/@vworlds/vmethod/docs/worker-guide.md");
+  f.done();
+});
+
+const npmSyncRefusal = [
+  "npm error code EUSAGE",
+  "npm error",
+  "npm error `npm ci` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync. Please update your lock file with `npm install` before continuing.",
+  "npm error",
+  "npm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0",
+  "npm error Missing: yaml@2.9.1 from lock file",
+].join("\n");
+
+test("worker start refuses an out-of-sync lockfile before any worker session exists", async () => {
+  const f = fixture([...start]);
+  writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "consumer" }));
+  writeFileSync(join(f.directory, "package-lock.json"), '{"lockfileVersion":3,"packages":{}}');
+  f.deps.exec = vi.fn(async () => {
+    const error = new Error("Command failed: npm ci") as Error & { stderr?: string };
+    error.stderr = npmSyncRefusal;
+    throw error;
+  });
+  await expect(f.service.command(["start", "31"])).rejects.toThrow(
+    `${lockfileOutOfSync}\nnpm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0`
+  );
+  expect(vi.mocked(f.deps.exec).mock.calls.map(([file, args]) => [file, args])).toEqual([
+    ["npm", [...npmCiCheckArguments]],
+  ]);
+  expect(f.hooks.prepare).toHaveBeenCalledOnce();
+  expect(() => f.record()).toThrow();
+  expect(f.prompts).toEqual([]);
+});
+
+test("worker start checks the task worktree lockfile before creating any session", async () => {
+  const f = fixture([...start]);
+  writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "consumer" }));
+  writeFileSync(join(f.directory, "package-lock.json"), '{"lockfileVersion":3,"packages":{}}');
+  f.deps.exec = vi.fn(async () => "");
+  await expect(f.service.command(["start", "31"])).resolves.toContain("Started");
+  expect(vi.mocked(f.deps.exec).mock.calls.map(([file, args]) => [file, args])).toEqual([
+    ["npm", [...npmCiCheckArguments]],
+  ]);
+  const [, , options] = vi.mocked(f.deps.exec).mock.calls[0];
+  expect(options?.cwd).toBe(f.directory);
+  expect(options?.env).not.toHaveProperty("OPENCODE_SERVER_PASSWORD");
+  f.done();
+});
+
+test("self-hosted worker start checks the lockfile before installing", async () => {
+  const f = fixture([...start]);
+  rmSync(join(f.directory, "node_modules/.bin/vmethod"));
+  writeFileSync(join(f.directory, "package.json"), JSON.stringify({ name: "@vworlds/vmethod" }));
+  writeFileSync(join(f.directory, "package-lock.json"), '{"lockfileVersion":3,"packages":{}}');
+  f.deps.exec = vi.fn(async (_file, args) => {
+    if (args.join(" ") === "run build") {
+      mkdirSync(join(f.directory, "dist"));
+      writeFileSync(join(f.directory, "dist/vmethod.mjs"), "built");
+    }
+    return "";
+  });
+  await expect(f.service.command(["start", "31"])).resolves.toContain("Started");
+  expect(vi.mocked(f.deps.exec).mock.calls.map(([file, args]) => [file, args])).toEqual([
+    ["npm", [...npmCiCheckArguments]],
+    ["npm", ["ci"]],
+    ["npm", ["run", "build"]],
+  ]);
   f.done();
 });
 

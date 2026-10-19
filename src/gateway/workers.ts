@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { estimateScale } from "../board/estimate.js";
 import { parseProgress } from "../board/progress.js";
 import { taskHeld } from "./task-hold.js";
+import { assertLockfileInSync, lockfileCheckable, npmCiEnvironment } from "./lockfile.js";
 import {
   addTokens,
   boardCost,
@@ -1355,15 +1356,14 @@ export class WorkerService {
     const selfHosting =
       existsSync(packagePath) &&
       object(JSON.parse(readFileSync(packagePath, "utf8"))).name === "@vworlds/vmethod";
+    const npmEnv = npmCiEnvironment(this.env);
+    if (lockfileCheckable(directory)) {
+      this.deps.report("checking task worktree lockfile sync");
+      await assertLockfileInSync(this.deps, directory, npmEnv);
+    }
     if (selfHosting) {
-      const env: NodeJS.ProcessEnv = { HUSKY: "0" };
-      for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"]) {
-        if (this.env[key]) {
-          env[key] = this.env[key];
-        }
-      }
-      await this.deps.exec("npm", ["ci"], { cwd: directory, env });
-      await this.deps.exec("npm", ["run", "build"], { cwd: directory, env });
+      await this.deps.exec("npm", ["ci"], { cwd: directory, env: npmEnv });
+      await this.deps.exec("npm", ["run", "build"], { cwd: directory, env: npmEnv });
     }
     try {
       accessSync(

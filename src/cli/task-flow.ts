@@ -27,6 +27,7 @@ export async function taskFlowVerb(
       "--direct": "direct",
       "--unapproved": "unapproved",
       "--model": "model",
+      "--from": "from",
     } as const;
     const flags = {
       "--hold": "hold",
@@ -52,7 +53,7 @@ export async function taskFlowVerb(
         input.issue = arg;
       } else {
         throw new Error(
-          "Usage: open-task <issue> [--direct title] [--unapproved reason] [--hold] [--part] [--model family] [--owner-approved]"
+          "Usage: open-task <issue> [--direct title] [--unapproved reason] [--hold] [--part] [--model family] [--from branch] [--owner-approved]"
         );
       }
     }

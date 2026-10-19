@@ -115,6 +115,12 @@ as worker discretion. Execution instructions belong in the pinned
 [worker guide](worker-guide.md), not repeated PR boilerplate.
 
 Use `open-task` (vmethod 1.0, #8) and `start-worker` (vmethod 1.0, #9).
+When the agreed work already exists on another branch — for example the owner's —
+do not merge it into the task by hand: open the task with `open-task <issue>
+--from <branch>` instead. It merges that branch into the task branch with a merge
+commit, so its commits and authors survive the delivery, refuses conflicting
+sources with the conflicting file names, and checks the lockfile before the task
+branch exists. A manual merge risks a squash losing the branch's commits.
 Set the PR card's Model field, respect holds and gates, and give one worker its own
 worktree. `worker start` generates the first prompt with inline authority rules,
 task values and the guide path; adoption, backend changes and replacement sessions
