@@ -10,6 +10,9 @@ export async function gatewayVerb(
   const ctx = context(env);
   switch (verb) {
     case "issue": {
+      if (args[0] === "edit" && args.length === 3) {
+        return transport.call("issueEdit", { ref: args[1], file: args[2] }, ctx);
+      }
       if (args[0] === "create" && args.length >= 3) {
         const labels: string[] = [];
         let estimate: number | undefined;
@@ -65,9 +68,14 @@ export async function gatewayVerb(
         return transport.call("issueClose", { ref: args[1], comment: args[3] }, ctx);
       }
       throw new Error(
-        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] | issue close <n> [--comment file]"
+        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] | issue close <n> [--comment file] | issue edit <n> <body-file>"
       );
     }
+    case "scope-review":
+      if (args.length !== 2) {
+        throw new Error("Usage: scope-review <issue> <summary-file>");
+      }
+      return transport.call("scopeReview", { ref: args[0], file: args[1] }, ctx);
     case "worker":
       return transport.call("worker", { args }, ctx);
     case "suggest-model":

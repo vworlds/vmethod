@@ -14,6 +14,7 @@ Use a machine-readable first line and keep the delivery conversation on its card
 | Worker       | `[worker] READY FOR REVIEW (round n)` | Green CI, evidence and handover               |
 | Orchestrator | `[orchestrator] REVIEW round n`       | Numbered review and requested changes         |
 | Orchestrator | `[orchestrator] OWNER REVIEW`         | Hand over try-out and decisions               |
+| Orchestrator | `[orchestrator] SCOPE REVIEW`         | Hand over the final issue body by SHA-256     |
 | Orchestrator | `[orchestrator] OWNER QUESTION`       | Ask the owner through tracked tooling         |
 | Orchestrator | `[orchestrator] ANSWER`               | Answer a worker question                      |
 | Orchestrator | `[orchestrator] AMENDMENT`            | Explicitly change the task prompt             |
@@ -26,7 +27,9 @@ owner approval. Only [verified identity and role](security.md) confer authority.
 The scripts keep assignee and Progress together: worker READY (`🤖👍`), QUESTION
 (`🤖❓`) and BLOCKED (`🤖🚫`) hand the turn to the orchestrator. OWNER REVIEW
 (`👤🔍`) and OWNER QUESTION (`👤❓`) hand it to the owner on the PR only.
-Linked issues stay In review without owner assignment or Progress. REVIEW and ANSWER return to working (`🤖🔨`), In progress,
+Linked issues stay In review without owner assignment or Progress, except an explicit
+SCOPE REVIEW awaiting issue-body approval (`👤🔍` on the issue itself).
+REVIEW and ANSWER return to working (`🤖🔨`), In progress,
 without management assignees. Owner replies and current-head reviews return to
 the orchestrator (`🧭🔍`). Orchestrator APPROVED
 leaves verification/merge follow-up with the orchestrator, not an unassigned review.

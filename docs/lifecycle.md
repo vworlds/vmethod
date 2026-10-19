@@ -12,8 +12,11 @@ Develop an idea on an issue; build and check one delivery on a task PR.
 3. Read the relevant code and settled decisions. Present the problem, options,
    recommendation, exclusions, observable acceptance cases and verification plan.
    Resolve ambiguous readings explicitly with the owner before Approved.
-4. The owner approves the agreed specification. Preserve it in the issue body;
-   earlier discussion remains in the edit history and comments.
+4. An owner Approved move initially agrees with the discussion's conclusions,
+   not permission to start. Move the issue to In progress, rewrite its body into
+   the final scope, then request [scope review](orchestrator-guide.md#scope-review).
+   The owner reads that body and moves it to Approved again. Approval is bound to
+   the body hash recorded in SCOPE REVIEW; changing the body voids it.
 5. `open-task` (vmethod 1.0, #8) creates a draft task PR whose description is the
    complete worker prompt. Record its issue relation through the wrapper, not
    closing phrases in agent-authored prose. Move the issue to In progress.
@@ -38,6 +41,8 @@ All other merge gates remain in force. See the
 An issue can have several deliveries. Only its last completed delivery closes it;
 earlier deliveries preserve the open issue relation. A delivery into an integration
 branch does not close the issue until the integration reaches `baseBranch`.
+An unchanged approved body covers every part; only a changed body needs scope
+re-approval. Orchestrator board moves between parts do not revoke that approval.
 
 ## Shortcuts
 
@@ -48,6 +53,14 @@ branch does not close the issue until the integration reaches `baseBranch`.
   reason recorded on the issue, such as an evidenced bug with a reproducer or
   profile. It is an explicit exception, not a way to turn an investigation into
   an implementation task or to skip delivery approval.
+- An orchestrator-written issue with only trusted orchestrator comments (or no
+  comments) can use its owner's Approved move directly. A comment from anyone
+  else, including an unknown author or editor, voids this trivial shortcut; use
+  SCOPE REVIEW instead. The orchestrator folds conclusions into the body, so its
+  own OWNER QUESTION handover does not void the shortcut.
+- Projects may configure `scope.fastPath` with label names. A matching issue still
+  needs a current body-bound SCOPE REVIEW, but does not wait for owner scope approval.
+  This is off by default; vmethod leaves it unset. Delivery approval is unchanged.
 
 Explore, assess and propose issues are orchestrator analysis, not task PRs.
 Workers implement agreed specifications, not open owner decisions.

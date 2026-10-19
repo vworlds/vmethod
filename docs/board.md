@@ -11,9 +11,9 @@ Issues and PRs use the same columns for different stages:
 | ----------- | -------------------------------------------------- | ------------------------------------------ |
 | Backlog     | Idea, initially estimated; no implementation       | Not used                                   |
 | Ready       | Owner wants it developed; blocked items wait       | Not used                                   |
-| In progress | Its deliveries are open                            | Worker builds                              |
+| In progress | Scope rewrite or its deliveries are open           | Worker builds                              |
 | In review   | Specification conversation                         | Orchestrator verification or owner review  |
-| Approved    | Owner agrees to specification                      | Owner agrees to delivery; verify and merge |
+| Approved    | Conclusions agreed; scope gate decides execution   | Owner agrees to delivery; verify and merge |
 | Done        | Last delivery integrated, or closed as not planned | Merged or closed                           |
 
 **Assignee means whose move it is**, not who wrote the code. Assign the owner when
@@ -26,9 +26,9 @@ only on the task PR: linked issues stay In review without an owner assignee or
 owner Progress; follow their Development link. After a task PR merges, the watcher
 keeps this exception while merge follow-up is pending: an incomplete journal updated
 within ten minutes, or less than ten minutes since the merge. Once that window expires,
-an issue still In review without an assignee is a board violation.
-The watcher clears stale owner mirrors; see [protocol transitions](protocol.md).
-Use `board set` only for
+an issue still In review without an assignee is a board violation. An explicit pending
+SCOPE REVIEW instead belongs on the issue, even with linked tasks. The watcher clears
+stale owner mirrors; see [protocol transitions](protocol.md). Use `board set` only for
 explicit housekeeping with validated Progress, not as a substitute for the
 [tracked owner-question commands](orchestrator-guide.md).
 
@@ -36,6 +36,16 @@ explicit housekeeping with validated Progress, not as a substitute for the
 `board status --fix` to move closed cards to Done and open cards out of Done to
 Backlog, clearing stale Progress as it reconciles each card. Closing an issue also
 moves its card to Done and clears its assignee.
+
+## Issue scope approval
+
+Approved alone does not authorize execution. Without valid scope evidence, the
+watcher emits `SCOPE #n: approved conclusions; rewrite body and request scope review`
+instead of LAUNCH. Move the issue to In progress while rewriting, then use
+`scope-review` to put it In review, owner assigned, with `👤🔍`. The owner's next
+Approved move approves the body hash in that comment. A changed body needs a new
+review and approval; an unchanged body covers all part PRs. See the
+[scope procedure and shortcuts](orchestrator-guide.md#scope-review).
 
 ## Estimate belongs to the issue
 

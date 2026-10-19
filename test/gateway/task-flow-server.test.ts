@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { actor, fixtureServer, graph, item, sha } from "./helpers.js";
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
+import { scopeIssue, scopeMove, scopeConnection, scopeGraph } from "./scope-fixture.js";
 
 test.each(["", "   ", "reason\nforged line"])(
   "gateway forwards and validates carry reason %j before PR reads",
@@ -64,26 +65,15 @@ test("open-task checks the issue timeline actor at the server, not the card's St
         labels: { nodes: [], pageInfo: { hasNextPage: false } },
       }),
     }),
-    graph({ node: item() }),
-    graph({
-      node: item({
-        timelineItems: {
-          nodes: [
-            {
-              __typename: "ProjectV2ItemStatusChangedEvent",
-              actor: actor(2),
-              status: "Approved",
-              createdAt: "2026-01-01T00:00:00Z",
-              project: { number: 1 },
-            },
-          ],
-          pageInfo: { hasNextPage: false },
-        },
-      }),
+    scopeGraph({ nodes: [scopeIssue()] }),
+    scopeGraph({ nodes: [scopeIssue()] }),
+    scopeGraph({ n0: scopeIssue({ comments: scopeConnection([]) }) }),
+    scopeGraph({
+      n0: scopeIssue({ timelineItems: scopeConnection([scopeMove({ actor: actor(2) })]) }),
     }),
   ]);
   await expect(f.transport.call("openTask", { issue: "8", model: "sol" })).rejects.toThrow(
-    "Approved by an owner"
+    "scope not approved: post SCOPE REVIEW first"
   );
   f.done();
 });

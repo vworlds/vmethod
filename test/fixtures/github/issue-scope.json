@@ -1,0 +1,195 @@
+{
+  "repository": {
+    "issue": {
+      "id": "I_kwDOVMIbYc8AAAABYMa-6A",
+      "body": "## Goal\n\nWhen an issue goes to execution (one task PR or several), its **body holds the final scope**: every conclusion of the discussion folded in. Work starts only after the owner has approved **that** text.\n\n## Flow (owner's design)\n\n1. An issue starts vague. The orchestrator, the owner and others discuss it in comments.\n2. The owner moves the card to **Approved** at any point. If the body has not been rewritten and reviewed since the discussion, this means \"I agree with the conclusions\", **not** \"start work\".\n3. The orchestrator then:\n   - moves the card to **In progress**;\n   - rewrites the issue body into the final scope, summarising all the conclusions;\n   - posts `[orchestrator] SCOPE REVIEW` (\"I have updated the main body …\", with a short list of what changed from the original);\n   - moves the card to **In review**, owner assigned, with the owner-review icon.\n4. The owner reads the body. Approving **again** means the scope is approved and work can start. Changes requested or comments send it back to step 3.\n\n## The flag: \"scope approved\"\n\nAn issue's scope counts as approved only when an owner move to Approved **follows** the latest `[orchestrator] SCOPE REVIEW`, and the body is **unchanged** since that comment. This works like the PR handover rule: OWNER REVIEW names a SHA, and an approval counts only for that SHA.\n\n- **Mechanism** (owner decision): SCOPE REVIEW records a hash of the body (`body sha256: …`) in the comment. Nothing is added to the body itself. `open-task`, the watcher's LAUNCH and `merge-task` treat an issue as scope-approved only if the owner's last Approved move is newer than the SCOPE REVIEW, and the current body hash matches. An edit to the body after SCOPE REVIEW voids the approval.\n- **The watcher** turns an owner Approved without a valid SCOPE REVIEW into a new event, `SCOPE #n: approved conclusions; rewrite body and request scope review`. That is the orchestrator's cue for step 3, and it replaces today's LAUNCH for that case.\n- **`open-task`** refuses an issue without approved scope: \"scope not approved: post SCOPE REVIEW first\". `--unapproved <reason>` stays the explicit escape hatch.\n- **New verbs:**\n  - `issue edit <n> <file>` rewrites the body; it is edit-safe and refuses if the body changed since it was read.\n  - `scope-review <n> <file>` posts SCOPE REVIEW with the body hash, sets the card to In review, and gives the owner the turn and the review icon. They can be one verb that does the whole of step 3.\n- **Trivial-issue shortcut** (owner decision): an owner Approved move counts as scope-approved directly, with no SCOPE REVIEW, when the body was written by the orchestrator and **nobody has commented** on the issue since it was created (or since its last SCOPE REVIEW). Any comment from anyone voids the shortcut.\n- **Fast path** (per project, from VecsMaster; **off by default**): `scope.fastPath` in `vmethod.yaml` names labels (for example `bug` with a reproducer) whose issues may start without the owner's scope approval. The orchestrator still rewrites the body and posts SCOPE REVIEW, for the record, but `open-task` does not wait. This replaces recording routine bug fixes as `--unapproved` exceptions. vmethod itself leaves it unset.\n- **Part-PR series** (owner decision): the scope needs re-approval between parts **only if the body changes**. An unchanged approved body covers every part.\n\n## Acceptance\n\n- Test: Approved without SCOPE REVIEW gives a SCOPE event, and `open-task` refuses.\n- Test: SCOPE REVIEW, then Approved, lets `open-task` proceed.\n- Test: a body edited after SCOPE REVIEW voids the approval.\n- Test: trivial shortcut: an orchestrator-written issue with no comments, then Approved, counts as scope-approved; one comment voids that.\n- Test: a fast-path label lets `open-task` proceed right after SCOPE REVIEW; without the config, it waits.\n- Test: a part-PR series with an unchanged body needs no re-approval; a changed body does.\n- Docs: lifecycle, board and orchestrator guide.\n",
+      "createdAt": "2026-10-19T05:51:53Z",
+      "lastEditedAt": "2026-10-19T06:01:40Z",
+      "author": {
+        "__typename": "User",
+        "login": "vimescmd",
+        "databaseId": 343394568
+      },
+      "editor": {
+        "__typename": "User",
+        "login": "vimescmd",
+        "databaseId": 343394568
+      },
+      "repository": {
+        "nameWithOwner": "vworlds/vmethod",
+        "owner": {
+          "login": "vworlds"
+        }
+      },
+      "labels": {
+        "nodes": [],
+        "pageInfo": {
+          "hasNextPage": false
+        }
+      },
+      "comments": {
+        "nodes": [
+          {
+            "id": "IC_kwDOVMIbYc8AAAABdSr7GQ",
+            "body": "[orchestrator] OWNER QUESTION\n\nThree open questions to settle before I finalise the body (my recommendation is in bold):\n\n1. Where the scope flag lives: **a body hash in the SCOPE REVIEW comment**, or a hidden marker in the body. The comment keeps the body clean and mirrors the PR handover rule.\n2. The trivial-issue shortcut, or **always a SCOPE REVIEW**. Always is one rule with no judgement calls, at the cost of one extra review on simple issues.\n3. Part-PR series: **re-approve only if the body changes** between parts.\n\nAnswer here. I'll fold your answers into the body and post SCOPE REVIEW, following the issue's own flow by hand.\n",
+            "createdAt": "2026-10-19T05:57:54Z",
+            "lastEditedAt": null,
+            "author": {
+              "__typename": "User",
+              "login": "vimescmd",
+              "databaseId": 343394568
+            },
+            "editor": null,
+            "repository": {
+              "nameWithOwner": "vworlds/vmethod",
+              "owner": {
+                "login": "vworlds"
+              }
+            },
+            "attribution": "from vimescmd (orchestrator)"
+          },
+          {
+            "id": "IC_kwDOVMIbYc8AAAABdSuCLA",
+            "body": "Body hash in scope review comment.\nTrivial issue shortcut\nPart-PR series: re-approve only if the body changes between parts.",
+            "createdAt": "2026-10-19T06:00:44Z",
+            "lastEditedAt": null,
+            "author": {
+              "__typename": "User",
+              "login": "jpeletier",
+              "databaseId": 11574521
+            },
+            "editor": null,
+            "repository": {
+              "nameWithOwner": "vworlds/vmethod",
+              "owner": {
+                "login": "vworlds"
+              }
+            },
+            "attribution": "from jpeletier (owner)"
+          },
+          {
+            "id": "IC_kwDOVMIbYc8AAAABdSuNbA",
+            "body": "vecs data points for #138:\n\n1. **Bug fast path.** The vecs charter lets bugs with a reproducer or a profile (crash, wrong result, divergence, measured hot-path cost) go straight to work without Approved. Under this design every one of them would need `--unapproved <reason>`, which records a routine bug fix as an exception. Please make it a first-class route instead, e.g. a per-project `scope.fastPath` (label or issue type) where the orchestrator's SCOPE REVIEW is posted for the record but `open-task` doesn't wait for the owner. Projects without it keep the strict flow.\n2. **Q1:** put the hash in the SCOPE REVIEW comment. The orchestrator's authenticated comment is the trust anchor. Anyone who can edit the body can edit a hidden marker in it too.\n3. **Q3:** agree, re-approve only when the body changes.\n\n---\n_Generated by [Claude Code](https://claude.ai/code)_\n",
+            "createdAt": "2026-10-19T06:00:58Z",
+            "lastEditedAt": null,
+            "author": {
+              "__typename": "User",
+              "login": "VecsMaster",
+              "databaseId": 238095565
+            },
+            "editor": null,
+            "repository": {
+              "nameWithOwner": "vworlds/vmethod",
+              "owner": {
+                "login": "vworlds"
+              }
+            },
+            "attribution": "from VecsMaster (orchestrator)"
+          },
+          {
+            "id": "IC_kwDOVMIbYc8AAAABdSuyCQ",
+            "body": "[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope. Changes from the original:\n- **Your three decisions:** the body hash goes in this comment (nothing is added to the body); the trivial-issue shortcut (an orchestrator-written body with no comments since); part-PR series re-approve only when the body changes.\n- **Added, from VecsMaster:** an optional per-project `scope.fastPath` (off by default, unset for vmethod). Labelled issues, such as reproducible bugs, may start right after SCOPE REVIEW without waiting for you. Drop it if you'd rather not have it.\n- The \"Open questions\" section is removed, and the acceptance tests now cover the shortcut, the fast path and part series.\n\nbody sha256: `7fdfecb0b22f3d0d0a79fa93f4b901441a4713b5a9bc28611979c34f157ffbe1`\n\nApprove the card again to start work.\n",
+            "createdAt": "2026-10-19T06:01:44Z",
+            "lastEditedAt": null,
+            "author": {
+              "__typename": "User",
+              "login": "vimescmd",
+              "databaseId": 343394568
+            },
+            "editor": null,
+            "repository": {
+              "nameWithOwner": "vworlds/vmethod",
+              "owner": {
+                "login": "vworlds"
+              }
+            },
+            "attribution": "from vimescmd (orchestrator)"
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "Y3Vyc29yOnYyOpHPAAAAAXUrsgk="
+        }
+      },
+      "timelineItems": {
+        "nodes": [
+          {
+            "__typename": "ProjectV2ItemStatusChangedEvent",
+            "actor": {
+              "__typename": "User",
+              "login": "vimescmd",
+              "databaseId": 343394568
+            },
+            "status": "Backlog",
+            "previousStatus": "",
+            "createdAt": "2026-10-19T05:52:06Z",
+            "project": {
+              "number": 5
+            }
+          },
+          {
+            "__typename": "ProjectV2ItemStatusChangedEvent",
+            "actor": {
+              "__typename": "User",
+              "login": "jpeletier",
+              "databaseId": 11574521
+            },
+            "status": "Ready",
+            "previousStatus": "Backlog",
+            "createdAt": "2026-10-19T05:57:40Z",
+            "project": {
+              "number": 5
+            }
+          },
+          {
+            "__typename": "ProjectV2ItemStatusChangedEvent",
+            "actor": {
+              "__typename": "User",
+              "login": "vimescmd",
+              "databaseId": 343394568
+            },
+            "status": "In review",
+            "previousStatus": "Ready",
+            "createdAt": "2026-10-19T06:01:49Z",
+            "project": {
+              "number": 5
+            }
+          },
+          {
+            "__typename": "ProjectV2ItemStatusChangedEvent",
+            "actor": {
+              "__typename": "User",
+              "login": "jpeletier",
+              "databaseId": 11574521
+            },
+            "status": "Approved",
+            "previousStatus": "In review",
+            "createdAt": "2026-10-19T06:13:38Z",
+            "project": {
+              "number": 5
+            }
+          },
+          {
+            "__typename": "ProjectV2ItemStatusChangedEvent",
+            "actor": {
+              "__typename": "User",
+              "login": "vimescmd",
+              "databaseId": 343394568
+            },
+            "status": "In progress",
+            "previousStatus": "Approved",
+            "createdAt": "2026-10-19T06:14:33Z",
+            "project": {
+              "number": 5
+            }
+          }
+        ],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "Y3Vyc29yOnYyOpPPAAABoVLMJSgBqzMzNjE1Njc3NTE0"
+        }
+      },
+      "attribution": "from vimescmd (orchestrator)"
+    }
+  }
+}

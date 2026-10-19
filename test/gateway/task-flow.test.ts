@@ -8,7 +8,7 @@ import { getConfig } from "../../src/config.js";
 import { object, type ObjectData } from "../../src/gateway/people.js";
 import type { Card } from "../../src/board/types.js";
 import { validProject } from "../helpers.js";
-import { people, sha } from "./helpers.js";
+import { actor, people, sha } from "./helpers.js";
 import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
 import closingReferences from "../fixtures/github/task-closing-references.json" with { type: "json" };
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
@@ -18,11 +18,79 @@ import { writeState } from "../../src/board/readme.js";
 import { taskFlowVerb } from "../../src/cli/task-flow.js";
 import type { Operations, Transport } from "../../src/gateway/transport.js";
 import { WorkerService } from "../../src/gateway/workers.js";
+import { bodyHash, scopeApproved } from "../../src/gateway/scope.js";
+import { PeopleFilter } from "../../src/gateway/people.js";
+import { Digest } from "../../src/gateway/digest.js";
+import { scopeIssue, scopeComment, scopeMove } from "./scope-fixture.js";
 
 const holdBanner = "> ⛔ ON HOLD. Wait for [orchestrator] GO.";
 
 const baseSha = "b".repeat(40),
   mergedSha = "c".repeat(40);
+
+test.each([
+  { scenario: "conclusions", proceed: false },
+  { scenario: "reviewed", proceed: true },
+  { scenario: "changed", proceed: false },
+  { scenario: "trivial", proceed: true },
+  { scenario: "orchestrator question", proceed: true },
+  { scenario: "quoted hash", proceed: true },
+  { scenario: "one comment", proceed: false },
+  { scenario: "fast", proceed: true },
+  { scenario: "fast unset", proceed: false },
+  { scenario: "part", proceed: true },
+  { scenario: "part changed", proceed: false },
+])("open-task scope acceptance: $scenario", async ({ scenario, proceed }) => {
+  const f = fixture();
+  const filter = new PeopleFilter(people, "example", new Digest(f.env, "scope", f.deps.now));
+  const issue = scopeIssue({
+    body: scenario.includes("changed") ? "Changed body" : "Final scope",
+    labels: { nodes: [{ name: "bug" }] },
+  });
+  const comments =
+    scenario === "trivial"
+      ? []
+      : [
+          scopeComment({
+            author: ["conclusions", "one comment"].includes(scenario) ? actor() : actor(2),
+            body: ["conclusions", "one comment"].includes(scenario)
+              ? "Discussion"
+              : scenario === "orchestrator question"
+                ? "[orchestrator] OWNER QUESTION\n\nMove this to Approved to start."
+                : `[orchestrator] SCOPE REVIEW\n\nbody sha256: ${scenario === "quoted hash" ? `\`${bodyHash("Final scope")}\`` : bodyHash("Final scope")}`,
+          }),
+        ];
+  if (scenario === "fast") {
+    f.config.scope = { fastPath: ["bug"] };
+  }
+  const timeline = scenario.startsWith("fast") ? [] : [scopeMove()];
+  f.host.issueApproved = async () => scopeApproved(issue, comments, timeline, f.config, filter);
+  if (proceed) {
+    await expect(
+      f.flow().open({ issue: "8", model: "sol", part: scenario.startsWith("part") })
+    ).resolves.toContain("27");
+    expect(f.writes.some((write) => write.path.endsWith("/pulls"))).toBe(true);
+  } else {
+    await expect(
+      f.flow().open({ issue: "8", model: "sol", part: scenario.startsWith("part") })
+    ).rejects.toThrow("scope not approved: post SCOPE REVIEW first");
+    expect(f.writes).toEqual([]);
+  }
+  f.done();
+});
+
+test.each([false, true])("merge-task rechecks scope for part PRs (changed=%s)", async (changed) => {
+  const f = fixture();
+  f.set({ body: '<!-- vmethod-task {"issues":[8],"part":true} -->' });
+  f.host.issueApproved = async () => !changed;
+  if (changed) {
+    await expect(f.flow().merge("27")).rejects.toThrow("scope not approved");
+    expect(f.writes).toEqual([]);
+  } else {
+    await expect(f.flow().merge("27")).resolves.toContain("Merged");
+  }
+  f.done();
+});
 
 test.each(
   [
@@ -1498,7 +1566,11 @@ test.each(["unapproved", "gated", "handoff"])(
     await expect(
       f.flow().open({ issue: "8", model: reason === "gated" ? "astra" : "sol" })
     ).rejects.toThrow(
-      reason === "unapproved" ? "Approved" : reason === "gated" ? "--owner-approved" : "expensive"
+      reason === "unapproved"
+        ? "scope not approved"
+        : reason === "gated"
+          ? "--owner-approved"
+          : "expensive"
     );
     expect(f.writes).toEqual([]);
     f.done();

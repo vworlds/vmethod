@@ -46,6 +46,42 @@ names and project details in the consumer's local instructions and delivery comm
 State what to try and which decisions belong to the owner. A peer relay never
 counts as their approval; see [Security](security.md#authority-and-filtering).
 
+## Scope review
+
+Before opening task PRs, fold every settled discussion conclusion into the issue
+body. An owner Approved move without reviewed scope means agreement with the
+conclusions, not permission to launch. On SCOPE, move the issue to In progress,
+read its current body and rewrite the final specification:
+
+```sh
+npm exec --no -- vmethod board set 42 Status "In progress"
+npm exec --no -- vmethod read issue 42
+npm exec --no -- vmethod issue edit 42 .tmp/scope.md
+npm exec --no -- vmethod scope-review 42 .tmp/scope-changes.md
+```
+
+The edit refuses a body changed since your read; re-read and reconcile rather
+than overwriting it. The summary file contains a short list of changes from the
+original, without a protocol tag or hash. `scope-review` generates SCOPE REVIEW
+with the live `body sha256: …`, moves the card to In review, assigns the owner and
+sets `👤🔍`. Nothing is added to the body. Have the owner read it and move it to
+Approved again. Changes requested or further discussion require another rewrite
+and scope review. `open-task` and `merge-task` check the same body-bound evidence;
+an unchanged approval covers all parts despite intervening orchestrator moves.
+Hand-posted reviews may wrap the hex digest in backticks; exactly one hash line
+is required in either format.
+
+An owner Approved move on an orchestrator-written issue with only trusted
+orchestrator comments (or no comments) is the trivial shortcut. Comments from
+anyone else void it, including unknown authors/editors. Your own OWNER QUESTION
+handover does not: fold conclusions into the body, not comments. Projects can opt specific
+labels into `scope.fastPath`, for example `{ fastPath: [bug] }` under `scope` in
+`vmethod.yaml`. A matching label waives the owner wait only after SCOPE REVIEW
+records the current body. It is off by default and unset in vmethod itself.
+Use `--unapproved <reason>` only for an explicitly recorded exception, not as a
+routine substitute for the configured fast path. None of these waive delivery
+approval or other launch/merge gates.
+
 ## Write a task prompt
 
 Use the [task template](../templates/task-pr.md). The draft PR description must

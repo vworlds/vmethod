@@ -202,12 +202,8 @@ export class TaskFlow {
       if (issue.state !== "OPEN") {
         throw new Error("Issue is not open");
       }
-      if (
-        !input.direct &&
-        input.unapproved === undefined &&
-        (await this.host.issueApproved(issue)) !== true
-      ) {
-        throw new Error("Issue is not Approved by an owner id");
+      if (input.unapproved === undefined && (await this.host.issueApproved(issue)) !== true) {
+        throw new Error("scope not approved: post SCOPE REVIEW first");
       }
     }
     let hint: string | undefined;
@@ -335,7 +331,7 @@ export class TaskFlow {
       (handoff
         ? "\nAt each defined breakpoint post `[worker] HANDOFF` with what is done, uncommitted files and remaining mechanical steps, then end your turn.\n"
         : "") +
-      `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [], ...(input.part ? { part: true } : {}) })} -->\n`;
+      `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [], ...(input.part ? { part: true } : {}), ...(input.unapproved ? { scopeException: input.unapproved } : {}) })} -->\n`;
     const checkedBody = async (taskPr: string): Promise<string> => {
       const body = renderBody(taskPr);
       guardClosingKeywords(body);
@@ -818,6 +814,17 @@ export class TaskFlow {
     }
     const git = this.git();
     if (item.state === "OPEN") {
+      for (const number of taskIssueNumbers(String(item.body)) ?? []) {
+        const issue = await this.host.thread(String(number), "issue");
+        const marker = /<!-- vmethod-task (\{[^\r\n]*\}) -->\s*$/.exec(String(item.body));
+        const exception = marker ? object(JSON.parse(marker[1])).scopeException : undefined;
+        if (
+          !(typeof exception === "string" && exception.trim()) &&
+          (await this.host.issueApproved(issue)) !== true
+        ) {
+          throw new Error("scope not approved: post SCOPE REVIEW first");
+        }
+      }
       const baseSha = sha(item.baseRefOid);
       if (
         !(await git.transfer("fetch", [

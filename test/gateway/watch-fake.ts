@@ -24,6 +24,7 @@ import recordedActions from "../fixtures/github/watch-actions.json" with { type:
 import recordedBoard from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
 import recordedOpencode from "../fixtures/opencode/watch-status.json" with { type: "json" };
+import { scopeIssue, scopeMove, scopeConnection } from "./scope-fixture.js";
 
 export function proc(start = 42): string {
   return `1 (worker (with spaces)) S ${Array(18).fill("0").join(" ")} ${start} 0`;
@@ -92,6 +93,9 @@ export class WatchFake {
   legacyError = false;
   assignmentEvents: ObjectData[] = [];
   boardSnapshot: ObjectData[] | null = null;
+  scopeComments: ObjectData[] = [];
+  scopeTimeline: ObjectData[] | null = null;
+  scopeBody = "Final scope";
   writeActor = { login: "me", id: 999, type: "User" };
   viewer = { login: "me", id: 999 };
   staleWorker: WorkerSessionStatus | Error = { reason: "session unknown", active: false };
@@ -155,6 +159,49 @@ export class WatchFake {
           }
           const operation = parse(payload.query).definitions[0];
           expect(operation.kind).toBe(Kind.OPERATION_DEFINITION);
+          if (
+            operation.kind === Kind.OPERATION_DEFINITION &&
+            operation.name?.value === "ScopeNodes"
+          ) {
+            const nodes = (payload.variables.ids as string[]).map((id) => {
+              const comment = this.scopeComments.find((comment) => comment.id === id);
+              if (comment) {
+                return comment;
+              }
+              const card = this.cards.find((card) => object(card.content).id === id);
+              if (!card) {
+                throw new Error(`Unknown scope node ${id}`);
+              }
+              return scopeIssue({ id, body: this.scopeBody });
+            });
+            return Response.json({ data: { nodes } });
+          }
+          if (
+            operation.kind === Kind.OPERATION_DEFINITION &&
+            operation.name?.value === "ScopeConnections"
+          ) {
+            const data: ObjectData = {};
+            Object.keys(payload.variables)
+              .filter((key) => key.startsWith("id"))
+              .forEach((key) => {
+                const id = payload.variables[key];
+                if (!this.cards.some((card) => object(card.content).id === id)) {
+                  throw new Error(`Unknown scope parent ${id}`);
+                }
+                const comments = String(payload.query).includes("comments(");
+                data[`n${key.slice(2)}`] = scopeIssue({
+                  id,
+                  [comments ? "comments" : "timelineItems"]: scopeConnection(
+                    comments
+                      ? this.scopeComments
+                      : (this.scopeTimeline ?? [
+                          scopeMove({ project: { number: object(this.config.board).number } }),
+                        ])
+                  ),
+                });
+              });
+            return Response.json({ data });
+          }
           if (this.enableWrites && operation.kind === Kind.OPERATION_DEFINITION) {
             const name = operation.name?.value;
             const graph = (data: unknown) => new Response(JSON.stringify({ data }));
@@ -699,6 +746,7 @@ export class WatchFake {
       progress: { text: kind === "Issue" ? "" : "🤖🔨 🔁2️⃣" },
       content: {
         __typename: kind,
+        id: `content-${number}`,
         number,
         state: "OPEN",
         title: "Card title",

@@ -13,6 +13,10 @@ export interface Operations {
     output: string;
   };
   issueClose: { input: { ref: string; comment?: string }; output: string };
+  /** Replace a previously read issue body, refusing stale read evidence. */
+  issueEdit: { input: { ref: string; file: string }; output: string };
+  /** Publish body-bound scope review and give the owner the issue turn. */
+  scopeReview: { input: { ref: string; file: string }; output: string };
   /** Null clears only Progress or Estimate; strings retain ordinary value validation. */
   boardSetIssue: { input: { ref: string; field: string; value: string | null }; output: string };
   worker: { input: { args: string[] }; output: string };

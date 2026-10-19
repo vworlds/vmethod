@@ -1,5 +1,28 @@
 # GitHub board field regression
 
+## Issue scope evidence (PR #140)
+
+`issue-scope.json` is the complete gateway-filtered response recorded live by
+vimescmd with orchestrator `gh-read` on 2026-10-19, against vworlds/vmethod issue 138. The authenticated ANSWER on PR #140 supplied `.tmp/scope-wire-shape.json`.
+It selects body/author/editor/timestamps, labels, comments and
+`timelineItems(itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT])`, including
+actor, status, previousStatus, createdAt and project number. Gateway attribution
+keys remain; no wire fields or types are changed. The owner move to Approved is
+at 2026-10-19T06:13:38Z on project 5.
+
+Scope tests project this recording into batched `nodes` and aliased connection
+envelopes and sanitize identity/repository/ID values to the existing test pins.
+Scenarios change bodies, timestamps, comment collections and status values while
+preserving their recorded types. WatchFake's default scope evidence represents
+an orchestrator-written, uncommented issue followed by an owner Approved move;
+explicit scope tests replace those defaults with discussion and review evidence.
+
+The captured hand-posted SCOPE REVIEW wraps its digest in backticks. Its digest
+matches the recorded body **plus one additional trailing newline**, not the exact
+recorded body. Regression tests retain both raw fields, reject the raw mismatch,
+and project the body with that additional newline to verify the quoted-hash
+compatibility. Production hashing remains exact-byte; it does not normalize text.
+
 ## Native closing references (PR #73)
 
 `task-development-links.json` groups the nine raw GraphQL responses supplied by

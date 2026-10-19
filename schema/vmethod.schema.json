@@ -47,6 +47,17 @@
       "properties": { "preview": { "type": "boolean", "default": false } }
     },
     "learningsPrivacy": { "enum": ["public", "private"] },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "fastPath": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "board": {
       "type": "object",
       "additionalProperties": false,

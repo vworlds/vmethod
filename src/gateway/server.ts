@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
 import { workerWorktree } from "./worker-path.js";
@@ -31,7 +31,10 @@ import {
   type Transport,
 } from "./transport.js";
 import { tokenIdentity, tokenViewer } from "./identity.js";
-import { isOwnerApproved, isIssueOwnerApproved } from "./approval.js";
+import { isOwnerApproved } from "./approval.js";
+import { bodyHash, ScopeReader } from "./scope.js";
+import { setTurn, turnAssignees } from "./turn.js";
+import { renderProgress } from "../board/progress.js";
 import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
 import { isTaskPrompt } from "./task-flow-types.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
@@ -656,6 +659,83 @@ class GatewayServer {
   };
 
   /** Close an accepted own-repository issue, optionally posting a validated file comment first. */
+  /** Rewrite only the exact body previously returned by read issue. */
+  issueEdit: Handlers["issueEdit"] = async ({ ref, file }) => {
+    const number = this.localNumber(ref);
+    const body = readFileSync(file, "utf8");
+    await checkMarkdown(this.root, body);
+    guardClosingKeywords(body);
+    const item = await this.flowThread(String(number), "issue");
+    const snapshot = resolve(this.root, ".tmp", `issue-read-${number}.sha256`);
+    if (!existsSync(snapshot) || readFileSync(snapshot, "utf8") !== bodyHash(String(item.body))) {
+      throw new Error(
+        "Issue body changed since read (or not read); read issue again before editing"
+      );
+    }
+    await this.github.rest(
+      `/repos/${String(this.config.repo)}/issues/${number}`,
+      "PATCH",
+      { body },
+      false
+    );
+    writeFileSync(snapshot, bodyHash(body));
+    return `Updated issue #${number}`;
+  };
+
+  /** Publish checked summary with the live digest, then assign scope review to the owner. */
+  scopeReview: Handlers["scopeReview"] = async ({ ref, file }) => {
+    const number = this.localNumber(ref);
+    const summary = readFileSync(file, "utf8");
+    if (!summary.trim() || /body sha256:|\[orchestrator\] SCOPE REVIEW/.test(summary)) {
+      throw new Error("Provide a nonempty change summary, without a review tag or body hash");
+    }
+    const issue = await this.flowThread(String(number), "issue");
+    if (issue.state !== "OPEN" || typeof issue.body !== "string") {
+      throw new Error("Scope review requires an open issue with a readable body");
+    }
+    const body = `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\n${summary.trim()}\n\nbody sha256: ${bodyHash(String(issue.body))}`;
+    await checkMarkdown(this.root, body);
+    guardClosingKeywords(body);
+    const assignments = await this.node(
+      String(issue.id),
+      "assignees(first: 100) { nodes { login } pageInfo { hasNextPage } }",
+      "Issue"
+    );
+    if (
+      !this.filter.accept(
+        assignments,
+        repoOf(assignments).owner,
+        `https://github.com/${String(this.config.repo)}`
+      ) ||
+      object(object(assignments.assignees).pageInfo).hasNextPage !== false
+    ) {
+      throw new Error("Incomplete scope assignments");
+    }
+    const current = (object(assignments.assignees).nodes as ObjectData[]).map((item) =>
+      String(item.login)
+    );
+    const next = turnAssignees(
+      loadYaml(this.root, "people") as Person[],
+      String(this.config.repo),
+      current,
+      "owner"
+    );
+    await this.github.rest(
+      `/repos/${String(this.config.repo)}/issues/${number}/comments`,
+      "POST",
+      { body },
+      false
+    );
+    await this.board.setIssueField(String(issue.id), "Status", "In review");
+    await this.board.setIssueField(
+      String(issue.id),
+      "Progress",
+      renderProgress({ state: "owner-review", round: null, red: false })
+    );
+    await setTurn(this.github, String(this.config.repo), number, current, next);
+    return `Scope review requested for #${number}`;
+  };
+
   issueClose: Handlers["issueClose"] = async ({ ref, comment }) => {
     const number = this.localNumber(ref);
     const body = comment === undefined ? undefined : readFileSync(comment, "utf8");
@@ -732,11 +812,9 @@ class GatewayServer {
         return [...candidates];
       },
       issueApproved: async (item) =>
-        isIssueOwnerApproved(
-          await this.issueTimeline(item),
-          Number(object(this.config.board).number),
-          this.filter
-        ),
+        (
+          await new ScopeReader(this.github, this.filter, this.config).approved([String(item.id)])
+        ).get(String(item.id)) === true,
     });
   }
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
@@ -790,58 +868,6 @@ class GatewayServer {
     }
     return output;
   }
-  private async issueTimeline(item: ObjectData): Promise<ObjectData[]> {
-    const output: ObjectData[] = [];
-    let cursor: string | null = null;
-    const seen = new Set<string>();
-    for (;;) {
-      const result = await this.node(String(item.id), "", "Issue");
-      if (
-        !this.filter.accept(
-          result,
-          repoOf(result).owner,
-          `https://github.com/${String(this.config.repo)}`
-        )
-      ) {
-        throw new Error("Unaccepted issue");
-      }
-      const data = object(
-        await this.github.graphql(
-          `query TaskIssueApproval($id: ID!, $cursor: String) { node(id: $id) { ... on Issue { ${identityFields} timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } } } pageInfo { hasNextPage endCursor } } } } }`,
-          { id: item.id, cursor }
-        )
-      );
-      const parent = object(data.node);
-      if (
-        !this.filter.accept(
-          parent,
-          repoOf(parent).owner,
-          `https://github.com/${String(this.config.repo)}`
-        )
-      ) {
-        throw new Error("Unaccepted issue");
-      }
-      const connection = object(parent.timelineItems);
-      if (!Array.isArray(connection.nodes)) {
-        throw new Error("Missing issue approval timeline");
-      }
-      output.push(...connection.nodes.map(object));
-      const page = object(connection.pageInfo);
-      if (page.hasNextPage === false) {
-        return output;
-      }
-      if (
-        page.hasNextPage !== true ||
-        typeof page.endCursor !== "string" ||
-        seen.has(page.endCursor)
-      ) {
-        throw new Error("Invalid timeline cursor");
-      }
-      cursor = page.endCursor;
-      seen.add(cursor);
-    }
-  }
-
   constructor(
     private root: string,
     private env: NodeJS.ProcessEnv,
@@ -1065,13 +1091,17 @@ class GatewayServer {
     }
     const output: string[] = [];
     if (option !== "--reviews") {
-      const body = renderItem(
-        await this.node(String(item.id), "title body", type),
-        this.filter,
-        link
-      );
+      const content = await this.node(String(item.id), "title body", type);
+      const body = renderItem(content, this.filter, link);
       if (!body) {
         return "No accepted thread";
+      }
+      if (kind === "issue" && reference(ref, this.config).repo === String(this.config.repo)) {
+        mkdirSync(resolve(this.root, ".tmp"), { recursive: true });
+        writeFileSync(
+          resolve(this.root, ".tmp", `issue-read-${reference(ref, this.config).number}.sha256`),
+          bodyHash(String(content.body))
+        );
       }
       output.push(body);
     }
@@ -1506,6 +1536,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     learnings: server.learnings,
     learningCheck: server.learningCheck,
     issueCreate: server.issueCreate,
+    issueEdit: server.issueEdit,
+    scopeReview: server.scopeReview,
     issueClose: server.issueClose,
     boardSetIssue: server.boardSetIssue,
     worker: server.worker,
@@ -1545,6 +1577,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     learnings: ["worker", "orchestrator"],
     learningCheck: ["worker", "orchestrator"],
     issueCreate: ["orchestrator"],
+    issueEdit: ["orchestrator"],
+    scopeReview: ["orchestrator"],
     issueClose: ["orchestrator"],
     boardSetIssue: ["orchestrator"],
     worker: ["orchestrator"],

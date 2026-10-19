@@ -7,6 +7,74 @@ import { createGateway } from "../../src/gateway/server.js";
 import issueResponse from "../fixtures/github/issue-response.json" with { type: "json" };
 import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import { WatchFake } from "./watch-fake.js";
+import { bodyHash } from "../../src/gateway/scope.js";
+
+test("scope-review publishes the body hash and hands the issue card to the owner without editing the body", async () => {
+  const recording = structuredClone(boardRecording);
+  const card = recording.items.nodes[0];
+  const status = recording.fields.nodes.find((field) => field.name === "Status")!;
+  const option = status.options![0];
+  option.name = "In review";
+  const issue = { ...acceptedIssue(), id: card.content.id };
+  const summary = "- Folded the agreed acceptance cases into the body.";
+  const f = fixtureServer([
+    graph({ repository: { issue: item({ id: issue.id }) } }),
+    graph({ node: issue }),
+    graph({
+      node: item({
+        id: issue.id,
+        assignees: { nodes: [{ login: "peer" }], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+    {
+      path: "/repos/example/project/issues/39/comments",
+      body: {
+        body: `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\n${summary}\n\nbody sha256: ${bodyHash("Specification")}`,
+      },
+      json: {},
+    },
+    ...boardReads(recording),
+    {
+      path: "/graphql",
+      json: {
+        data: { m0: { projectV2Item: { id: card.id } }, m1: { projectV2Item: { id: card.id } } },
+      },
+      checkQuery(_query, variables) {
+        expect(
+          Object.values(variables).map((value) => (value as { value: unknown }).value)
+        ).toEqual([undefined, { singleSelectOptionId: option.id }]);
+      },
+    },
+    ...boardReads(recording),
+    {
+      path: "/graphql",
+      json: { data: { m0: { projectV2Item: { id: card.id } } } },
+      checkQuery(_query, variables) {
+        expect(
+          Object.values(variables).map((value) => (value as { value: unknown }).value)
+        ).toEqual([{ text: "👤🔍" }]);
+      },
+    },
+    {
+      path: "/repos/example/project/issues/39/assignees",
+      method: "DELETE",
+      body: { assignees: ["peer"] },
+      json: {},
+    },
+    {
+      path: "/repos/example/project/issues/39/assignees",
+      method: "POST",
+      body: { assignees: ["owner"] },
+      json: {},
+    },
+  ]);
+  const file = join(f.root, "scope-summary.md");
+  writeFileSync(file, summary);
+  await expect(
+    gatewayVerb(f.transport, "scope-review", ["39", file], { VMETHOD_ROLE: "orchestrator" })
+  ).resolves.toBe("Scope review requested for #39");
+  f.done();
+});
 
 test.each(
   ["issue create", "issue close", "board set"].flatMap((verb) =>
