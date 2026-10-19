@@ -70,6 +70,12 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod read checks <n>` (PR number)
 - `vmethod read registry <package>` (untrusted npm metadata)
 - `vmethod post <ref> <file>`
+
+  Posts without changing the turn. On an own-repository PR in review, an
+  orchestrator post warns if the card is on the orchestrator after an owner
+  comment; use `review <pr> owner --in-reply-to <comment-url> <file>` to answer
+  and hand it back (see the [orchestrator guide](orchestrator-guide.md)).
+
 - `vmethod gh-read <endpoint|file.graphql>`
 - `vmethod dropped [--since <ISO-date>]`
 - `vmethod board status`
@@ -431,6 +437,11 @@ and Progress/assignee mismatches.
 Known states repair assignments from the same board poll; ambiguous states are
 reported for manual review. Owner replies and current-head owner reviews return
 the turn to the orchestrator. See the [protocol transition table](protocol.md).
+`ORCHESTRATOR TURN #n: waiting on you for 30+ min (<progress>)` reminds you after
+30 observed minutes on an orchestrator turn, then hourly until it ends. It uses
+the existing board poll, survives watcher restarts, and resets when the card leaves
+that turn or disappears. See the [orchestrator guide](orchestrator-guide.md) for
+answering owner questions without leaving the turn on you.
 READY moves the task card to In review. HANDOFF uses 🤖🤝 (migration 0002), not the
 🔁 round marker; subsequent worker activity restores working. Other wake events
 include COMMENT, BOARD, NEXT, LAUNCH, ASSIGNED, OWNER DONE, STALE (30 minutes),

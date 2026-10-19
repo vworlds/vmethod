@@ -4,6 +4,72 @@ import { expect, test } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
 import { actor, fixtureServer, graph, hostile, item, sha, workerFixtureServer } from "./helpers.js";
+import recordedBoard from "../fixtures/github/board-write-inputs.json" with { type: "json" };
+
+test.each(["owner", "worker", "unknown", "untrusted edit"])(
+  "plain post on an orchestrator turn checks the latest %s comment without handing back",
+  async (author) => {
+    // Project the recorded board wire shape, substituting identities and turn values.
+    const recorded = structuredClone(recordedBoard.items.nodes[0]);
+    const card = {
+      ...recorded,
+      content: {
+        ...recorded.content,
+        __typename: "PullRequest",
+        id: "node-1",
+        assignees: { nodes: [{ login: "peer" }] },
+      },
+      fieldValues: {
+        ...recorded.fieldValues,
+        nodes: [
+          { name: "In review", field: { name: "Status" } },
+          { text: "🧭🔍", field: { name: "Progress" } },
+        ],
+      },
+    };
+    const comment = item({
+      author:
+        author === "worker"
+          ? actor(1)
+          : author === "unknown"
+            ? { ...actor(0), databaseId: 9999 }
+            : actor(0),
+      createdAt: "2026-10-19T10:00:00Z",
+      ...(author === "untrusted edit"
+        ? { lastEditedAt: "2026-10-19T10:01:00Z", editor: { ...actor(0), databaseId: 9999 } }
+        : {}),
+    });
+    const fixture = fixtureServer([
+      graph({ repository: { issueOrPullRequest: item({ __typename: "PullRequest" }) } }),
+      { path: "/graphql", json: { data: { organization: { projectV2: recordedBoard } } } },
+      { path: "/graphql", json: { data: { node: { fields: recordedBoard.fields } } } },
+      {
+        path: "/graphql",
+        json: { data: { node: { items: { nodes: [card], pageInfo: { hasNextPage: false } } } } },
+      },
+      graph({
+        node: item({
+          comments: {
+            nodes: [item({ author: actor(1) }), comment, item({ author: actor(2) })],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+      }),
+      {
+        path: "/repos/example/project/issues/3/comments",
+        method: "POST",
+        body: { body: "Answer\n" },
+      },
+    ]);
+    const file = join(fixture.root, "answer.md");
+    writeFileSync(file, "Answer\n");
+    const output = await fixture.transport.call("post", { ref: "3", file });
+    expect(output.includes("this does not hand the turn back; use review 3 owner")).toBe(
+      author === "owner"
+    );
+    fixture.done();
+  }
+);
 
 test("PR metadata is gated before content, hostile titles/bodies remain fenced, and unknown comments have no follow-up read", async () => {
   const fixture = fixtureServer([

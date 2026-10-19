@@ -39,6 +39,18 @@ Except for linked task issues, never leave an In review card unassigned: the ass
 is. Review commands and the watcher maintain this invariant and report ambiguous
 or mismatched board state rather than relying on your memory.
 
+When the owner asks a question on a PR in review, answer and hand the turn back
+with `vmethod review <pr> owner --in-reply-to <comment-url> .tmp/answer.md`.
+This posts your answer with the reply link and current head, assigns the owner
+and restores `👤🔍`. Plain `post` does not hand the turn back; it warns when the
+card is still on you after an owner comment.
+
+The watcher reminds you with `ORCHESTRATOR TURN #n: waiting on you for 30+ min (<progress>)`
+after observing a card on the orchestrator for 30 minutes, then hourly while that
+stretch continues. Progress beginning `🧭`, or an orchestrator assigned in review,
+counts as your turn. Act on the card or explicitly hand it over; an ordinary
+comment does not reset the reminder.
+
 For try-out or playtest handover, use the owner's own form: plain run commands,
 every switch expressed as a runtime environment variable, and one log line that
 distinguishes “switch not set” from “stale image”. Keep concrete commands, variable

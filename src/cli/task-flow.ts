@@ -53,14 +53,24 @@ export async function taskFlowVerb(
     return transport.call("openTask", input, ctx);
   }
   if (verb === "review") {
-    if (![3, 5].includes(args.length) || (args.length === 5 && args[3] !== "--in-reply-to")) {
+    const replyFirst = args[2] === "--in-reply-to";
+    if (
+      ![3, 5].includes(args.length) ||
+      (args.length === 5 && args[replyFirst ? 2 : 3] !== "--in-reply-to") ||
+      (replyFirst && args.length !== 5)
+    ) {
       throw new Error(
         "Usage: review <pr> changes|owner|answer|ask|approve <file> [--in-reply-to url]"
       );
     }
     return transport.call(
       "reviewTask",
-      { ref: args[0], outcome: args[1] as ReviewInput["outcome"], file: args[2], replyTo: args[4] },
+      {
+        ref: args[0],
+        outcome: args[1] as ReviewInput["outcome"],
+        file: args[replyFirst ? 4 : 2],
+        replyTo: args[replyFirst ? 3 : 4],
+      },
       ctx
     );
   }

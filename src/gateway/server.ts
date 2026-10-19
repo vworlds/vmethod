@@ -1200,21 +1200,57 @@ class GatewayServer {
     return output.join("\n\n") || "No accepted content";
   };
 
-  post: Handlers["post"] = async ({ ref, file }) => {
+  /** Post without changing the turn; warn on replies to an owner's PR question. */
+  post: Handlers["post"] = async ({ ref, file }, ctx) => {
     const target = reference(ref, this.config);
     const body = readFileSync(file, "utf8");
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
-    const { person } = await this.thread(ref, "any");
+    const { item, person } = await this.thread(ref, "any");
     // REST issue comments also support PRs, but the metadata query must accept both.
     if (!person) {
       throw new Error("Refusing to post on an unaccepted thread");
     }
+    const warning =
+      ctx.role === "orchestrator" &&
+      target.repo === String(this.config.repo) &&
+      item.__typename === "PullRequest" &&
+      (await this.ownerReplyTurn(item, target.link))
+        ? `\nWarning: this does not hand the turn back; use review ${target.number} owner`
+        : "";
     await this.github.rest(`/repos/${target.repo}/issues/${target.number}/comments`, "POST", {
       body,
     });
-    return `Posted to ${target.link}`;
+    return `Posted to ${target.link}${warning}`;
   };
+
+  private async ownerReplyTurn(item: ObjectData, link: string): Promise<boolean> {
+    if (object(this.config.board).enabled === false) {
+      return false;
+    }
+    const board = this.board;
+    const snapshot = await board.snapshot();
+    const card = (await board.cards(snapshot.id)).find((card) => card.contentId === item.id);
+    if (
+      !card ||
+      card.values.Status !== "In review" ||
+      (!String(card.values.Progress ?? "").startsWith("🧭") &&
+        !card.assignees.some((login) =>
+          this.filter.people.some(
+            (person) => person.role === "orchestrator" && person.login === login
+          )
+        ))
+    ) {
+      return false;
+    }
+    // Ignore our plain answers: they do not supersede the owner's pending turn.
+    const comments = await this.collection(String(item.id), "PullRequest", "comments");
+    const replies = comments
+      .map((comment) => this.filter.accept(comment, repoOf(comment).owner, link))
+      .filter((person) => person && ["owner", "worker"].includes(person.role));
+    // GitHub's comments connection is in creation order, including across pages.
+    return replies.at(-1)?.role === "owner";
+  }
 
   resolveTask: Handlers["resolveTask"] = async ({ branch }) => {
     validateBranch(branch);

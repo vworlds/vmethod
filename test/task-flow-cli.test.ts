@@ -2,6 +2,33 @@ import { expect, test } from "vitest";
 import { taskFlowVerb } from "../src/cli/task-flow.js";
 import type { Transport } from "../src/gateway/transport.js";
 
+test("owner reply accepts the reply flag before the file", async () => {
+  const transport: Transport = {
+    call: async (operation, input) => {
+      expect(operation).toBe("reviewTask");
+      expect(input).toEqual({
+        ref: "27",
+        outcome: "owner",
+        file: "answer.md",
+        replyTo: "https://github.com/example/project/pull/27#issuecomment-1",
+      });
+      return "ok" as never;
+    },
+  };
+  await taskFlowVerb(
+    transport,
+    "review",
+    [
+      "27",
+      "owner",
+      "--in-reply-to",
+      "https://github.com/example/project/pull/27#issuecomment-1",
+      "answer.md",
+    ],
+    { VMETHOD_ROLE: "orchestrator" }
+  );
+});
+
 test("task-flow CLI routes typed inputs and rejects malformed options before transport", async () => {
   const calls: unknown[] = [];
   const transport: Transport = {

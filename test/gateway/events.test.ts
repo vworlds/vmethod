@@ -34,6 +34,93 @@ import { GitHubClient } from "../../src/gateway/client.js";
 import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
 import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
 
+test.each(["progress", "assignment"])(
+  "orchestrator %s turn reminds after 30 minutes, hourly and after a new stretch",
+  async (signal) => {
+    const f = setup();
+    f.task();
+    const card = f.cards[0];
+    card.status = { ...object(card.status), name: "In review" };
+    card.progress = { text: signal === "progress" ? "🧭🔍" : "" };
+    object(card.content).assignees = { nodes: [{ login: "peer" }] };
+    let loop = f.loop();
+    const reminders = async () =>
+      (await f.once(loop)).filter((event) => event.kind === "orchestrator-turn");
+    expect(await reminders()).toEqual([]);
+    f.advance(30 * 60_000 - 1);
+    expect(await reminders()).toEqual([]);
+    f.advance(1);
+    const first = await reminders();
+    expect(first.map((event) => event.line)).toEqual([
+      `ORCHESTRATOR TURN #24: waiting on you for 30+ min (${signal === "progress" ? "🧭🔍" : ""}) https://github.com/example/project/pull/24`,
+    ]);
+    await f.ack(loop, first);
+    loop.close();
+    loop = f.loop();
+    expect(await reminders()).toEqual([]);
+    // Changing Progress while it remains our turn is not a new stretch.
+    card.progress = { text: "🧭🔍 🔴" };
+    f.advance(60 * 60_000 - 1);
+    expect(await reminders()).toEqual([]);
+    f.advance(1);
+    const hourly = await reminders();
+    expect(hourly).toHaveLength(1);
+    await f.ack(loop, hourly);
+    expect(await reminders()).toEqual([]);
+    card.progress = { text: "👤🔍" };
+    object(card.content).assignees = { nodes: [{ login: "owner" }] };
+    expect(await reminders()).toEqual([]);
+    f.advance(60 * 60_000);
+    expect(await reminders()).toEqual([]);
+    card.progress = { text: "🧭🔍" };
+    object(card.content).assignees = { nodes: [{ login: "peer" }] };
+    expect(await reminders()).toEqual([]);
+    f.advance(30 * 60_000);
+    expect(await reminders()).toHaveLength(1);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each(["removed", "closed", "Done", "muted"])(
+  "orchestrator turn settling resets when a card is %s",
+  async (state) => {
+    const f = setup();
+    f.task();
+    const card = f.cards[0];
+    card.progress = { text: "🧭🔍" };
+    object(card.content).assignees = { nodes: [{ login: "peer" }] };
+    const loop = f.loop();
+    const reminders = async () =>
+      (await f.once(loop)).filter((event) => event.kind === "orchestrator-turn");
+    expect(await reminders()).toEqual([]);
+    f.advance(29 * 60_000);
+    if (state === "removed") {
+      f.cards = [];
+    }
+    if (state === "closed") {
+      object(card.content).state = "CLOSED";
+    }
+    if (state === "Done") {
+      object(card.status).name = "Done";
+    }
+    if (state === "muted") {
+      muteThread(f.config, f.env, "24");
+    }
+    expect(await reminders()).toEqual([]);
+    f.advance(2 * 60_000);
+    f.cards = [card];
+    object(card.content).state = "OPEN";
+    object(card.status).name = "In review";
+    if (state === "muted") {
+      unmuteThread(f.config, f.env, "24");
+    }
+    expect(await reminders()).toEqual([]);
+    f.advance(30 * 60_000);
+    expect(await reminders()).toHaveLength(1);
+    expect(f.reports).toEqual([]);
+  }
+);
+
 test.each(["assignment", "progress", "both"])(
   "watcher clears stale owner %s on linked issues without moving Status",
   async (stale) => {

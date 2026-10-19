@@ -2246,6 +2246,7 @@ export class EventLoop {
       }
     }
     await this.clearStaleOwnerMirrors(currentCards);
+    this.watchOrchestratorTurns(currentCards);
     this.writeMarker("unestimated.json", JSON.stringify(nextUnestimated));
     for (const name of readdirSync(join(this.dir, "board"))) {
       if (
@@ -2262,6 +2263,46 @@ export class EventLoop {
       }
     }
     await this.watchNext(ready, approved);
+  }
+
+  /** Remind once after 30 observed minutes on our turn, then at hourly intervals. */
+  private watchOrchestratorTurns(cards: CardInfo[]): void {
+    const previous = object(safeJson(this.readMarker("orchestrator-turns.json")));
+    const next: Record<string, { since: number; reminded?: number }> = {};
+    const now = this.host.deps.now();
+    for (const card of cards) {
+      const assigned = card.assignees.some(
+        (login) =>
+          login.toLowerCase() === this.me?.toLowerCase() ||
+          this.host.filter.people.some(
+            (person) => person.role === "orchestrator" && person.login === login
+          )
+      );
+      if (
+        card.state !== "OPEN" ||
+        card.column === "Done" ||
+        (!card.progress.startsWith("🧭") && !(card.column === "In review" && assigned))
+      ) {
+        continue;
+      }
+      const old = object(previous[card.id]);
+      const since = typeof old.since === "number" && old.since <= now ? old.since : now;
+      const reminded = typeof old.reminded === "number" ? old.reminded : undefined;
+      const turn = { since, ...(reminded === undefined ? {} : { reminded }) };
+      if (
+        now - since >= STALE_MS &&
+        (reminded === undefined || now - reminded >= 60 * 60_000) &&
+        this.emit(
+          `orchestrator-turn-${card.number}@${since}-${now}`,
+          "orchestrator-turn",
+          `ORCHESTRATOR TURN #${card.number}: waiting on you for 30+ min (${card.progress}) ${this.threadUrl(card.repo, card.number, card.kind)}`
+        )
+      ) {
+        turn.reminded = now;
+      }
+      next[card.id] = turn;
+    }
+    this.writeMarker("orchestrator-turns.json", JSON.stringify(next));
   }
 
   private async readBoard(

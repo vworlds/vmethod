@@ -274,7 +274,38 @@ test.each(
         const file = join(f.root, ".tmp", "review.md");
         mkdirSync(join(f.root, ".tmp"), { recursive: true });
         writeFileSync(file, "Review body\n");
-        await taskFlowVerb(transport, "review", ["27", verb.split(" ")[1], file], commandEnv);
+        const ownerReply = verb === "review owner" && identity === "self";
+        if (ownerReply) {
+          const pr = w.cards.find((card) => object(card.content).number === 27)!;
+          pr.status = { ...object(pr.status), name: "In review" };
+          pr.progress = { text: "👤🔍" };
+          object(pr.content).assignees = { nodes: [{ login: "owner" }] };
+          const question = w.comment("Can you explain the change?", 0);
+          question.issue_url = "https://api.github.com/repos/example/project/issues/27";
+          question.html_url = "https://github.com/example/project/pull/27#issuecomment-1";
+          await once();
+          expect(object(pr.progress).text).toBe("🧭🔍");
+          expect(object(object(pr.content).assignees).nodes).toEqual([{ login: "me" }]);
+          w.advance();
+        }
+        await taskFlowVerb(
+          transport,
+          "review",
+          [
+            "27",
+            verb.split(" ")[1],
+            file,
+            ...(ownerReply
+              ? ["--in-reply-to", "https://github.com/example/project/pull/27#issuecomment-1"]
+              : []),
+          ],
+          commandEnv
+        );
+        if (ownerReply) {
+          expect(w.comments["example/project"].at(-1)?.body).toContain(
+            "in reply to https://github.com/example/project/pull/27#issuecomment-1"
+          );
+        }
       }
       let events = await once();
       if (verb === "merge-task" && identity === "sibling") {
@@ -347,8 +378,8 @@ test.each(
           .split("\n")
           .map((line) => JSON.parse(line));
         expect(entries.find((entry) => entry.kind === "comment")).toMatchObject({
-          commentId: w.comments["example/project"][0].id,
-          nodeId: w.comments["example/project"][0].node_id,
+          commentId: w.comments["example/project"].at(-1)!.id,
+          nodeId: w.comments["example/project"].at(-1)!.node_id,
         });
         expect(
           entries.find((entry) => entry.kind === "markPullRequestReadyForReview")
