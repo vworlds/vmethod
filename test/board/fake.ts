@@ -324,6 +324,33 @@ export class FakeBoard {
           };
           break;
         }
+        case "BoardContentItems": {
+          const card = this.cards.find((card) => card.contentId === variables.id);
+          data = {
+            node: card
+              ? {
+                  projectItems: {
+                    nodes: [
+                      {
+                        id: card.id,
+                        isArchived: false,
+                        project: { id: "project" },
+                        fieldValues: this.values(card),
+                        content: {
+                          __typename: card.kind,
+                          id: card.contentId,
+                          repository: { nameWithOwner: card.repo },
+                          assignees: connection(card.assignees.map((login) => ({ login }))),
+                        },
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false },
+                  },
+                }
+              : { projectItems: { nodes: [], pageInfo: { hasNextPage: false } } },
+          };
+          break;
+        }
         case "BoardAdd": {
           expect(arg.projectId).toBe("project");
           const card = this.cards.find((card) => card.contentId === arg.contentId);

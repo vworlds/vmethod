@@ -172,6 +172,9 @@ export class WorkerService {
   private file(pr: number) {
     return join(this.state, `${pr}.json`);
   }
+  private wakeFile(pr: number) {
+    return join(this.state, `${pr}.wake`);
+  }
   private read(pr: number): Session | undefined {
     if (!existsSync(this.file(pr))) {
       return;
@@ -990,6 +993,15 @@ export class WorkerService {
       if (!record) {
         return { reason: "session unknown", active: false };
       }
+      const wakeFile = this.wakeFile(pr);
+      if (existsSync(wakeFile)) {
+        const queued = readFileSync(wakeFile, "utf8").split("\n").filter(Boolean);
+        if (queued.length) {
+          record.pendingWake = [...(record.pendingWake ?? []), ...queued];
+          rmSync(wakeFile, { force: true });
+          this.save(record);
+        }
+      }
       const status = await this.status(record, false);
       status.prCost = {
         pr,
@@ -1001,31 +1013,46 @@ export class WorkerService {
   }
   /** Wake without steering; persisted busy-session messages drain on the next idle status poll. */
   async resume(pr: number, text: string): Promise<string> {
-    return this.locked(pr, async () => {
-      const record = this.read(pr);
-      if (!record) {
-        return `no worker session for #${pr}; nothing sent`;
-      }
-      const status = await this.status(record, false);
-      if (status.reason === "session unknown") {
-        return `no worker session for #${pr}; nothing sent`;
-      }
-      if (status.active || status.reason === "permission-wait") {
-        record.pendingWake = [...(record.pendingWake ?? []), text];
-        this.save(record);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.locked(pr, async () => {
+          const record = this.read(pr);
+          if (!record) {
+            return `no worker session for #${pr}; nothing sent`;
+          }
+          const status = await this.status(record, false);
+          if (status.reason === "session unknown") {
+            return `no worker session for #${pr}; nothing sent`;
+          }
+          if (status.active || status.reason === "permission-wait") {
+            record.pendingWake = [...(record.pendingWake ?? []), text];
+            this.save(record);
+            return `queued for #${pr}`;
+          }
+          if (!text.startsWith("[orchestrator] CHECK-IN:")) {
+            await this.restoreConflictModel(record, status);
+          }
+          if (await this.resumeModel(record, status)) {
+            record.pendingWake = [...(record.pendingWake ?? []), text];
+            this.save(record);
+            return `queued for #${pr}`;
+          }
+          await this.prompt(record, text, "queue");
+          return `sent to #${pr}`;
+        });
+      } catch (error) {
+        if (!/^Worker #\d+ is locked;/.test((error as Error).message)) {
+          throw error;
+        }
+        if (attempt < 19) {
+          await this.deps.sleep(100);
+          continue;
+        }
+        mkdirSync(this.state, { recursive: true, mode: 0o700 });
+        appendFileSync(this.wakeFile(pr), `${text.replace(/[\r\n]+/g, " ")}\n`, { mode: 0o600 });
         return `queued for #${pr}`;
       }
-      if (!text.startsWith("[orchestrator] CHECK-IN:")) {
-        await this.restoreConflictModel(record, status);
-      }
-      if (await this.resumeModel(record, status)) {
-        record.pendingWake = [...(record.pendingWake ?? []), text];
-        this.save(record);
-        return `queued for #${pr}`;
-      }
-      await this.prompt(record, text, "queue");
-      return `sent to #${pr}`;
-    });
+    }
   }
   /** Run a fixed conflict turn on the cheapest ungated configured backend-compatible family. */
   async resolveConflict(pr: number, base: string, files: string[]): Promise<2 | 3> {

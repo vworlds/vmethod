@@ -240,6 +240,19 @@ export class WatchFake {
                 node: { __typename: "Issue", repository: { nameWithOwner: "example/project" } },
               });
             }
+            if (name === "BoardContentItems") {
+              const card = this.cards.find(
+                (card) => object(card.content).id === payload.variables.id
+              );
+              return graph({
+                node: {
+                  projectItems: {
+                    nodes: card ? [this.boardCard(card)] : [],
+                    pageInfo: { hasNextPage: false },
+                  },
+                },
+              });
+            }
             if (name === "BoardAdd") {
               const card = this.cards.find(
                 (card) => object(card.content).id === payload.variables.input.contentId

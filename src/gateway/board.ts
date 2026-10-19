@@ -349,6 +349,7 @@ export class BoardService implements BoardIO {
       throw new Error("Refusing write to a foreign repository card");
     }
   }
+  /** Return an issue/PR's configured-project membership from the content side, adding it if absent. */
   async ensure(contentId: string): Promise<string> {
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
@@ -366,6 +367,10 @@ export class BoardService implements BoardIO {
     ) {
       throw new Error("Refusing foreign or draft board content");
     }
+    const existing = await this.issueSideItem(contentId, snapshot.id);
+    if (existing) {
+      return text(existing.id);
+    }
     const result = object(
       await this.github.graphql(
         "mutation BoardAdd($input: AddProjectV2ItemByIdInput!) { addProjectV2ItemById(input: $input) { item { id } } }",
@@ -373,6 +378,25 @@ export class BoardService implements BoardIO {
       )
     );
     return text(object(object(result.addProjectV2ItemById).item).id);
+  }
+
+  private async issueSideItem(
+    contentId: string,
+    projectId: string
+  ): Promise<ObjectData | undefined> {
+    const data = object(
+      await this.github.graphql(
+        `query BoardContentItems($id: ID!) { node(id: $id) { ... on Issue { projectItems(first: 100) { nodes { id isArchived project { id } ${contentSelection} ${initialValues} } pageInfo { hasNextPage } } } ... on PullRequest { projectItems(first: 100) { nodes { id isArchived project { id } ${contentSelection} ${initialValues} } pageInfo { hasNextPage } } } } }`,
+        { id: contentId }
+      )
+    );
+    const connection = object(object(data.node).projectItems);
+    if (object(connection.pageInfo).hasNextPage === true) {
+      throw new Error("Too many project memberships; refusing incomplete metadata");
+    }
+    const memberships = nodes(connection);
+    const match = memberships.find((item) => object(item.project).id === projectId);
+    return match;
   }
 
   async capDone(): Promise<void> {
@@ -437,6 +461,7 @@ export class BoardService implements BoardIO {
   /** Set a single-select/number field or validated Progress by issue content ID.
    * A null value clears only Progress or Estimate through the native field-clear mutation.
    * Estimates must use the shared points scale. Cost is refused. Status writes clear Progress;
+   * Membership is read from the issue side, never the eventually consistent project listing.
    * GitHubClient journals the successful mutations.
    */
   async setIssueField(
@@ -497,8 +522,12 @@ export class BoardService implements BoardIO {
         throw new Error("Invalid Progress value");
       }
     }
-    const card = (await this.cards(snapshot.id)).find((card) => card.contentId === contentId);
-    if (!card || card.kind !== "Issue") {
+    const node = await this.issueSideItem(contentId, snapshot.id);
+    if (!node) {
+      throw new Error("Issue is not on configured board");
+    }
+    const card = await this.decodeCard(node);
+    if (card.kind !== "Issue" || card.contentId !== contentId) {
       throw new Error("Issue is not on configured board");
     }
     this.scope(card);

@@ -256,10 +256,12 @@ test.each([
   if (allowed) {
     const verdict = await result;
     if (scenario === "green") {
-      expect(verdict).toEqual({ code: 0, text: "checks: green" });
+      expect(verdict).toEqual({ code: 0, text: `checks: green (head ${pull.head.sha})` });
     } else {
       expect(verdict.code).toBe(1);
-      expect(verdict.text.split("\n").at(-1)).toBe("checks: RED: job-0, job-1");
+      expect(verdict.text.split("\n").at(-1)).toBe(
+        `checks: RED: job-0, job-1 (head ${pull.head.sha})`
+      );
     }
   } else {
     await expect(result).rejects.toThrow();

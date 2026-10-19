@@ -13,24 +13,28 @@ import { baseline, FakeBoard } from "./fake.js";
 import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
 
 let fake: FakeBoard;
-test("task-flow board adds are scoped, compatibility-guarded and replay-safe", async () => {
-  const board = setup();
-  board.stamp(1);
-  const own = board.card("own");
-  own.contentId = "node-own";
-  const foreign = board.card("foreign", "example/other");
-  foreign.contentId = "node-foreign";
-  const draft = board.card("draft");
-  draft.kind = "DraftIssue";
-  draft.contentId = "node-draft";
-  expect(await board.service().ensure("node-own")).toBe("own");
-  expect(await board.service().ensure("node-own")).toBe("own");
-  await expect(board.service().ensure("node-foreign")).rejects.toThrow("foreign or draft");
-  await expect(board.service().ensure("node-draft")).rejects.toThrow("foreign or draft");
-  expect(board.mutations.filter((name) => name === "BoardAdd")).toHaveLength(2);
-  board.stamp(2, 2);
-  await expect(board.service().ensure("node-own")).rejects.toThrow("INCOMPATIBLE");
-});
+test.each(["Issue", "PullRequest"] as const)(
+  "task-flow %s membership is scoped, compatibility-guarded and replay-safe",
+  async (kind) => {
+    const board = setup();
+    board.stamp(1);
+    const own = board.card("own");
+    own.contentId = "node-own";
+    own.kind = kind;
+    const foreign = board.card("foreign", "example/other");
+    foreign.contentId = "node-foreign";
+    const draft = board.card("draft");
+    draft.kind = "DraftIssue";
+    draft.contentId = "node-draft";
+    expect(await board.service().ensure("node-own")).toBe("own");
+    expect(await board.service().ensure("node-own")).toBe("own");
+    await expect(board.service().ensure("node-foreign")).rejects.toThrow("foreign or draft");
+    await expect(board.service().ensure("node-draft")).rejects.toThrow("foreign or draft");
+    expect(board.mutations.filter((name) => name === "BoardAdd")).toHaveLength(0);
+    board.stamp(2, 2);
+    await expect(board.service().ensure("node-own")).rejects.toThrow("INCOMPATIBLE");
+  }
+);
 test("Done cap ranks all repositories but archives only own cards outside the newest six", async () => {
   const board = setup();
   board.stamp(1);
@@ -124,7 +128,7 @@ test("live-reported ISO field creation time decodes through snapshot and permits
   card.contentId = "recorded-progress-content";
   const service = board.service();
   expect((await service.snapshot()).fields[0].createdAt).toBe(Date.parse("2026-10-16T11:12:25Z"));
-  // Task-flow adds the card before writing Progress: exercise both paths with the
+  // Task-flow ensures membership before writing Progress: exercise both paths with the
   // recorded ISO-string wire value, rather than a decoded numeric timestamp.
   await expect(service.ensure(card.contentId)).resolves.toBe(card.id);
   await expect(
@@ -132,7 +136,7 @@ test("live-reported ISO field creation time decodes through snapshot and permits
   ).resolves.toBe("Board field updated");
   expect(card.values.Progress).toBe("🤖🤝 🔁2️⃣");
   expect(board.mutations).toContain("BoardSetCards");
-  expect(board.mutations).toContain("BoardAdd");
+  expect(board.mutations).not.toContain("BoardAdd");
 });
 
 test.each([undefined, null, "", "invalid-date", 1792149145000])(

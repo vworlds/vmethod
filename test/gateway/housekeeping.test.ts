@@ -298,11 +298,12 @@ function createdCard() {
 
 const boardGraph = (data: unknown) => ({ path: "/graphql", json: { data } });
 
-function createBoardReads(recording = createdCard(), lag = 0) {
+function createBoardReads(recording = createdCard()) {
   const card = recording.items.nodes[0];
   return [
     ...boardReads(recording).slice(0, 2),
     boardGraph({ node: { __typename: "Issue", repository: { nameWithOwner: "example/project" } } }),
+    membershipRead(recording, false),
     {
       ...boardGraph({ addProjectV2ItemById: { item: { id: card.id } } }),
       checkQuery(query: string, variables: unknown) {
@@ -312,25 +313,22 @@ function createBoardReads(recording = createdCard(), lag = 0) {
         });
       },
     },
-    ...boardReads(recording).slice(0, 2),
-    ...Array.from({ length: lag }, () =>
-      boardGraph({
-        node: { items: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } },
-      })
-    ),
-    ...boardReads(recording).slice(2),
   ];
 }
 
-test("issue create waits for board listing lag and applies optional estimate/status", async () => {
+test("issue create applies optional estimate/status without relying on the lagging board listing", async () => {
   const recording = createdCard();
   const card = recording.items.nodes[0];
+  const statusField = recording.fields.nodes.find((field) => field.name === "Status")!;
+  const ready = statusField.options!.find((option) => option.name === "In progress")!;
+  ready.name = "Ready";
+  const stored: Record<string, unknown> = {};
   const f = fixtureServer([
     {
       path: "/repos/example/project/issues",
       json: { number: issueResponse.number, node_id: issueResponse.node_id },
     },
-    ...createBoardReads(recording, 1),
+    ...createBoardReads(recording),
     ...boardReads(recording),
     {
       ...boardGraph({ m0: { projectV2Item: { id: card.id } } }),
@@ -341,9 +339,10 @@ test("issue create waits for board listing lag and applies optional estimate/sta
             projectId: recording.id,
             itemId: card.id,
             fieldId: recording.fields.nodes.find((f) => f.name === "Estimate")!.id,
-            value: { number: 0.5 },
+            value: { number: 1 },
           },
         });
+        stored.Estimate = 1;
       },
     },
     ...boardReads(recording),
@@ -367,20 +366,57 @@ test("issue create waits for board listing lag and applies optional estimate/sta
             value: { singleSelectOptionId: "5acf990d" },
           },
         });
+        stored.Status = "Ready";
+      },
+    },
+    graph({ repository: { issue: item({ id: card.content.id }) } }),
+    graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+    ...boardReads(recording),
+    {
+      ...boardGraph({ m0: { projectV2Item: { id: card.id } } }),
+      checkQuery(query, variables) {
+        expect(query).toContain("mutation BoardSetCards");
+        expect(variables.m0).toEqual({
+          projectId: recording.id,
+          itemId: card.id,
+          fieldId: recording.fields.nodes.find((field) => field.name === "Estimate")!.id,
+          value: { number: 2 },
+        });
+        stored.Estimate = 2;
       },
     },
   ]);
+  // GitHub's board-wide listing never includes this new item during the test.
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (
+      String(input).endsWith("/graphql") &&
+      JSON.parse(String(init?.body)).query.includes("query BoardCards")
+    ) {
+      return Response.json({
+        data: { node: { items: { nodes: [], pageInfo: { hasNextPage: false } } } },
+      });
+    }
+    return fetch(input, init);
+  };
   const file = join(f.root, "body.md");
   writeFileSync(file, "Body");
   expect(
     await gatewayVerb(
       f.transport,
       "issue",
-      ["create", "Title", file, "--estimate", "0.5", "--status", "In progress"],
+      ["create", "Title", file, "--estimate", "1", "--status", "Ready"],
       { VMETHOD_ROLE: "orchestrator" }
     )
   ).toBe("Created issue #37");
-  expect(f.sleeps).toEqual([1000]);
+  expect(stored).toEqual({ Estimate: 1, Status: "Ready" });
+  expect(
+    await gatewayVerb(f.transport, "board", ["set", "37", "Estimate", "2"], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).toBe("Board field updated");
+  expect(stored).toEqual({ Estimate: 2, Status: "Ready" });
+  expect(f.sleeps).toEqual([]);
   f.done();
 }, 15000);
 
@@ -422,12 +458,13 @@ test.each(["missing", "foreign", "PR"])(
   "board set refuses %s card without writing",
   async (reason) => {
     const recorded = structuredClone(boardRecording);
-    const reads = boardReads(recorded);
     if (reason === "missing") {
       recorded.items.nodes = [];
-    } else if (reason === "foreign") {
+    }
+    const reads = boardReads(recorded);
+    if (reason === "foreign") {
       recorded.items.nodes[0].content.repository.nameWithOwner = "example/foreign";
-    } else {
+    } else if (reason === "PR") {
       recorded.items.nodes[0].content.__typename = "PullRequest";
     }
     const contentId = boardRecording.items.nodes[0].content.id;
@@ -585,7 +622,9 @@ test.each(["issueCreate", "issueClose"] as const)(
 
 function boardReads(recording = structuredClone(boardRecording)) {
   // Only repository scope is renamed to the offline test project's configured repository.
-  recording.items.nodes[0].content.repository.nameWithOwner = "example/project";
+  for (const card of recording.items.nodes) {
+    card.content.repository.nameWithOwner = "example/project";
+  }
   return [
     {
       path: "/graphql",
@@ -594,9 +633,69 @@ function boardReads(recording = structuredClone(boardRecording)) {
       },
     },
     { path: "/graphql", json: { data: { node: { fields: recording.fields } } } },
-    { path: "/graphql", json: { data: { node: { items: recording.items } } } },
+    membershipRead(recording),
   ];
 }
+
+// Project the recorded item's native fields into the issue-side membership connection.
+function membershipRead(recording = createdCard(), present = true) {
+  return {
+    path: "/graphql",
+    json: {
+      data: {
+        node: {
+          projectItems: {
+            nodes: present
+              ? recording.items.nodes.map((card) => ({ ...card, project: { id: recording.id } }))
+              : [],
+            pageInfo: { hasNextPage: false },
+          },
+        },
+      },
+    },
+    checkQuery(query: string) {
+      expect(query).toContain("query BoardContentItems");
+      expect(query).not.toContain("items(");
+    },
+  };
+}
+
+test.each(["other project", "incomplete", "missing connection"])(
+  "board set refuses %s membership metadata without a write",
+  async (reason) => {
+    const recording = createdCard();
+    const card = recording.items.nodes[0];
+    const membership = membershipRead(recording);
+    const connection = membership.json.data.node.projectItems;
+    if (reason === "other project") {
+      connection.nodes[0].project.id = "different-project";
+    } else if (reason === "incomplete") {
+      connection.pageInfo.hasNextPage = true;
+    } else {
+      delete (membership.json.data.node as { projectItems?: unknown }).projectItems;
+    }
+    const f = fixtureServer([
+      graph({ repository: { issue: item({ id: card.content.id }) } }),
+      graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+      ...boardReads(recording).slice(0, 2),
+      membership,
+    ]);
+    await expect(
+      f.transport.call("boardSetIssue", {
+        ref: "37",
+        field: "Estimate",
+        value: "1",
+      })
+    ).rejects.toThrow(
+      reason === "other project"
+        ? "not on configured board"
+        : reason === "incomplete"
+          ? "incomplete metadata"
+          : "Missing board connection"
+    );
+    f.done();
+  }
+);
 
 test("board mutation failure never records a completed Status move", async () => {
   const contentId = boardRecording.items.nodes[0].content.id;
@@ -634,22 +733,23 @@ test("issue create reports failure without retrying a non-idempotent write", asy
   f.done();
 }, 15000);
 
-test("issue create bounds board visibility waiting and identifies the issue without recreating it", async () => {
-  const requests = createBoardReads(createdCard(), 6);
-  requests.pop(); // All six listing reads are absent; no successful seventh read.
+test("issue create identifies the issue after a board add failure without recreating it", async () => {
+  const requests = createBoardReads();
+  requests.pop();
   const f = fixtureServer([
     {
       path: "/repos/example/project/issues",
       json: { number: issueResponse.number, node_id: issueResponse.node_id },
     },
     ...requests,
+    { path: "/graphql", json: { errors: [{ message: "add refused" }] } },
   ]);
   const file = join(f.root, "body.md");
   writeFileSync(file, "Body");
   await expect(f.transport.call("issueCreate", { title: "Title", file })).rejects.toThrow(
-    "Created issue #37; board follow-up failed: Board item not readable after 6 reads. Do not recreate"
+    'Created issue #37; board follow-up failed: GitHub GraphQL (untrusted errors): "add refused". Do not recreate'
   );
-  expect(f.sleeps).toEqual([1000, 2000, 4000, 8000, 16000]);
+  expect(f.sleeps).toEqual([]);
   f.done();
 }, 15000);
 

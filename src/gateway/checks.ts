@@ -68,7 +68,8 @@ export class ChecksService {
           if (head !== current.head) {
             return noVerdict("the PR head changed while waiting");
           }
-          return this.verdict(pr.target, runs, true);
+          const verdict = await this.verdict(pr.target, runs, true);
+          return { ...verdict, text: `${verdict.text} (head ${head})` };
         } else {
           reason = "checks are still pending";
         }
@@ -228,12 +229,10 @@ export class ChecksService {
         if (!this.filter.check(run, target.owner, target.link)) {
           continue;
         }
-        if (
-          run.head_sha !== head ||
-          !Number.isSafeInteger(run.id) ||
-          Number(run.id) < 1 ||
-          typeof run.name !== "string"
-        ) {
+        if (run.head_sha !== head) {
+          continue;
+        }
+        if (!Number.isSafeInteger(run.id) || Number(run.id) < 1 || typeof run.name !== "string") {
           throw new Error("Invalid check run");
         }
         const key = JSON.stringify([object(run.app).id, run.name]);

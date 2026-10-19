@@ -756,20 +756,7 @@ class GatewayServer {
           throw new Error("Missing created issue node ID");
         }
         const board = this.board;
-        const itemId = await board.ensure(created.node_id);
-        const snapshot = await board.snapshot();
-        for (let attempt = 0; ; attempt++) {
-          const card = (await board.cards(snapshot.id)).find(
-            (card) => card.id === itemId && card.contentId === created.node_id
-          );
-          if (card) {
-            break;
-          }
-          if (attempt === 5) {
-            throw new Error("Board item not readable after 6 reads");
-          }
-          await this.deps.sleep(1000 * 2 ** attempt);
-        }
+        await board.ensure(created.node_id);
         if (estimate !== undefined) {
           await board.setIssueField(created.node_id, "Estimate", String(estimate));
         }

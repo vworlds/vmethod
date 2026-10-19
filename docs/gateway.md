@@ -152,9 +152,9 @@ the README compatibility guard; migrations alone act board-wide.
 
 Issue housekeeping and `board set` require the orchestrator role and the configured
 repository. Issue creation reads checked Markdown from a file; repeat `--label` for
-multiple labels. With the board enabled, creation adds the issue to the configured
-board and waits for listing visibility (six reads, exponential delays from one to
-16 seconds). It then applies optional nonnegative finite `--estimate` and exact-name
+multiple labels. With the board enabled, creation ensures membership on the
+configured board through the issue-side relation, then applies optional points-scale
+`--estimate` and exact-name
 `--status` values through the shared field writer; Status clears Progress. You can
 immediately use `board set` after successful creation. If board follow-up fails,
 the error identifies the created issue: inspect it and retry board operations,
@@ -165,8 +165,10 @@ or move board cards implicitly. Both file paths reject closing/association synta
 Do not blindly retry a failed create: inspect the repository for a created issue.
 
 `board set` accepts an issue number, not a project item ID. The issue must pass the
-people filter and already belong to the configured board. Choose a single-select
-option by its exact name, supply a finite numeric value, or set the Progress text
+people filter and already belong to the configured board. Per-item writes read
+issue/PR memberships or item nodes, not the eventually consistent project listing;
+board-wide scans still use the listing. Choose a single-select option by its exact
+name, supply a finite numeric value, or set the Progress text
 field to a known state emoji (including board README aliases), optionally followed
 by a keycap round and red-CI marker, for example `👤❓ 🔁2️⃣ 🔴`. Other text fields
 and unknown Progress values are refused. Use `board set <issue> Progress --clear`

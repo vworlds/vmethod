@@ -51,8 +51,23 @@ test("wait-checks green pins the head and emits a final-line verdict using only 
   const f = fixtureServer([pull(), checks(), pull()]);
   expect(await f.gateway.call("waitChecks", { ref: "3" }, ctx)).toEqual({
     code: 0,
-    text: "checks: green",
+    text: `checks: green (head ${sha})`,
   });
+  f.done();
+});
+
+test("wait-checks ignores a previous head's red suite until current-head checks register", async () => {
+  const previous = "c".repeat(40);
+  const f = fixtureServer([
+    pull(),
+    checks([run({ head_sha: previous, conclusion: "failure" })]),
+    pull(),
+    checks(),
+    pull(),
+  ]);
+  const verdict = await f.gateway.call("waitChecks", { ref: "3" }, ctx);
+  expect(verdict).toEqual({ code: 0, text: `checks: green (head ${sha})` });
+  expect(f.sleeps).toEqual([10000]);
   f.done();
 });
 
@@ -121,7 +136,7 @@ test("latest attempts are keyed by app AND name, a foreign forged success cannot
   const verdict = await f.gateway.call("waitChecks", { ref: "3" }, ctx);
   expect(verdict.code).toBe(1);
   expect(verdict.text).toContain("its log could not be read");
-  expect(verdict.text.split("\n").at(-1)).toBe("checks: RED: ci");
+  expect(verdict.text.split("\n").at(-1)).toBe(`checks: RED: ci (head ${sha})`);
   f.done();
 });
 
@@ -252,7 +267,7 @@ test("a failed suite cannot turn green merely because GitHub names no failed job
   ]);
   const result = await f.gateway.call("waitChecks", { ref: "3" }, ctx);
   expect(result.code).toBe(1);
-  expect(result.text.split("\n").at(-1)).toBe("checks: RED: CI suite 50");
+  expect(result.text.split("\n").at(-1)).toBe(`checks: RED: CI suite 50 (head ${sha})`);
   f.done();
 });
 

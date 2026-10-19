@@ -1492,6 +1492,32 @@ test("resume wakes an idle session without steering", async () => {
   f.done();
 });
 
+test("resume waits out a brief worker lock and wakes the session", async () => {
+  const f = fixture([...start, ...measuredStatus(), wakeRequest]);
+  await f.service.command(["start", "31"]);
+  const lock = join(f.root, "state/vmethod/example-state/workers/31.lock");
+  mkdirSync(lock);
+  f.deps.sleep = async () => rmSync(lock, { recursive: true });
+  expect(await f.service.resume(31, wake)).toBe("sent to #31");
+  f.done();
+});
+
+test("resume persists a wake after sustained lock contention for the next status poll", async () => {
+  const f = fixture([...start, ...measuredStatus(), wakeRequest]);
+  await f.service.command(["start", "31"]);
+  const lock = join(f.root, "state/vmethod/example-state/workers/31.lock");
+  mkdirSync(lock);
+  expect(await f.service.resume(31, wake)).toBe("queued for #31");
+  expect(readFileSync(join(f.root, "state/vmethod/example-state/workers/31.wake"), "utf8")).toBe(
+    `${wake}\n`
+  );
+  f.deps.sleep = async () => {};
+  rmSync(lock, { recursive: true });
+  await f.service.watchStatus(31);
+  expect(f.record().pendingWake).toBeUndefined();
+  f.done();
+});
+
 test("busy resume persists a queue, sends once after idle and never replays", async () => {
   const f = fixture([
     ...start,
