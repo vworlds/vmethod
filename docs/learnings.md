@@ -138,6 +138,10 @@ priced ungated OpenCode family when unavailable. Set `learningsModel` in
 `vmethod.yaml`, or pass `--model`, to select another priced ungated family. Worker
 contexts cannot invoke either generation command. Failed model responses, truncated
 output and unsupported citations fail without creating an annotation.
+Both generation commands accept exactly one JSON object, either bare or wrapped in
+one plain/`json` Markdown fence, with surrounding whitespace allowed. Prose outside
+the object/fence, additional values, other fence languages and non-object JSON
+remain hard failures; no JSON is extracted from surrounding narrative.
 
 Prompt version 1 requires 3–6 single-sentence impressions, a cited domain, and
 explicitly evidenced round causes/findings. Each atomic claim has a `sources` list

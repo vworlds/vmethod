@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { stringify } from "yaml";
@@ -120,7 +120,9 @@ function fixture(prs = [31]) {
             {
               ...messageCapture.data[0],
               finish: "stop",
-              content: [{ type: "text", text: JSON.stringify(reply) }],
+              content: [
+                { type: "text", text: typeof reply === "string" ? reply : JSON.stringify(reply) },
+              ],
             },
           ],
         });
@@ -178,6 +180,81 @@ function fixture(prs = [31]) {
     service: new LearningAnnotations(root, config, env, deps, () => records, bundle),
     done: () => expect(unexpected).toEqual([]),
   };
+}
+
+test.each(["json", ""])(
+  "annotate accepts one object inside a single %j fence with surrounding whitespace",
+  async (language) => {
+    const f = fixture();
+    f.replies[0] = ` \n\t\`\`\`${language}\r\n${JSON.stringify(generated())}\r\n\`\`\` \n\t`;
+    expect(await f.service.command({ action: "annotate" })).toBe("1 annotated");
+    expect(
+      annotation(JSON.parse(readFileSync(join(f.directory, "notes-31-v1.jsonl"), "utf8")))
+        .impressions
+    ).toEqual(generated().impressions);
+    f.done();
+  }
+);
+
+test.each(["json", ""])(
+  "aggregate accepts one object inside a single %j fence with surrounding whitespace",
+  async (language) => {
+    const f = fixture();
+    const response = {
+      families: [{ family: "glm-flash", claims: [claim("Useful for tooling.")] }],
+      domains: [{ domain: "tooling", claims: [claim("Evidence covers tooling.")] }],
+    };
+    f.replies[0] = ` \n\t\`\`\`${language}\n${JSON.stringify(response)}\n\`\`\` \n\t`;
+    expect(await f.service.command({ action: "aggregate" })).toContain("Generated 2");
+    expect(readFileSync(join(f.root, "learnings/models/glm-flash.md"), "utf8")).toContain(
+      "Useful for tooling."
+    );
+    expect(readFileSync(join(f.root, "learnings/models/by-domain.md"), "utf8")).toContain(
+      "Evidence covers tooling."
+    );
+    f.done();
+  },
+  30000
+);
+
+const invalidResponses: [string, (body: string) => string][] = [
+  ["prose before the fence", (body) => `Here is the result:\n\`\`\`json\n${body}\n\`\`\``],
+  ["prose after the fence", (body) => `\`\`\`json\n${body}\n\`\`\`\nAdditional prose.`],
+  ["two fences", (body) => `\`\`\`json\n${body}\n\`\`\`\n\`\`\`json\n${body}\n\`\`\``],
+  ["multiple bare objects", (body) => `${body}\n${body}`],
+  ["multiple fenced objects", (body) => `\`\`\`json\n${body}\n${body}\n\`\`\``],
+  ["a bare array", (body) => `[${body}]`],
+  ["a fenced array", (body) => `\`\`\`json\n[${body}]\n\`\`\``],
+  ["a JSON string", (body) => JSON.stringify(body)],
+  ["null", () => "null"],
+  ["a number", () => "42"],
+  ["another fence language", (body) => `\`\`\`javascript\n${body}\n\`\`\``],
+  ["an unclosed fence", (body) => `\`\`\`json\n${body}`],
+];
+for (const action of ["annotate", "aggregate"] as const) {
+  test.each(invalidResponses)(
+    `${action} refuses %s without publishing output`,
+    async (_name, wrap) => {
+      const f = fixture();
+      const modelDirectory = join(f.root, "learnings/models");
+      mkdirSync(modelDirectory, { recursive: true });
+      const familyPage = join(modelDirectory, "glm-flash.md");
+      writeFileSync(familyPage, "Previous reviewed advice.\n");
+      const response =
+        action === "annotate"
+          ? generated()
+          : {
+              families: [{ family: "glm-flash", claims: [claim("Useful for tooling.")] }],
+              domains: [{ domain: "tooling", claims: [claim("Evidence covers tooling.")] }],
+            };
+      f.replies[0] = wrap(JSON.stringify(response));
+      await expect(f.service.command({ action })).rejects.toThrow();
+      expect(existsSync(join(f.directory, "notes-31-v1.jsonl"))).toBe(false);
+      expect(readFileSync(familyPage, "utf8")).toBe("Previous reviewed advice.\n");
+      expect(existsSync(join(modelDirectory, "by-domain.md"))).toBe(false);
+      f.done();
+    }
+  );
 }
 
 test("annotate bundles filtered evidence, links the immutable record, skips and force adds a new version file", async () => {

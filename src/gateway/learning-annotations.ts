@@ -536,7 +536,7 @@ export class LearningAnnotations {
               .filter((p) => p.type === "text")
               .map((p) => String(p.text))
               .join("");
-            return JSON.parse(text);
+            return responseObject(text);
           }
         }
         await this.deps.sleep(1000);
@@ -547,6 +547,17 @@ export class LearningAnnotations {
       await client.request("POST", `${path}/interrupt`, {});
     }
   }
+}
+
+/** Decode only a whole JSON object, optionally inside one JSON/plain Markdown fence. */
+function responseObject(text: string): Record<string, unknown> {
+  const source = text.trim();
+  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```$/.exec(source);
+  const value: unknown = JSON.parse(fenced?.[1] ?? source);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Learning model response must be exactly one JSON object");
+  }
+  return value as Record<string, unknown>;
 }
 
 /** Legacy handwritten judgements are not evidence for a thread-based annotation. */
