@@ -83,6 +83,8 @@ export interface LoopHost {
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
   workerSend?: (pr: number, text: string) => Promise<string | void>;
+  resolveConflicts?: (pr: number) => Promise<string>;
+  conflictPending?: (pr: number) => boolean;
   board: Pick<BoardService, "set">;
   digest: Digest;
 }
@@ -104,6 +106,8 @@ interface PrInfo {
   title: string;
   user: ObjectData;
   mergeable: string;
+  baseMoved?: boolean;
+  baseSha?: string;
 }
 
 interface CardInfo {
@@ -1383,6 +1387,8 @@ export class EventLoop {
         created: str(item.created_at),
         title: str(item.title),
         user: object(item.user),
+        baseMoved: detail.mergeable_state === "behind",
+        baseSha: str(object(detail.base).sha),
         mergeable:
           detail.mergeable === false
             ? "CONFLICTING"
@@ -1411,6 +1417,11 @@ export class EventLoop {
 
   private async processOpenPr(pr: PrInfo): Promise<void> {
     const url = this.threadUrl(this.own, pr.number, "PR");
+    if (pr.baseSha && /^[a-f\d]{40}$/i.test(pr.baseSha)) {
+      const oldBase = this.readMarker(`base-head-${pr.number}`);
+      pr.baseMoved ||= !!oldBase && oldBase !== pr.baseSha;
+      this.writeMarker(`base-head-${pr.number}`, pr.baseSha);
+    }
     atomicWrite(join(this.dir, `branch-${pr.number}`), `${pr.branch}\n`);
     if (!this.marked(`open-${pr.number}`)) {
       this.mark(`open-${pr.number}`);
@@ -1436,7 +1447,12 @@ export class EventLoop {
       atomicWrite(join(this.dir, `head-${pr.number}`), `${pr.sha}\n`);
     }
     if (pr.mergeable === "CONFLICTING") {
-      if (
+      if (this.host.resolveConflicts) {
+        if (this.readMarker(`conflict-${pr.number}`) !== pr.sha) {
+          this.writeMarker(`conflict-${pr.number}`, pr.sha);
+          this.queueProgress(pr.number, { state: "conflict" });
+        }
+      } else if (
         this.produceOnce(
           `conflict-${pr.number}-${pr.sha}`,
           "conflict",
@@ -1446,9 +1462,40 @@ export class EventLoop {
         this.writeMarker(`conflict-${pr.number}`, pr.sha);
         this.queueProgress(pr.number, { state: "conflict" });
       }
+      if (
+        this.host.resolveConflicts &&
+        !this.marked(`conflict-dispatched-${pr.number}-${pr.sha}`)
+      ) {
+        this.mark(`conflict-dispatched-${pr.number}-${pr.sha}`);
+        const result = await this.host.resolveConflicts(pr.number);
+        if (!result.startsWith("PENDING")) {
+          this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
+        }
+      }
     } else if (pr.mergeable === "MERGEABLE" && this.marked(`conflict-${pr.number}`)) {
       remove(join(this.dir, `conflict-${pr.number}`));
       this.queueProgress(pr.number, { state: "working", if: ["conflict"] });
+    }
+    if (
+      pr.baseMoved &&
+      this.host.resolveConflicts &&
+      !this.marked(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`)
+    ) {
+      this.mark(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`);
+      const result = await this.host.resolveConflicts(pr.number);
+      if (!result.startsWith("PENDING")) {
+        this.produceOnce(
+          `base-result-${pr.number}-${pr.sha}-${pr.baseSha}`,
+          "conflict-resolution",
+          result
+        );
+      }
+    }
+    if (this.host.conflictPending?.(pr.number)) {
+      const result = await this.host.resolveConflicts!(pr.number);
+      if (!result.startsWith("PENDING")) {
+        this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
+      }
     }
     this.observedPrs.push(pr);
   }

@@ -108,6 +108,17 @@
         "requireCurrentBase": { "type": "boolean", "default": true }
       }
     },
+    "conflicts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "escalatePaths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "postMerge": {
       "type": "object",
       "additionalProperties": false,

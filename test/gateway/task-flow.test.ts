@@ -1979,9 +1979,13 @@ test.each([
   "conflicting",
   "head moved",
   "comment failure",
+  "escalated path",
 ])("explicit approval carry: %s", async (scenario) => {
   const f = fixture();
   const old = "d".repeat(40);
+  if (scenario === "escalated path") {
+    f.config.conflicts = { escalatePaths: ["src/**"] };
+  }
   f.host.approved = async (_ref, historical) => historical === old;
   f.host.candidates = async () => (scenario === "no approval" ? [] : [old]);
   const exec = f.deps.exec;
@@ -2056,6 +2060,22 @@ test.each([
     );
     expect(f.writes.some((w) => w.path.endsWith("/merge"))).toBe(false);
   }
+  f.done();
+});
+
+test("independent conflict rejection names files and gives the blocked PR back to the orchestrator", async () => {
+  const f = fixture();
+  await f
+    .flow()
+    .escalateConflict("27", "escalated path requires owner review", ["src/conflict.ts"]);
+  expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toContain(
+    "src/conflict.ts"
+  );
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ field: "Status", value: "In progress", progress: "🤖🚫" })
+  );
+  expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+  expect(f.writes.some((write) => write.path.endsWith("/assignees"))).toBe(true);
   f.done();
 });
 

@@ -82,6 +82,33 @@ export class GitTransport {
     );
   }
 
+  /** Preview without modifying a checkout; exit 1 is merge-tree's documented conflict result. */
+  async mergeConflicts(head: string, base: string): Promise<string[]> {
+    if (![head, base].every((value) => /^[a-f\d]{40}$/i.test(value))) {
+      throw new Error("Invalid merge preview SHA");
+    }
+    const output = await this.deps.exec(
+      "/bin/sh",
+      [
+        "-c",
+        'git merge-tree --write-tree --name-only -z "$1" "$2"; result=$?; if [ "$result" -eq 1 ]; then exit 0; else exit "$result"; fi',
+        "merge-preview",
+        head,
+        base,
+      ],
+      { cwd: this.worktree, env: this.localEnvironment() }
+    );
+    const [tree, ...parts] = output.split("\0");
+    if (!/^[a-f\d]{40}$/i.test(tree)) {
+      throw new Error("Invalid merge-tree preview");
+    }
+    const end = parts.indexOf("");
+    if (end < 0) {
+      throw new Error("Missing merge-tree path terminator");
+    }
+    return [...new Set(parts.slice(0, end))];
+  }
+
   private async retry(args: string[], env: NodeJS.ProcessEnv): Promise<boolean> {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {

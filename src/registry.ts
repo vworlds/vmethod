@@ -9,6 +9,7 @@ export const verbs = [
   { name: "open-task", stub: "scripts/orchestrator/open-task.sh" },
   { name: "review", stub: "scripts/orchestrator/review.sh" },
   { name: "merge-task", stub: "scripts/orchestrator/merge-task.sh" },
+  { name: "resolve-conflicts", stub: "scripts/orchestrator/resolve-conflicts.sh" },
   { name: "link-task", stub: "scripts/orchestrator/link-task.sh" },
   { name: "release-hold", stub: "scripts/orchestrator/release-hold.sh" },
   { name: "watch", stub: "scripts/agent/watch.sh" },

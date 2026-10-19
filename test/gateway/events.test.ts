@@ -1261,6 +1261,35 @@ test("own remembered moves and migration-stamped changes stay quiet", async () =
   expect(await f.tick(loop)).toEqual([]);
 });
 
+test.each([false, true])(
+  "watcher dispatches %s base-moved/conflict automation once per head",
+  async (conflict) => {
+    const f = setup();
+    f.task();
+    f.mergeable = !conflict;
+    f.baseMoved = !conflict;
+    f.resolveConflicts = vi.fn(async () => "RESOLVED #24 (step 1)");
+    const loop = f.loop();
+    const first = await f.tick(loop);
+    expect(
+      first.filter((event) => event.kind === "conflict-resolution").map((event) => event.line)
+    ).toEqual(["RESOLVED #24 (step 1)"]);
+    expect(first.some((event) => event.kind === "conflict")).toBe(false);
+    await f.ack(loop, first);
+    for (let i = 0; i < 7; i++) {
+      f.advance();
+      await f.tick(loop);
+    }
+    expect(f.resolveConflicts).toHaveBeenCalledExactlyOnceWith(24);
+    object(f.pulls[0].head).sha = "b".repeat(40);
+    for (let i = 0; i < 6; i++) {
+      f.advance();
+      await f.tick(loop);
+    }
+    expect(f.resolveConflicts).toHaveBeenCalledTimes(2);
+  }
+);
+
 test("REST conflicts are once per head SHA and red CI is Progress only", async () => {
   const f = setup();
   f.task();

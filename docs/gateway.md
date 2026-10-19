@@ -696,6 +696,9 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   `revise estimates: …` for own-repository dependents. Missing native links never
   block merging. If GitHub already closed the issue, follow-up still sets its card
   to Done without another close write or duplicate comment.
+- `resolve-conflicts <pr>` starts or reconciles [bounded conflict resolution](#conflict-resolution).
+  Only the orchestrator or watcher can call the `resolveConflicts({ref})` operation;
+  a fixer never receives merge authority.
 - `release-hold <pr>` removes the exact hold banner and any legacy hold title prefix
   in one body/title edit, posts GO, moves the card to In progress and resumes the
   worker if present. It preserves other prompt text and refuses non-held PRs
@@ -712,11 +715,69 @@ lines once the turn ends, without steering. No recorded/reachable session return
 Without worker control, these commands still post and update the board. Workers
 end their turn after a status comment; they do not poll for review replies.
 
-The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `releaseHold`
+The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `resolveConflicts`, `releaseHold`
 and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own their
 signatures. The gateway wires worker status, stop and resume to the recorded opencode
 or Claude session. Only the merge guard treats missing records as stopped;
 ordinary worker status still reports a missing session as unknown.
+
+### Conflict resolution
+
+Use `resolve-conflicts <pr>` to take the cheapest applicable action. The watcher
+dispatches it automatically for a conflicting head or GitHub's behind-base state,
+then reconciles the persisted operation without launching another fixer.
+
+1. A clean merge preview uses GitHub update-branch with the expected head SHA and
+   waits for CI. No agent is started.
+2. An existing reachable worker gets the fixed line
+   `CONFLICT: merge origin/<base>, resolve keeping both sides' behaviour, push, wait-checks, READY`.
+   The gateway chooses the ungated, priced family with the lowest input-plus-output
+   list rate on the same backend (family name breaks ties). A busy turn queues the
+   switch until idle. Normal review resumption restores the original model. Both
+   switches retain usage baselines and post the normal model NOTE.
+3. Otherwise a generic fixer starts in the PR's guarded linked worktree on the
+   cheapest ungated, priced family. Its fixed prompt limits edits to conflicted
+   hunks, requires the merge-scope verify hook and CI, forbids merging, and requires
+   `[worker] BLOCKED` with conflicting files when it cannot comply.
+
+The gateway independently checks the two merge parents, every remerge-diff path
+and the full-context textual patch. Changes outside conflict-marker regions,
+nontextual/rename/mode conflicts and unsupported evidence fail closed. Passing this
+syntactic check does not prove semantic equivalence. Agent resolutions and approval
+carry require the exact resolved head to
+be present in a clean worktree; the executable project verify hook runs with
+`--scope merge` for generic fixers and approval carry, without gateway credentials.
+Current-base CI must also be green. An unapproved clean update needs no worktree or hook.
+Missing hooks are blockers; legacy `checks.verify` strings are not a substitute.
+The overall operation has a one-hour limit and a two-minute worker-start grace.
+An interrupted dispatch is escalated rather than replayed blindly.
+
+Optionally configure `conflicts.escalatePaths` as path globs in `vmethod.yaml`:
+
+```yaml
+conflicts:
+  escalatePaths: ["src/physics/**", "src/network/per-tick/**"]
+```
+
+A resolution touching those paths always escalates for owner review, even when
+the fixer proposes a valid patch. Unset means no additional escalation; vmethod's
+own configuration leaves it unset.
+
+Only approval verified on the pre-conflict head can be carried automatically.
+With every guard green, the gateway pins the resolved head and invokes
+`merge-task --carry-approval` with the certification
+"conflict-only resolution; remerge diff limited to conflicted hunks; verify and CI green".
+Normal merge approval, scope, session, CI and head/base-race gates still apply.
+An unapproved PR stops resolved and waits for review. A worker's BLOCKED or QUESTION
+prevents carry even if a pushed patch looks syntactically valid. The gateway posts
+an orchestrator escalation note rather than impersonating a worker when its own
+independent checks refuse certification.
+
+Watcher terminal events are `RESOLVED #n (step k)`,
+`MERGED #n (conflict-only, approval carried)`, or
+`BLOCKED #n: conflict escalated (<reason>)`. Pending work does not wake the
+orchestrator just to repeat CONFLICT. State and locks live under the configured
+per-user state root, not in the package checkout.
 
 Merge follow-up journals live in the per-user state directory. A partial failure
 resumes board, issue, branch and checkout work without merging again. Already-merged

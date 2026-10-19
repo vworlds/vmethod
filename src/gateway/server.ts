@@ -60,6 +60,8 @@ import { LearningsService } from "./learnings.js";
 import { checkLearningPr } from "./learning-check.js";
 import { backfillCosts } from "./cost-backfill.js";
 import type { Price, PriceTier } from "../cost.js";
+import { ConflictService } from "./conflicts.js";
+import { runVerifyHook } from "./verify-hook.js";
 
 class GatewayServer {
   private readonly config: Config;
@@ -525,6 +527,8 @@ class GatewayServer {
           github: this.github,
           workerStatus: (pr) => this.workers.watchStatus(pr),
           workerSend: (pr, text) => this.workers.resume(pr, text),
+          resolveConflicts: (pr) => this.conflicts.resolve(pr),
+          conflictPending: (pr) => this.conflicts.pending(pr),
           board: { set: (input) => this.board.set(input) },
           digest: this.digest,
         },
@@ -542,6 +546,65 @@ class GatewayServer {
   private get ci(): ChecksService {
     return new ChecksService(this.config, this.github, this.filter, this.deps);
   }
+
+  private get conflicts(): ConflictService {
+    return new ConflictService(this.root, this.config, this.env, this.deps, {
+      snapshot: async (pr) => {
+        await this.flow.conflictTask(String(pr));
+        return this.ci.snapshot(String(pr));
+      },
+      approved: (pr, head) => this.approvalFor(String(pr), head),
+      update: async (pr, head) => {
+        await this.github.rest(
+          `/repos/${String(this.config.repo)}/pulls/${pr}/update-branch`,
+          "PUT",
+          {
+            expected_head_sha: head,
+          },
+          false
+        );
+      },
+      wait: (pr) => this.ci.wait({ ref: String(pr) }),
+      fix: (pr, base, files) => this.workers.resolveConflict(pr, base, files),
+      status: (pr) => this.workers.mergeStatus(pr, true),
+      stop: async (pr) => {
+        await this.workers.command(["stop", String(pr)]);
+      },
+      workerBlocked: async (pr, since) => {
+        const meta = await this.workerMetadata(pr);
+        const latest = meta.comments
+          .filter((comment) => comment.role === "worker" && Date.parse(comment.date) >= since)
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .at(-1);
+        return !!latest && /^\[worker\] (BLOCKED|QUESTION)\b/.test(latest.body);
+      },
+      directory: (pr) => this.workers.conflictDirectory(pr),
+      verify: async (directory, head) => {
+        const git = new GitTransport(this.config, this.env, this.deps, directory);
+        if ((await git.run("status", "--porcelain")).trim()) {
+          return false;
+        }
+        const result = await runVerifyHook(directory, this.config, this.env, this.deps, [
+          "--scope",
+          "merge",
+        ]);
+        return (
+          result.code === 0 &&
+          !(await git.run("status", "--porcelain")).trim() &&
+          (await git.run("rev-parse", "HEAD")).trim() === head
+        );
+      },
+      blocked: async (pr, reason, files) => {
+        await this.flow.escalateConflict(String(pr), reason, files);
+      },
+      merge: async (pr, reason, head) => {
+        await this.flow.merge(String(pr), false, reason, head);
+      },
+    });
+  }
+
+  resolveConflicts: Handlers["resolveConflicts"] = async ({ ref }) =>
+    this.conflicts.resolve(this.localNumber(ref));
 
   private get verification(): VerificationService {
     return new VerificationService(
@@ -1549,6 +1612,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     reviewTask: server.reviewTask,
     askIssue: server.askIssue,
     mergeTask: server.mergeTask,
+    resolveConflicts: server.resolveConflicts,
     linkTask: server.linkTask,
     releaseHold: server.releaseHold,
     workerStatus: server.workerStatus,
@@ -1590,6 +1654,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     reviewTask: ["orchestrator"],
     askIssue: ["orchestrator"],
     mergeTask: ["orchestrator"],
+    resolveConflicts: ["orchestrator"],
     linkTask: ["orchestrator"],
     releaseHold: ["orchestrator"],
     workerStatus: ["orchestrator"],

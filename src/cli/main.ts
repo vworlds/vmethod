@@ -69,6 +69,7 @@ try {
     case "review":
     case "ask":
     case "merge-task":
+    case "resolve-conflicts":
     case "link-task":
     case "release-hold":
     case "wait-checks":
@@ -80,7 +81,9 @@ try {
         exec: async (file, args, options) =>
           (
             await promisify(execFile)(file, [...args], {
-              timeout: ["verify", "merge-task"].includes(verb) ? 1800000 : 30000,
+              timeout: ["verify", "merge-task", "resolve-conflicts"].includes(verb)
+                ? 1800000
+                : 30000,
               ...options,
             })
           ).stdout,
@@ -115,7 +118,15 @@ try {
               ).stdout,
             report: (message) => console.error(message),
           })
-        : ["open-task", "review", "ask", "merge-task", "link-task", "release-hold"].includes(verb)
+        : [
+              "open-task",
+              "review",
+              "ask",
+              "merge-task",
+              "resolve-conflicts",
+              "link-task",
+              "release-hold",
+            ].includes(verb)
           ? await taskFlowVerb(transport, verb, args, env)
           : await gatewayVerb(transport, verb, args, env);
       if (output) {

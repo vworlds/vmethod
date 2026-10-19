@@ -187,6 +187,129 @@ const start: Request[] = [
   },
   { path: "/api/session/ses_fake", data: { id: "ses_fake", title: "project#31" } },
 ];
+test("conflict turn switches the existing session to the cheapest family and restores it before normal work", async () => {
+  const switchTo = (id: string): Request[] => [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: { model: { providerID: "fake", id } },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus(),
+      ...switchTo("glm"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: {
+          text: "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY",
+          delivery: "queue",
+        },
+      },
+      ...measuredStatus(),
+      ...switchTo("sol"),
+      ...measuredStatus(),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: "Read the PR for normal review work", delivery: "queue" },
+      },
+    ],
+    true
+  );
+  f.meta.model = "sol";
+  await f.service.command(["start", "31", "--owner-approved"]);
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
+  expect(f.record().model.family).toBe("glm");
+  expect(f.record().conflictModel.family).toBe("sol");
+  await f.service.resume(31, "Read the PR for normal review work");
+  expect(f.record().model.family).toBe("sol");
+  expect(f.record().conflictModel).toBeUndefined();
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    1,
+    31,
+    "[orchestrator] NOTE: model switched to glm (conflict-only resolution)"
+  );
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    2,
+    31,
+    "[orchestrator] NOTE: model switched to sol (resume normal work after conflict)"
+  );
+  f.done();
+});
+
+test("session-less conflict starts a fixed generic fixer even for a non-draft direct task", async () => {
+  const f = fixture(
+    start.map((request) =>
+      request.body
+        ? {
+            ...request,
+            body: {
+              text: expect.stringContaining(
+                "You are a generic conflict fixer, not the task implementer."
+              ),
+              delivery: "steer",
+            },
+          }
+        : request
+    ),
+    true
+  );
+  f.meta.draft = false;
+  f.meta.issue = undefined;
+  f.meta.pointsOpen = undefined;
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(3);
+  expect(f.record().model.family).toBe("glm");
+  expect(f.record().points_open).toBeNull();
+  expect(f.record().issue).toBeNull();
+  f.done();
+});
+
+test.each(["idle drain", "stop"])(
+  "busy conflict turn queues without steering, then %s",
+  async (next) => {
+    const busy = measuredStatus().map((request) =>
+      request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+    );
+    const after: Request[] =
+      next === "stop"
+        ? [{ path: "/api/session/ses_fake/interrupt", method: "POST" }]
+        : [
+            ...measuredStatus(),
+            {
+              path: "/api/session/ses_fake/model",
+              method: "POST",
+              body: { model: { providerID: "fake", id: "glm" } },
+            },
+            { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+            {
+              path: "/api/session/ses_fake/prompt",
+              method: "POST",
+              body: {
+                text: "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY",
+                delivery: "queue",
+              },
+            },
+          ];
+    const f = fixture([...start, ...busy, ...after], true);
+    f.meta.model = "sol";
+    await f.service.command(["start", "31", "--owner-approved"]);
+    expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
+    expect(f.record().model.family).toBe("sol");
+    expect(f.record().pendingConflict).toMatchObject({ base: "dev", model: { family: "glm" } });
+    if (next === "stop") {
+      await f.service.command(["stop", "31"]);
+    } else {
+      expect((await f.service.watchStatus(31)).active).toBe(true);
+      expect(f.record().model.family).toBe("glm");
+    }
+    expect(f.record().pendingConflict).toBeUndefined();
+    f.done();
+  }
+);
 test.each([
   "This task discusses ON HOLD and [HOLD: examples] in prose.",
   "`> ⛔ ON HOLD. Wait for [orchestrator] GO.` is an example, not a banner.",

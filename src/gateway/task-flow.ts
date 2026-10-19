@@ -8,7 +8,8 @@ import {
   renameSync,
 } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
-import { dirname, join, resolve } from "node:path";
+import { renderProgress } from "../board/progress.js";
+import { dirname, join, matchesGlob, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
@@ -780,8 +781,43 @@ export class TaskFlow {
     renameSync(`${file}.tmp`, file);
   }
 
+  /** Apply task identity, fork, track and hold gates before any conflict side effect. */
+  async conflictTask(ref: string): Promise<void> {
+    const item = await this.pr(ref);
+    if (
+      item.state !== "OPEN" ||
+      taskIssueNumbers(String(item.body)) === undefined ||
+      taskHeld(String(item.title), String(item.body))
+    ) {
+      throw new Error("Conflict resolution requires an open, non-held task PR on this track");
+    }
+  }
+
+  /** Escalate independent conflict-proof failures without impersonating the fixer. */
+  async escalateConflict(ref: string, reason: string, files: string[]): Promise<void> {
+    const item = await this.pr(ref);
+    if (item.state !== "OPEN") {
+      throw new Error("Conflict task is no longer open");
+    }
+    await this.post(
+      ref,
+      `[orchestrator] NOTE: conflict escalated (${reason})\n\nConflicting files:\n${files.map((file) => `- ${JSON.stringify(file)}`).join("\n") || "- (none)"}\n\nOwner review is required; no approval carried.`
+    );
+    await this.card(
+      item,
+      "In progress",
+      renderProgress({ state: "blocked", round: null, red: false })
+    );
+    await this.turn(ref, "orchestrator");
+  }
+
   /** Merge a stopped/session-less task against the live base; carryApproval certifies no behaviour change after base merges. */
-  async merge(ref: string, mergeCommit = false, carryApproval?: string): Promise<string> {
+  async merge(
+    ref: string,
+    mergeCommit = false,
+    carryApproval?: string,
+    expectedHead?: string
+  ): Promise<string> {
     if (typeof mergeCommit !== "boolean") {
       throw new Error("Invalid merge-commit flag");
     }
@@ -792,6 +828,9 @@ export class TaskFlow {
       throw new Error("Approval carry requires a nonempty single-line reason");
     }
     const item = await this.pr(ref);
+    if (expectedHead !== undefined && item.headRefOid !== expectedHead) {
+      throw new Error("Head moved after conflict certification; approval not carried");
+    }
     if (!["OPEN", "MERGED"].includes(String(item.state))) {
       throw new Error("PR is closed without merging");
     }
@@ -850,6 +889,15 @@ export class TaskFlow {
           );
           if (files === null) {
             continue;
+          }
+          const escalate = object(this.config.conflicts).escalatePaths;
+          if (
+            Array.isArray(escalate) &&
+            files.some((file) => escalate.some((pattern) => matchesGlob(file, String(pattern))))
+          ) {
+            throw new Error(
+              "Owner approval cannot be carried across an escalated conflict path; re-ask the owner"
+            );
           }
           certification = `[orchestrator] APPROVAL CARRIED from ${approved} to ${head}: ${carryApproval}\n\nI certify there is no behaviour change or algorithmic revamp.\n\nRemerge-diff files:\n${files.length ? files.map((file) => `- ${JSON.stringify(file)}`).join("\n") : "- (none)"}`;
           break;

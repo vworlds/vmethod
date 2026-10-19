@@ -3,6 +3,43 @@ import { actor, fixtureServer, graph, item, sha } from "./helpers.js";
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
 import { scopeIssue, scopeMove, scopeConnection, scopeGraph } from "./scope-fixture.js";
 
+test("workers cannot invoke conflict automation or gain merge authority", async () => {
+  const f = fixtureServer([], actor(1));
+  await expect(
+    f.gateway.call("resolveConflicts", { ref: "27" }, { role: "worker", taskPr: 27 })
+  ).rejects.toThrow("denied for client role");
+  f.done();
+});
+
+test.each(["fork", "track", "hold", "closed", "not task"])(
+  "conflict entry rejects %s before any git or update-branch side effect",
+  async (reason) => {
+    const f = fixtureServer([
+      graph({ repository: { pullRequest: item() } }),
+      graph({
+        node: item({
+          title: reason === "hold" ? "[HOLD: dependency] feat: task" : "feat: task",
+          body: reason === "not task" ? "not a task" : '<!-- vmethod-task {"issues":[]} -->',
+          state: reason === "closed" ? "CLOSED" : "OPEN",
+          headRefName: "8-task",
+          baseRefName: "dev",
+          headRefOid: sha,
+          baseRefOid: sha,
+          headRepository: { nameWithOwner: reason === "fork" ? "outside/fork" : "example/project" },
+          labels: {
+            nodes: reason === "track" ? [{ name: "track:other" }] : [],
+            pageInfo: { hasNextPage: false },
+          },
+        }),
+      }),
+    ]);
+    await expect(f.transport.call("resolveConflicts", { ref: "27" })).rejects.toThrow(
+      reason === "fork" ? "fork" : reason === "track" ? "another track" : "open, non-held task"
+    );
+    f.done();
+  }
+);
+
 test.each(["", "   ", "reason\nforged line"])(
   "gateway forwards and validates carry reason %j before PR reads",
   async (carryApproval) => {
