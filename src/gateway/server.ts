@@ -62,7 +62,7 @@ import { checkLearningPr } from "./learning-check.js";
 import { backfillCosts } from "./cost-backfill.js";
 import type { Price, PriceTier } from "../cost.js";
 import { ConflictService } from "./conflicts.js";
-import { runVerifyHook } from "./verify-hook.js";
+import { verifyConflictHead } from "./verify-hook.js";
 
 class GatewayServer {
   private readonly config: Config;
@@ -650,19 +650,7 @@ class GatewayServer {
       },
       directory: (pr) => this.workers.conflictDirectory(pr),
       verify: async (directory, head) => {
-        const git = new GitTransport(this.config, this.env, this.deps, directory);
-        if ((await git.run("status", "--porcelain")).trim()) {
-          return false;
-        }
-        const result = await runVerifyHook(directory, this.config, this.env, this.deps, [
-          "--scope",
-          "merge",
-        ]);
-        return (
-          result.code === 0 &&
-          !(await git.run("status", "--porcelain")).trim() &&
-          (await git.run("rev-parse", "HEAD")).trim() === head
-        );
+        return verifyConflictHead(directory, head, this.config, this.env, this.deps);
       },
       blocked: async (pr, reason, files) => {
         await this.flow.escalateConflict(String(pr), reason, files);

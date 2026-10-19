@@ -737,7 +737,7 @@ then reconciles the persisted operation without launching another fixer.
    switches retain usage baselines and post the normal model NOTE.
 3. Otherwise a generic fixer starts in the PR's guarded linked worktree on the
    cheapest ungated, priced family. Its fixed prompt limits edits to conflicted
-   hunks, requires the merge-scope verify hook and CI, forbids merging, and requires
+   hunks, requires any installed merge-scope verify hook and CI, forbids merging, and requires
    `[worker] BLOCKED` with conflicting files when it cannot comply.
 
 The gateway independently checks the two merge parents, every remerge-diff path
@@ -748,7 +748,10 @@ carry require the exact resolved head to
 be present in a clean worktree; the executable project verify hook runs with
 `--scope merge` for generic fixers and approval carry, without gateway credentials.
 Current-base CI must also be green. An unapproved clean update needs no worktree or hook.
-Missing hooks are blockers; legacy `checks.verify` strings are not a substitute.
+In this conflict-resolution path only, an absent hook is explicitly skipped and CI
+remains mandatory. An installed failing hook blocks. This does not weaken the
+missing-hook refusal for ordinary `merge-task` with `requireCurrentBase: false`;
+legacy `checks.verify` strings are not substituted in either path.
 The overall operation has a one-hour limit and a two-minute worker-start grace.
 An interrupted dispatch is escalated rather than replayed blindly.
 

@@ -1,9 +1,40 @@
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "../config.js";
 import type { Dependencies } from "./client.js";
 import { untrusted } from "./people.js";
+import { GitTransport } from "./git.js";
+
+/** Verify a clean, pinned conflict resolution; an absent hook skips local verification only.
+ * The conflict workflow must independently require green CI. Ordinary merge verification is unchanged.
+ */
+export async function verifyConflictHead(
+  worktree: string,
+  head: string,
+  config: Config,
+  environment: NodeJS.ProcessEnv,
+  deps: Dependencies
+): Promise<boolean> {
+  const git = new GitTransport(config, environment, deps, worktree);
+  if ((await git.run("status", "--porcelain")).trim()) {
+    return false;
+  }
+  let verified = true;
+  if (existsSync(join(worktree, "scripts/vmethod-hooks/verify"))) {
+    verified =
+      (await runVerifyHook(worktree, config, environment, deps, ["--scope", "merge"])).code === 0;
+  } else {
+    deps.report(
+      "conflict resolution: no verify hook; local verify skipped, green CI still required"
+    );
+  }
+  return (
+    verified &&
+    !(await git.run("status", "--porcelain")).trim() &&
+    (await git.run("rev-parse", "HEAD")).trim() === head
+  );
+}
 
 /** Run the project's installation/check hook without gateway credentials; retain its logs. */
 export async function runVerifyHook(

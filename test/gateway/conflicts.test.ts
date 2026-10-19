@@ -11,6 +11,7 @@ import {
 } from "../../src/gateway/conflicts.js";
 import type { CiSnapshot } from "../../src/gateway/checks.js";
 import type { Dependencies } from "../../src/gateway/client.js";
+import { verifyConflictHead } from "../../src/gateway/verify-hook.js";
 
 const exec = promisify(execFile);
 
@@ -18,7 +19,7 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
   const root = fixture();
   const env = {
     ...process.env,
-    XDG_STATE_HOME: join(root, "state"),
+    XDG_STATE_HOME: join(fixture(), "state"),
     TOKEN: "fake-token",
     GIT_AUTHOR_NAME: "Test",
     GIT_AUTHOR_EMAIL: "test@example.com",
@@ -137,8 +138,33 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     advance: () => {
       now += 61 * 60_000;
     },
+    verifyWithoutHook: (directory: string, head: string) =>
+      verifyConflictHead(directory, head, { repo: "example/project" }, env, deps),
   };
 }
+
+test.each(["green", "red", "pending"])(
+  "no project verify hook: CI %s remains the conflict gate",
+  async (ci) => {
+    const f = await setup(true, true);
+    await f.service.resolve(31);
+    vi.mocked(f.hooks.verify).mockImplementation(f.verifyWithoutHook);
+    if (ci !== "green") {
+      f.snapshot.green = false;
+      f.snapshot.runs = ci === "red" ? [{ status: "completed", conclusion: "failure" }] : [];
+    }
+    const result = await f.service.resolve(31);
+    if (ci === "green") {
+      expect(result).toBe("MERGED #31 (conflict-only, approval carried)");
+      expect(f.hooks.merge).toHaveBeenCalledOnce();
+      expect(f.hooks.verify).toHaveBeenCalledOnce();
+    } else {
+      expect(result).toMatch(ci === "red" ? /^BLOCKED/ : /^PENDING/);
+      expect(f.hooks.merge).not.toHaveBeenCalled();
+    }
+  },
+  15000
+);
 
 test("base moved without textual conflicts updates the branch and waits for CI without any agent", async () => {
   const f = await setup(false, false);
