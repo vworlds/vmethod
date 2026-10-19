@@ -38,10 +38,12 @@ const verbIssues = new Map<string, number | null>([
   ["propose", null],
 ]);
 
-test("worker task template ends status turns instead of review polling", () => {
-  const template = readFileSync("templates/task-pr.md", "utf8");
-  expect(template).not.toContain("wait-review");
-  expect(template).toContain("After posting READY, QUESTION, BLOCKED or DESIGN, end your");
+test("worker guide ends status turns instead of review polling", () => {
+  const guide = readFileSync("docs/worker-guide.md", "utf8");
+  expect(guide).not.toContain("wait-review");
+  expect(guide.replace(/\s+/g, " ")).toContain(
+    "After posting READY, QUESTION, BLOCKED or DESIGN, end your turn"
+  );
 });
 
 test("all future-verb annotations in docs and templates name the implementation issue", () => {

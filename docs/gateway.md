@@ -318,8 +318,14 @@ segments. Writes use a per-PR exclusive lock and atomic rename. A lock left afte
 a crash must be removed only after confirming its operation is no longer running.
 Failed prompt submission leaves the created session recorded. Start refuses an
 existing known session, including an idle one; `--replace` interrupts and waits
-before replacing it. A lost session instead gets a re-entry prompt pointing to
-the PR description and the latest identity-verified orchestrator amendment.
+before replacing it. Every new context (start, replacement, lost-session re-entry,
+adoption or backend change) receives the same generated first prompt: inline
+authority rules, task values, command prefix and a checklist pointing to the
+pinned [worker guide](worker-guide.md). The worker reads the current PR and
+authenticated amendments through the gateway; the session's first message is no
+longer a copy of the PR body. Existing live contexts are not sent onboarding again.
+Start and review wakes resolve the model from the PR card's Model field, never a
+body line; migrate in-flight cards before adoption.
 
 Status distinguishes running, permission-wait, quota, provider-error, idle,
 idle without reply, and session unknown. Provider errors include their diagnostic
@@ -341,13 +347,16 @@ cannot confirm idle, it explicitly did not send. `--queue` submits opencode's
 queue delivery; default sends steer the active turn. Claude defaults refuse busy
 turns; queue waits for idle, and now interrupts before resuming. `wait` defaults
 to 600 seconds; permission waits are not completion. `permit` without a decision
-lists pending requests. Model changes preserve the session id, synchronize the
+lists pending requests. Same-backend model changes preserve the session id, synchronize the
 PR's Model card, and add a segment with `--why` (default `owner-request`). Each
 switch posts `[orchestrator] NOTE: model switched to <family> (<why>)` on the PR
 without changing Progress; follow with `review <pr> answer <file>` to hand back
 the turn. Selecting the unchanged model only synchronizes Model and the session
-title; it does not post a switch note. A
-cross-backend switch cannot preserve context and is refused. Gates apply equally
+title; it does not post a switch note. A cross-backend switch requires an idle
+worker and creates a new session with the generated first prompt, retaining the
+previous usage segments but not conversation context. Card-driven resume changes
+also enforce model gates; use an explicitly authorized `worker model` command
+before resuming an owner-gated change. Gates apply equally
 to family names and configured raw ids; unconfigured provider/id selections need
 an explicit `other` family policy. `models` lists configured gates/fallbacks and
 the models offered by opencode. Suggestions use Estimate and task labels and

@@ -45,6 +45,7 @@ import {
 import { processes, type ProcessIdentity } from "./claude.js";
 import { object, untrusted } from "./people.js";
 import { workerWorktree, workerWorktreePrefix } from "./worker-path.js";
+import { workerFirstPrompt } from "./worker-prompt.js";
 
 interface Model {
   family: string;
@@ -91,6 +92,7 @@ interface Session {
 export interface TaskMetadata {
   pr: number;
   issue?: number;
+  base: string;
   branch: string;
   title: string;
   body: string;
@@ -250,7 +252,8 @@ export class WorkerService {
   private async status(
     record: Session,
     comments = true,
-    deadline?: number
+    deadline?: number,
+    drainWake = true
   ): Promise<WorkerSessionStatus> {
     const directory = workerWorktree(this.root, this.config, { directory: record.directory });
     if (resolve(directory) !== resolve(record.directory)) {
@@ -387,10 +390,14 @@ export class WorkerService {
       this.save(record);
     }
     if (
+      drainWake &&
       record.pendingWake?.length &&
       !status.active &&
       !["permission-wait", "session unknown"].includes(status.reason)
     ) {
+      if (await this.resumeModel(record, status)) {
+        return { ...status, reason: "running", active: true };
+      }
       await this.prompt(record, record.pendingWake.join("\n"), "queue");
       delete record.pendingWake;
       this.save(record);
@@ -690,9 +697,6 @@ export class WorkerService {
           }
         }
         const model = this.resolve(selected, approved);
-        if (model.kind !== record.model.kind) {
-          throw new Error("Cannot switch backend and retain context");
-        }
         if (model.family === record.model.family && model.model === record.model.model) {
           if (record.model.kind === "opencode") {
             await this.setOpenCodeTitle(record);
@@ -700,28 +704,8 @@ export class WorkerService {
           await this.hooks.setModel(pr, model.family);
           return `Model unchanged for ${record.id}; PR Model synchronized`;
         }
-        if (record.model.kind === "claude" && (await this.status(record, false)).active) {
-          throw new Error("Stop the Claude turn before switching model");
-        }
         const meta = await this.hooks.metadata(pr);
-        const boundary = await this.status(record, false);
-        if (!boundary.usage) {
-          throw new Error("Cannot switch model without provider usage baseline");
-        }
-        if (model.kind === "opencode") {
-          await this.client().request("POST", `${path}/model`, { model: this.apiModel(model) });
-          await this.setOpenCodeTitle(record);
-        }
-        record.model = model;
-        record.segments.push({
-          family: model.family,
-          model: model.model,
-          rounds: [this.round(meta)],
-          why,
-          at: new Date(this.deps.now()).toISOString(),
-          baseline: boundary.usage,
-        });
-        this.save(record);
+        await this.changeModel(record, model, meta, why);
         await this.hooks.setModel(pr, model.family);
         await this.hooks.modelComment(
           pr,
@@ -764,7 +748,11 @@ export class WorkerService {
             throw new Error("Session running: use --queue or --now; prompt not sent");
           }
         }
-        await this.prompt(record, text, rest[1] === "--queue" ? "queue" : "steer");
+        if (await this.resumeModel(record, undefined, meta)) {
+          record.pendingWake = [...(record.pendingWake ?? []), text];
+        } else {
+          await this.prompt(record, text, rest[1] === "--queue" ? "queue" : "steer");
+        }
         const round = this.round(meta);
         const segment = record.segments.at(-1)!;
         if (!segment.rounds.includes(round)) {
@@ -824,6 +812,118 @@ export class WorkerService {
   private apiModel(model: Model) {
     const [providerID, ...id] = model.model.split("/");
     return { providerID, id: id.join("/") };
+  }
+  private async changeModel(
+    record: Session,
+    model: Model,
+    meta: TaskMetadata,
+    why: string,
+    boundaryStatus?: WorkerSessionStatus
+  ) {
+    const backendChanged = model.kind !== record.model.kind;
+    const boundary = boundaryStatus ?? (await this.status(record, false, undefined, false));
+    if (
+      (boundary.active || boundary.reason === "permission-wait") &&
+      (backendChanged || record.model.kind === "claude")
+    ) {
+      throw new Error("Stop the worker turn before switching backend or Claude model");
+    }
+    if (!boundary.usage) {
+      throw new Error("Cannot switch model without provider usage baseline");
+    }
+    if (backendChanged && model.kind === "claude") {
+      await this.hooks.workerIdentity();
+    }
+    if (model.kind === "opencode") {
+      if (backendChanged) {
+        const response = object(
+          object(
+            await this.client().request("POST", "/api/session", {
+              location: { directory: record.directory },
+              model: this.apiModel(model),
+              title: this.sessionTitle(record.pr),
+            })
+          ).data
+        );
+        if (typeof response.id !== "string" || !/^[\w-]+$/.test(response.id)) {
+          throw new Error("Server returned no valid session id");
+        }
+        record.id = response.id;
+      } else {
+        await this.client().request("POST", `${this.idPath(record)}/model`, {
+          model: this.apiModel(model),
+        });
+        await this.setOpenCodeTitle(record);
+      }
+    } else if (backendChanged) {
+      record.id = randomUUID();
+    }
+    record.model = model;
+    record.segments.push({
+      family: model.family,
+      model: model.model,
+      rounds: [this.round(meta)],
+      why,
+      at: new Date(this.deps.now()).toISOString(),
+      ...(!backendChanged
+        ? { baseline: boundary.usage }
+        : model.kind === "claude"
+          ? {
+              baseline: claudeUsage(
+                this.claudeLog(record).map((line) => {
+                  try {
+                    return JSON.parse(line);
+                  } catch {
+                    return {};
+                  }
+                })
+              ),
+            }
+          : {}),
+    });
+    if (backendChanged) {
+      delete record.process;
+      delete record.costHistoryLoaded;
+    }
+    this.save(record);
+    if (backendChanged) {
+      await this.prompt(record, this.firstPrompt(record, meta), "steer", false);
+    }
+  }
+  private async resumeModel(
+    record: Session,
+    status?: WorkerSessionStatus,
+    metadata?: TaskMetadata
+  ): Promise<boolean> {
+    const meta = metadata ?? (await this.hooks.metadata(record.pr));
+    const model = this.resolve(meta.model ?? "", true);
+    if (record.model.family !== model.family || record.model.model !== model.model) {
+      this.resolve(meta.model ?? "", false);
+      const backendChanged = record.model.kind !== model.kind;
+      await this.changeModel(record, model, meta, "PR Model changed on resume", status);
+      return backendChanged;
+    }
+    return false;
+  }
+  private firstPrompt(record: Session, meta: TaskMetadata): string {
+    const packagePath = join(record.directory, "package.json");
+    const selfHosting =
+      existsSync(packagePath) &&
+      object(JSON.parse(readFileSync(packagePath, "utf8"))).name === "@vworlds/vmethod";
+    return workerFirstPrompt({
+      pr: record.pr,
+      issue: record.issue,
+      repo: record.repo,
+      base: meta.base,
+      branch: meta.branch,
+      directory: record.directory,
+      family: record.model.family,
+      model: record.model.model,
+      guide: join(
+        record.directory,
+        selfHosting ? "docs/worker-guide.md" : "node_modules/@vworlds/vmethod/docs/worker-guide.md"
+      ),
+    });
   }
   /** Only forMerge treats no recorded session as stopped; unknown recorded sessions still block. */
   async mergeStatus(pr: number, forMerge = false): Promise<"live" | "stopped" | "unknown"> {
@@ -895,6 +995,11 @@ export class WorkerService {
         this.save(record);
         return `queued for #${pr}`;
       }
+      if (await this.resumeModel(record, status)) {
+        record.pendingWake = [...(record.pendingWake ?? []), text];
+        this.save(record);
+        return `queued for #${pr}`;
+      }
       await this.prompt(record, text, "queue");
       return `sent to #${pr}`;
     });
@@ -956,15 +1061,22 @@ export class WorkerService {
         : `${String(apiModel.providerID)}/${String(apiModel.id ?? apiModel.modelID)}`;
     const configured = this.models.find((m) => m.kind === "opencode" && m.model === modelId);
     const other = this.models.find((m) => m.kind === "opencode" && m.family === "other");
-    const model =
+    const sessionModel =
       configured ??
       (other && /^[^/\s]+\/[^\s]+$/.test(modelId) && !modelId.includes("undefined")
         ? { ...other, model: modelId }
         : undefined);
-    if (!model) {
+    if (!sessionModel) {
       throw new Error("Cannot verify existing session model against models.yaml");
     }
-    this.save({
+    const model = this.resolve(meta.model ?? "", true);
+    if (model.kind !== "opencode") {
+      throw new Error("Adopt requires the PR Model to use opencode");
+    }
+    if (model.model !== sessionModel.model) {
+      throw new Error("Session model differs from PR Model; synchronize the card before adoption");
+    }
+    const record: Session = {
       version: 1,
       repo: String(this.config.repo),
       pr,
@@ -982,19 +1094,11 @@ export class WorkerService {
           at: new Date(this.deps.now()).toISOString(),
         },
       ],
-    });
+    };
+    this.save(record);
     await this.hooks.setModel(pr, model.family);
-    await this.setOpenCodeTitle({
-      version: 1,
-      repo: String(this.config.repo),
-      pr,
-      issue: meta.issue,
-      directory,
-      id,
-      model,
-      points_open: points,
-      segments: [],
-    });
+    await this.setOpenCodeTitle(record);
+    await this.prompt(record, this.firstPrompt(record, meta), "queue");
     return `Adopted ${id} for #${pr} on ${model.family}${legacySnapshot ? ` (legacy snapshot at adoption: ${points})` : ""}`;
   }
   private async adoptLegacy(): Promise<string> {
@@ -1193,14 +1297,7 @@ export class WorkerService {
       ],
     };
     this.save(record);
-    const amendment = meta.comments
-      .filter((c) => c.role === "orchestrator" && c.body.startsWith("[orchestrator]"))
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .at(-1);
-    const prompt = unknown
-      ? `The PR description is your prompt: https://github.com/${String(this.config.repo)}/pull/${pr}\n\n${amendment?.body ?? "No orchestrator amendment."}`
-      : meta.body;
-    await this.prompt(record, prompt, "steer", false);
+    await this.prompt(record, this.firstPrompt(record, meta), "steer", false);
     if (model.kind === "opencode") {
       const firstTurn = object(
         object(await this.client().request("GET", this.idPath(record))).data

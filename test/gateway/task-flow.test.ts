@@ -23,6 +23,7 @@ import { bodyHash, scopeApproved } from "../../src/gateway/scope.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { scopeIssue, scopeComment, scopeMove } from "./scope-fixture.js";
+import packageInfo from "../../package.json" with { type: "json" };
 
 const holdBanner = "> ⛔ ON HOLD. Wait for [orchestrator] GO.";
 
@@ -480,6 +481,8 @@ function fixture() {
         prState = "MERGED";
         data = { merged: true };
       } else if (method === "POST" && path === "/repos/example/project/pulls") {
+        expect(typeof payload.body).toBe("string");
+        body = String(payload.body);
         data = { number: 27, node_id: "pr" };
       } else if (method === "PATCH" && path === "/repos/example/project/pulls/27") {
         expect(typeof payload.body).toBe("string");
@@ -904,41 +907,44 @@ test.each([
 });
 
 test.each([{ issue: "8" }, { direct: "fix: direct task" }])(
-  "open-task fills worker commands with the created PR number: %j",
+  "open-task renders only the task, markers and opening version: %j",
   async (input) => {
     const f = fixture();
+    const spec =
+      "Exact spec: <version> <approval basis> $&\n\n## Acceptance\n\n- Keep this text.\n";
+    f.set({ body: spec });
     await f.flow().open(input);
     const body = String(
-      f.writes.find((write) => write.path === "/repos/example/project/pulls/27")?.body.body
+      f.writes.find((write) => write.path === "/repos/example/project/pulls")?.body.body
     );
-    expect(body).toContain("## Commands");
-    for (const command of [
-      "read-pr 27",
-      "pr-comment 27 .tmp/<file>.md",
-      "push",
-      "wait-checks 27",
-    ]) {
+    expect(body).toContain(`## Task specification\n\n${input.issue ? spec : input.direct}\n`);
+    expect(body).toContain(
+      input.issue ? '<!-- vmethod-task {"issues":[8]} -->' : '<!-- vmethod-task {"issues":[]} -->'
+    );
+    expect(body).toContain(`vmethod ${packageInfo.version}\n`);
+    if (input.issue) {
+      expect(body).toContain("<!-- points_open: 13 -->");
       expect(body).toContain(
-        `VMETHOD_ROLE=worker VMETHOD_TASK_PR=27 npm exec --no -- vmethod ${command}\n`
+        "https://github.com/example/project/issues/8; approved specification."
       );
     }
-    expect(body).toContain("Every vmethod command needs this prefix");
-    expect(body).toContain("'denied for client role' or 'own taskPr'");
-    expect(body).not.toContain("<task PR number>");
+    for (const removed of [
+      "## Commands",
+      "VMETHOD_ROLE",
+      "Worker model",
+      "You are a worker",
+      "## Build",
+      "## Behavior and checks",
+      "## Done when",
+      "## Already on the branch",
+      "READY FOR REVIEW",
+    ]) {
+      expect(body).not.toContain(removed);
+    }
+    expect(f.writes.some((write) => write.path === "/repos/example/project/pulls/27")).toBe(false);
     f.done();
   }
 );
-
-test("open-task reports the created draft when updating commands fails", async () => {
-  const f = fixture();
-  f.set({ fail: "/pulls/27" });
-  await expect(f.flow().open({ issue: "8" })).rejects.toThrow(
-    "Created draft PR #27, but command rendering failed; inspect it before retrying open-task"
-  );
-  expect(f.writes.filter((write) => write.path.endsWith("/pulls"))).toHaveLength(1);
-  expect(f.touched).toEqual([]);
-  f.done();
-});
 
 test("open-task --part records matching structured relations without closing syntax", async () => {
   const f = fixture();
@@ -1737,14 +1743,14 @@ test("open-task creates a draft with a manual Development link, clears issue Pro
   f.done();
 });
 
-test("expensive breakpoints tell workers to HANDOFF and end turn; unapproved exception is posted", async () => {
+test("expensive breakpoints stay verbatim; unapproved exception is posted", async () => {
   const f = fixture();
   f.set({ body: "## Handoff breakpoints\n\nAfter implementation.", issueApproved: false });
   await f
     .flow()
     .open({ issue: "8", model: "astra", ownerApproved: true, unapproved: "Reproducer attached" });
   expect(f.writes.find((w) => w.path.endsWith("/pulls"))!.body.body).toContain(
-    "then end your turn"
+    "## Task specification\n\n## Handoff breakpoints\n\nAfter implementation."
   );
   expect(f.writes.find((w) => w.path.endsWith("/8/comments"))!.body.body).toContain(
     "Reproducer attached"
@@ -2351,6 +2357,7 @@ test("open held task, release, and worker start; second release has no side effe
         return {
           pr: 27,
           issue: 8,
+          base: "dev",
           branch: "8-task",
           title: String(pr.title),
           body: String(pr.body),

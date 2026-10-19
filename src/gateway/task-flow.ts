@@ -26,6 +26,7 @@ import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
 import { runVerifyHook } from "./verify-hook.js";
+import packageInfo from "../../package.json" with { type: "json" };
 import { WorktreeService } from "./worktrees.js";
 
 interface Host {
@@ -276,71 +277,29 @@ export class TaskFlow {
         : resolve(dirname(fileURLToPath(import.meta.url)), "../templates/task-pr.md"),
       "utf8"
     );
-    const renderBody = (taskPr: string): string =>
-      template
-        .replaceAll("<task PR number>", taskPr)
-        .replaceAll(
-          "<delivery title>",
-          `${title}${input.issue ? ` (${input.part ? "part of " : ""}issue #${input.issue})` : ""}`
-        )
-        .replace(
-          "<!-- points_open: <issue estimate> -->",
-          pointsOpen === undefined ? "" : `<!-- points_open: ${pointsOpen} -->`
-        )
-        .replaceAll(
-          "<link and agreement, or explicit direct go>",
-          issue
-            ? `https://github.com/${this.repo}/issues/${input.issue}; ${input.unapproved ? `unapproved exception: ${input.unapproved}` : input.direct ? "direct owner go" : "approved specification"} reproduced below`
-            : `Direct owner go: ${input.direct}`
-        )
-        .replaceAll("<actual values from project config>", `base ${base}; branch ${branch}`)
-        .replaceAll(
-          "<family and exact id; any required owner authorization>",
-          `${model.family}: ${model.model}`
-        )
-        .replaceAll("<specifics>", "See the task specification below.")
-        .replace(
-          /<Existing helpers,[\s\S]*?debt from examples\.>/,
-          "Read the repository's current helpers and preserve existing interfaces."
-        )
-        .replaceAll(
-          "<Deliverable, owning path/API and observable acceptance case.>",
-          "Implement the approved specification below."
-        )
-        .replaceAll(
-          "<Lifecycle/order/units/boundaries and integration consequences, if applicable.>",
-          "Preserve the boundaries and acceptance cases in that specification."
-        )
-        .replace(
-          /<For each touched area,[\s\S]*?before launch\. State where any new recurring rule and guard belong\.>/,
-          "Follow the local routing entry point and its tooling rules."
-        )
-        .replace(
-          /<Exclusions,[\s\S]*?removing issue\.>/,
-          "Anything outside the task specification."
-        )
-        .replace(
-          /<actual configured commands[\s\S]*?needed>\./,
-          (Array.isArray(object(this.config.checks).verify)
-            ? (object(this.config.checks).verify as string[]).join("; ")
-            : "Run the project's configured checks") + "."
-        )
-        .replace(
-          /<Measurable acceptance cases,[\s\S]*?unresolved blockers\.>/,
-          "All specification acceptance cases pass, with green CI and no unresolved blockers."
-        ) +
-      `\n\n${input.hold ? `${holdBanner}\n\n` : ""}## Task specification\n\n${spec}\n` +
-      (handoff
-        ? "\nAt each defined breakpoint post `[worker] HANDOFF` with what is done, uncommitted files and remaining mechanical steps, then end your turn.\n"
-        : "") +
-      `\n<!-- vmethod-task ${JSON.stringify({ issues: issue ? [Number(input.issue)] : [], ...(input.part ? { part: true } : {}), ...(input.unapproved ? { scopeException: input.unapproved } : {}) })} -->\n`;
-    const checkedBody = async (taskPr: string): Promise<string> => {
-      const body = renderBody(taskPr);
-      guardClosingKeywords(body);
-      await checkMarkdown(this.root, body);
-      return body;
+    const values: Record<string, string> = {
+      "delivery title": `${title}${input.issue ? ` (${input.part ? "part of " : ""}issue #${input.issue})` : ""}`,
+      "issue estimate": String(pointsOpen ?? ""),
+      "approval basis": issue
+        ? `https://github.com/${this.repo}/issues/${input.issue}; ${input.unapproved ? `unapproved exception: ${input.unapproved}` : "approved specification"}.`
+        : `Direct owner go: ${input.direct}`,
+      version: packageInfo.version,
+      "hold banner": input.hold ? `${holdBanner}\n\n` : "",
+      "task specification": spec,
+      "task metadata": JSON.stringify({
+        issues: issue ? [Number(input.issue)] : [],
+        ...(input.part ? { part: true } : {}),
+        ...(input.unapproved ? { scopeException: input.unapproved } : {}),
+      }),
     };
-    const body = await checkedBody("<task PR number>");
+    // Substitute once: issue text containing template tokens must remain verbatim.
+    const body = template
+      .replace("<!-- points_open: <issue estimate> -->", () =>
+        pointsOpen === undefined ? "" : `<!-- points_open: ${pointsOpen} -->`
+      )
+      .replace(/<([^<>]+)>/g, (token, key: string) => values[key] ?? token);
+    guardClosingKeywords(body);
+    await checkMarkdown(this.root, body);
     if (input.unapproved && issue) {
       await this.post(input.issue!, `[orchestrator] Unapproved exception\n\n${input.unapproved}`);
     }
@@ -373,18 +332,6 @@ export class TaskFlow {
     );
     const ref = String(created.number);
     this.number(ref);
-    // GitHub assigns the task PR number on creation, independently of the issue number.
-    const finalBody = await checkedBody(ref);
-    try {
-      await this.host.github.rest(this.path(ref, "pulls"), "PATCH", { body: finalBody }, false);
-    } catch (error) {
-      throw new Error(
-        `Created draft PR #${ref}, but command rendering failed; inspect it before retrying open-task`,
-        {
-          cause: error,
-        }
-      );
-    }
     const pr = { id: created.node_id };
     if (this.config.track) {
       await this.host.github.rest(`${this.path(ref)}/labels`, "POST", {

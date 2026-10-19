@@ -514,11 +514,12 @@ class GatewayServer {
     const snapshot =
       /<!--\s*points_open:\s*(\d+(?:\.\d+)?)\s*-->/.exec(body) ??
       /\*\*Estimate:\*\*\s*(\d+(?:\.\d+)?)/.exec(body);
-    const model = this.projectValue(item, "Model") ?? /\*\*Model:\*\*\s*`?([\w-]+)/.exec(body)?.[1];
+    const model = this.projectValue(item, "Model");
     const progress = this.projectValue(item, "Progress");
     return {
       pr,
       issue,
+      base: String(item.baseRefName),
       branch: String(item.headRefName),
       title: String(item.title),
       body,
