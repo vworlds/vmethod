@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { basename } from "node:path";
-import { expect, onTestFinished, test } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import type { Dependencies } from "../../src/gateway/client.js";
 import { WorktreeService, type WorktreeTask } from "../../src/gateway/worktrees.js";
 import { fixture } from "../helpers.js";
@@ -115,6 +115,25 @@ test.each([false, true])(
       `Total ${prune ? "freed" : "removable"}: 128 KiB + 1 tree(s) with size unknown`
     );
     expect(trees.map((tree) => existsSync(tree.path))).toEqual([!prune, !prune]);
+  },
+  15000
+);
+
+test.each(["stopped", "live", "unknown"] as const)(
+  "backlog pruning closes sessions before safe removal (%s)",
+  async (status) => {
+    const f = setup();
+    const tree = f.add(1, "CLOSED");
+    const close = vi.fn(async () => {
+      expect(existsSync(tree.path)).toBe(true);
+      return true;
+    });
+    const service = new WorktreeService(f.root, f.config, {}, f.deps, async () => status, close);
+    await service.list(async () => tree.task, false);
+    expect(close).not.toHaveBeenCalled();
+    await service.list(async () => tree.task, true);
+    expect(close.mock.calls).toEqual(status === "stopped" ? [[1]] : []);
+    expect(existsSync(tree.path)).toBe(status !== "stopped");
   },
   15000
 );

@@ -209,14 +209,20 @@ class GatewayServer {
       const pr = this.localNumber(args[1]);
       const task = await this.worktreeTask(pr);
       const stopped = await this.workers.command(args.slice(0, 2));
-      return `${stopped}\nWorktree cleanup ${(await this.worktrees.cleanup(task)) ? "complete" : "skipped; see safety report"}`;
+      const cleaned = await this.worktrees.cleanup(task);
+      return `${stopped}\nWorktree cleanup ${cleaned ? "complete" : "skipped; see safety report"}`;
     }
     return this.workers.command(args);
   };
 
   private get worktrees(): WorktreeService {
-    return new WorktreeService(this.root, this.config, this.env, this.deps, (pr) =>
-      this.deps.workers ? this.deps.workers.status(pr) : this.workers.mergeStatus(pr)
+    return new WorktreeService(
+      this.root,
+      this.config,
+      this.env,
+      this.deps,
+      (pr) => (this.deps.workers ? this.deps.workers.status(pr) : this.workers.mergeStatus(pr)),
+      (pr) => this.workers.closeSession(pr)
     );
   }
 
@@ -843,6 +849,7 @@ class GatewayServer {
       workers: this.deps.workers ?? {
         status: (pr, forMerge) => this.workers.mergeStatus(pr, forMerge),
         stop: (pr) => this.workers.command(["stop", String(pr)]),
+        close: (pr) => this.workers.closeSession(pr),
         resume: (pr, prompt) => this.workers.resume(pr, prompt),
       },
     };

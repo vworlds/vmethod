@@ -1,4 +1,13 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { parse } from "graphql";
 import { stringify } from "yaml";
@@ -364,6 +373,189 @@ function fixture(prefix?: string, legacy = false) {
   };
 }
 
+test("session closure preserves all metadata, is idempotent and can be reopened", async () => {
+  const f = fixture();
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  // Session envelope follows the recorded opencode-session.json capture; metadata
+  // exercises the OpenChamber work fields verified live in task 152.
+  let metadata = {
+    unrelated: { nested: [1, "retained"] },
+    openchamber: {
+      links: [{ url: "https://example.invalid/task" }],
+      work: { state: "open", custom: true, closedBy: "previous" },
+    },
+  };
+  const original = structuredClone(metadata);
+  const patches: unknown[] = [];
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (new URL(String(input)).pathname === "/api/session/ses_test") {
+      if (init?.method === "GET") {
+        return Response.json({
+          ...sessionCapture,
+          data: { ...sessionCapture.data, id: "ses_test", directory: f.directory, metadata },
+        });
+      }
+      if (init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body));
+        expect(Object.keys(body)).toEqual(["metadata"]);
+        patches.push(body);
+        metadata = body.metadata;
+        return Response.json({ data: {} });
+      }
+      throw new Error(`Unexpected session method ${init?.method}`);
+    }
+    return fetch(input, init);
+  };
+  const hooks = new Proxy({} as WorkerHooks, {
+    get: (_, key) => {
+      throw new Error(`Unexpected hook ${String(key)}`);
+    },
+  });
+  const service = new WorkerService(f.root, getConfig(f.root, {}), f.env, f.deps, hooks);
+  expect(await service.closeSession(31)).toBe(true);
+  expect(patches).toEqual([
+    {
+      metadata: {
+        ...original,
+        openchamber: {
+          ...original.openchamber,
+          work: {
+            ...original.openchamber.work,
+            state: "closed",
+            closedAt: "1970-01-01T00:00:00.000Z",
+            closedBy: "vmethod",
+          },
+        },
+      },
+    },
+  ]);
+  expect(await service.closeSession(31)).toBe(true);
+  expect(patches).toHaveLength(1);
+  expect(await f.transport.call("worker", { args: ["reopen", "31"] }, f.ctx)).toBe(
+    "Reopened ses_test"
+  );
+  expect(metadata.openchamber.work.state).toBe("open");
+  expect(metadata.unrelated).toEqual(original.unrelated);
+  expect(patches).toHaveLength(2);
+  f.done();
+});
+
+test.each(["success", "failure", "existing", "populated", "symlink-parent"])(
+  "session PATCH 404 uses only its own missing-directory placeholder (%s)",
+  async (scenario) => {
+    const f = fixture("auto-");
+    await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+    if (scenario !== "existing") {
+      rmSync(f.directory, { recursive: true });
+    }
+    if (scenario === "symlink-parent") {
+      renameSync(join(f.root, ".worktrees"), join(f.root, "trees-alias"));
+      symlinkSync(join(f.root, "trees-alias"), join(f.root, ".worktrees"), "dir");
+    }
+    const fetch = f.deps.fetch;
+    const attempts: boolean[] = [];
+    f.deps.fetch = async (input, init) => {
+      if (new URL(String(input)).pathname === "/api/session/ses_test" && init?.method === "PATCH") {
+        const present = existsSync(f.directory);
+        attempts.push(present);
+        if (scenario === "existing" || !present) {
+          return Response.json({ error: "location missing" }, { status: 404 });
+        }
+        expect(readdirSync(f.directory)).toEqual([]);
+        if (scenario === "populated") {
+          writeFileSync(join(f.directory, "racing-file"), "retain");
+        }
+        return new Response(null, { status: scenario === "failure" ? 503 : 204 });
+      }
+      return fetch(input, init);
+    };
+    const hooks = new Proxy({} as WorkerHooks, {
+      get: (_, key) => {
+        throw new Error(`Unexpected hook ${String(key)}`);
+      },
+    });
+    const service = new WorkerService(f.root, getConfig(f.root, {}), f.env, f.deps, hooks);
+    expect(await service.closeSession(31)).toBe(scenario === "success");
+    expect(attempts).toEqual(
+      scenario === "existing" ? [true] : scenario === "symlink-parent" ? [false] : [false, true]
+    );
+    expect(existsSync(f.directory)).toBe(["existing", "populated"].includes(scenario));
+    if (scenario === "success") {
+      expect(await f.transport.call("worker", { args: ["reopen", "31"] }, f.ctx)).toBe(
+        "Reopened ses_test"
+      );
+      expect(attempts).toEqual([false, true, false, true]);
+      expect(existsSync(f.directory)).toBe(false);
+    }
+    if (scenario === "populated") {
+      expect(readFileSync(join(f.directory, "racing-file"), "utf8")).toBe("retain");
+    }
+    f.done();
+  }
+);
+
+test.each(["live", "unknown", "claude", "patch-failure", "malformed-metadata"])(
+  "session closure safely handles %s",
+  async (scenario) => {
+    const f = fixture();
+    await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+    const file = join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "workers", "31.json");
+    if (scenario === "claude") {
+      const record = JSON.parse(readFileSync(file, "utf8"));
+      record.model.kind = "claude";
+      writeFileSync(file, JSON.stringify(record));
+    }
+    if (scenario === "live") {
+      f.setStatus(true);
+    }
+    const fetch = f.deps.fetch;
+    let patches = 0;
+    f.deps.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (scenario === "claude" && url.origin === "https://opencode.invalid") {
+        throw new Error("Claude must not contact opencode");
+      }
+      if (url.pathname === "/api/session/ses_test" && scenario === "unknown") {
+        return Response.json({ error: "not found" }, { status: 404 });
+      }
+      if (
+        url.pathname === "/api/session/ses_test" &&
+        init?.method === "GET" &&
+        scenario === "malformed-metadata"
+      ) {
+        return Response.json({
+          data: {
+            id: "ses_test",
+            directory: f.directory,
+            metadata: { openchamber: { work: ["must not discard"] } },
+          },
+        });
+      }
+      if (url.pathname === "/api/session/ses_test" && init?.method === "PATCH") {
+        patches++;
+        if (scenario !== "patch-failure") {
+          throw new Error("Unsafe PATCH");
+        }
+        return Response.json({ error: "unavailable" }, { status: 503 });
+      }
+      return fetch(input, init);
+    };
+    const hooks = new Proxy({} as WorkerHooks, {
+      get: (_, key) => {
+        throw new Error(`Unexpected hook ${String(key)}`);
+      },
+    });
+    const service = new WorkerService(f.root, getConfig(f.root, {}), f.env, f.deps, hooks);
+    expect(await service.closeSession(31)).toBe(scenario === "claude");
+    expect(patches).toBe(scenario === "patch-failure" ? 1 : 0);
+    if (scenario !== "claude") {
+      expect(f.deps.report).toHaveBeenCalledWith(expect.stringContaining("session not closed:"));
+    }
+    f.done();
+  }
+);
+
 test("send reads the PR card's blocked Progress and refuses before contacting the worker", async () => {
   const f = fixture();
   await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
@@ -436,6 +628,62 @@ test.each(["closed", "foreign", "unknown-author", "open", "ambiguous"])(
     f.done();
   }
 );
+
+test("worker stop --cleanup closes an unmerged task session before safe removal", async () => {
+  const f = fixture("auto-");
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  f.pr.state = "CLOSED";
+  f.pr.labels = { nodes: [], pageInfo: { hasNextPage: false } };
+  mkdirSync(join(f.root, ".git"));
+  const events: string[] = [];
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith("/interrupt")) {
+      events.push("interrupt");
+      return Response.json({ data: {} });
+    }
+    if (path === "/api/session/ses_test" && init?.method === "PATCH") {
+      expect(JSON.parse(String(init.body)).metadata.openchamber.work.state).toBe("closed");
+      events.push("close");
+      return Response.json({ data: {} });
+    }
+    return fetch(input, init);
+  };
+  f.deps.exec = async (file, args) => {
+    expect(file).toBe("git");
+    const command = args.join(" ");
+    if (command === "rev-parse --git-common-dir") {
+      return join(f.root, ".git");
+    }
+    if (command === "symbolic-ref --quiet HEAD") {
+      return "refs/heads/9-task";
+    }
+    if (command === "status --porcelain --untracked-files=all") {
+      return "";
+    }
+    if (command === "worktree list --porcelain -z") {
+      return `worktree ${f.directory}\0HEAD ${f.pr.headRefOid}\0branch refs/heads/9-task\0\0`;
+    }
+    if (command === "for-each-ref --format=%(objectname) refs/heads/9-task") {
+      return "";
+    }
+    if (command === `worktree remove --force ${f.directory}`) {
+      events.push("remove");
+      rmSync(f.directory, { recursive: true });
+      return "";
+    }
+    if (command === "worktree prune") {
+      return "";
+    }
+    throw new Error(`Unexpected cleanup command ${command}`);
+  };
+  expect(await f.transport.call("worker", { args: ["stop", "31", "--cleanup"] }, f.ctx)).toContain(
+    "Worktree cleanup complete"
+  );
+  expect(events).toEqual(["interrupt", "close", "remove"]);
+  f.done();
+});
 
 test("worker stop --cleanup interrupts first and refuses an unconfirmed stop", async () => {
   const f = fixture("auto-");

@@ -226,6 +226,7 @@ worker send <pr> <file> [--queue|--now]
 worker status [pr]
 worker log <pr> [n]
 worker stop <pr> [--cleanup]
+worker reopen <pr>
 worker wait <pr> [seconds]
 worker permit <pr> [once|always|reject]
 worker model <pr> <family> [--owner-approved] [--why reason]
@@ -726,13 +727,33 @@ branch. Recovery retries unfinished cleanup; completed steps are not replayed.
 Pack branches are retained. A safety skip reports the path and reason without
 blocking the other merge follow-up steps.
 
+Before removing an eligible tree, a separate journaled `session` step hides the
+stopped opencode session from OpenChamber by setting
+`metadata.openchamber.work.state` to `closed`, with `closedAt` and
+`closedBy: vmethod`. It reads and preserves all other metadata, including links;
+it never deletes the session, title or history. Already-closed sessions are a no-op.
+Claude sessions are skipped because they have no OpenChamber list. A failed update
+reports `session not closed: <reason>` without failing the merge; recovery retries
+the unfinished session step.
+
+OpenCode requires the session's location directory for PATCH. If an old task's
+tree is already gone and the update returns 404, cleanup temporarily creates an
+empty directory at the recorded, validated path and retries. It removes only its
+own empty placeholder afterward, never an existing directory or newly added files.
+
+Use `vmethod worker reopen <pr>` to show an old recorded opencode session again for
+inspection. This sets its work state to `open`, preserves the remaining metadata
+and does not restart the worker or recreate its worktree. Claude is a no-op.
+
 For a task closed without merging, the watcher reports a cleanup candidate. Run
 `vmethod worker stop <pr> --cleanup` to interrupt its recorded session and attempt
-the same guarded cleanup. Stopping alone never removes files.
+the same guarded cleanup and session closure. Stopping alone never removes files
+or hides sessions.
 
 Use orchestrator-only `vmethod worktrees` to list merged/closed task trees and their
 sizes in allocated KiB, with a total of removable space. `vmethod worktrees --prune`
 rechecks the guards, removes eligible trees and reports the total actually freed.
+It also closes their stopped opencode sessions with the same best-effort update.
 Size measurements are best-effort, with a separate two-minute timeout per tree.
 A failed or invalid measurement prints `size unknown` and does not prevent listing
 or guarded pruning of that tree or later trees. Totals show the measured KiB plus

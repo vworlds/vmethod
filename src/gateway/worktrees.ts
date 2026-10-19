@@ -28,7 +28,8 @@ export class WorktreeService {
     private config: Config,
     private env: NodeJS.ProcessEnv,
     private deps: Dependencies,
-    private status: (pr: number) => Promise<"live" | "stopped" | "unknown">
+    private status: (pr: number) => Promise<"live" | "stopped" | "unknown">,
+    private closeSession?: (pr: number) => Promise<boolean>
   ) {
     const branches = object(config.branches);
     this.main = resolve(String(branches.mainCheckout ?? root));
@@ -41,7 +42,10 @@ export class WorktreeService {
     return (await this.registered()).filter((tree) => this.safePath(tree.path, tree.branch));
   }
 
-  /** Print sizes/reasons and optionally remove eligible trees; never stop sessions implicitly. */
+  /** Print sizes/reasons and optionally remove eligible trees and close their
+   * stopped sessions; never stop sessions implicitly. A false closure is reported
+   * by the backend without failing pruning of later trees.
+   */
   async list(
     taskFor: (branch: string) => Promise<WorktreeTask | undefined>,
     prune: boolean
@@ -82,10 +86,15 @@ export class WorktreeService {
   async cleanup(task: WorktreeTask): Promise<boolean> {
     validateBranch(task.branch);
     const path = resolve(this.parent, `${this.prefix}${task.branch}`);
-    const reason = await this.reason(path, task);
-    if (reason) {
-      this.deps.report(`${path}: skipped: ${reason}`);
+    if (!(await this.eligible(task))) {
       return false;
+    }
+    if (this.closeSession) {
+      await this.closeSession(task.pr);
+      // Closure can take time: recheck every guard before removing files.
+      if (!(await this.eligible(task))) {
+        return false;
+      }
     }
     // An absent directory may be a retry after removal but before prune/branch deletion.
     const localHead = (
@@ -110,6 +119,18 @@ export class WorktreeService {
       }
       // Compare-and-delete: a commit racing this safety check must retain its ref.
       await this.git().run("update-ref", "-d", `refs/heads/${task.branch}`, head);
+    }
+    return true;
+  }
+
+  /** Apply the same non-destructive safety guard before session closure. */
+  async eligible(task: WorktreeTask): Promise<boolean> {
+    validateBranch(task.branch);
+    const path = resolve(this.parent, `${this.prefix}${task.branch}`);
+    const reason = await this.reason(path, task);
+    if (reason) {
+      this.deps.report(`${path}: skipped: ${reason}`);
+      return false;
     }
     return true;
   }

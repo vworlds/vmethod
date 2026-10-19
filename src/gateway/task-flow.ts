@@ -1112,11 +1112,26 @@ export class TaskFlow {
       });
     }
     if (!pack) {
-      await step("worktree", async () =>
-        new WorktreeService(this.root, this.config, this.env, this.deps, (pr) =>
-          this.status(String(pr))
-        ).cleanup({ pr: this.number(ref), branch, base, head, state: "MERGED" })
+      const worktrees = new WorktreeService(this.root, this.config, this.env, this.deps, (pr) =>
+        this.status(String(pr))
       );
+      const task = { pr: this.number(ref), branch, base, head, state: "MERGED" };
+      await step("session", async () => {
+        if (!(await worktrees.eligible(task))) {
+          return false;
+        }
+        if (!this.deps.workers?.close) {
+          this.deps.report(`#${ref} session not closed: backend unavailable`);
+          return false;
+        }
+        try {
+          return await this.deps.workers.close(this.number(ref));
+        } catch (error) {
+          this.deps.report(`#${ref} session not closed: ${(error as Error).message}`);
+          return false;
+        }
+      });
+      await step("worktree", async () => worktrees.cleanup(task));
     }
     // All state/board/reporting is complete before the package may replace itself.
     await step("follow-up", async () => {

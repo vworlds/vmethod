@@ -27,16 +27,18 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { loadYaml, type Config } from "../config.js";
 import {
   classifyTurn,
   OpencodeClient,
+  OpencodeError,
   type Dependencies,
   type WorkerSessionStatus,
 } from "./client.js";
@@ -425,6 +427,71 @@ export class WorkerService {
       title: this.sessionTitle(record.pr),
     });
   }
+  private async setWorkState(record: Session, state: "open" | "closed"): Promise<void> {
+    try {
+      await this.updateWorkState(record, state);
+    } catch (error) {
+      if (
+        !(error instanceof OpencodeError) ||
+        error.status !== 404 ||
+        existsSync(record.directory)
+      ) {
+        throw error;
+      }
+      const directory = workerWorktree(this.root, this.config, { directory: record.directory });
+      if (resolve(directory) !== resolve(record.directory)) {
+        throw new Error("session directory mismatch", { cause: error });
+      }
+      if (realpathSync(dirname(directory)) !== resolve(dirname(directory))) {
+        throw new Error("session directory parent is a symlink alias", { cause: error });
+      }
+      // OpenCode resolves PATCH through the session's location directory. Old
+      // tasks may have lost their tree already; never remove a pre-existing path.
+      mkdirSync(directory);
+      try {
+        await this.updateWorkState(record, state);
+      } finally {
+        // Refuse to remove anything if another process populated the placeholder.
+        rmdirSync(directory);
+      }
+    }
+  }
+  private async updateWorkState(record: Session, state: "open" | "closed"): Promise<void> {
+    const response = object(await this.client().request("GET", this.idPath(record)));
+    const session = object(response.data);
+    if (session.id !== record.id) {
+      throw new Error("session response missing or mismatched");
+    }
+    const metadata = object(session.metadata);
+    const openchamber = object(metadata.openchamber);
+    const work = object(openchamber.work);
+    for (const value of [session.metadata, metadata.openchamber, openchamber.work]) {
+      if (
+        value !== undefined &&
+        (value === null || typeof value !== "object" || Array.isArray(value))
+      ) {
+        throw new Error("invalid session metadata; refusing lossy update");
+      }
+    }
+    if (work.state === state) {
+      return;
+    }
+    await this.client().request("PATCH", this.idPath(record), {
+      metadata: {
+        ...metadata,
+        openchamber: {
+          ...openchamber,
+          work: {
+            ...work,
+            state,
+            ...(state === "closed"
+              ? { closedAt: new Date(this.deps.now()).toISOString(), closedBy: "vmethod" }
+              : {}),
+          },
+        },
+      },
+    });
+  }
   private claudeLog(record: Session): string[] {
     const file = join(record.directory, ".tmp/claude-worker.log");
     return existsSync(file) ? readFileSync(file, "utf8").trim().split("\n") : [];
@@ -496,6 +563,8 @@ export class WorkerService {
    * entry; headless Claude records are reported with an explicit relaunch route.
    * Only --from-legacy may snapshot a missing opening Estimate from the linked
    * issue, recording "legacy snapshot at adoption" in the persisted segment.
+   * `reopen <pr>` restores only OpenChamber list visibility, without restarting
+   * the worker or recreating a removed worktree; Claude sessions are skipped.
    */
   async command(args: string[]): Promise<string> {
     const [verb, ref, ...rest] = args;
@@ -551,7 +620,18 @@ export class WorkerService {
     }
     const pr = Number(ref);
     if (
-      !["start", "adopt", "send", "status", "log", "stop", "wait", "permit", "model"].includes(verb)
+      ![
+        "start",
+        "adopt",
+        "send",
+        "status",
+        "log",
+        "stop",
+        "wait",
+        "permit",
+        "model",
+        "reopen",
+      ].includes(verb)
     ) {
       throw new Error("Unknown worker command");
     }
@@ -579,6 +659,16 @@ export class WorkerService {
         throw new Error(`No session recorded for PR #${pr}`);
       }
       const path = this.idPath(record);
+      if (verb === "reopen") {
+        if (rest.length) {
+          throw new Error("Usage: worker reopen <pr>");
+        }
+        if (record.model.kind === "claude") {
+          return "Claude session skipped (no OpenChamber list)";
+        }
+        await this.setWorkState(record, "open");
+        return `Reopened ${record.id}`;
+      }
       if (verb === "stop") {
         if (rest.length) {
           throw new Error("Usage: worker stop <pr>");
@@ -749,6 +839,29 @@ export class WorkerService {
           ? "live"
           : "stopped";
     });
+  }
+  /** Hide a stopped opencode session without deleting history; failures remain retryable. */
+  async closeSession(pr: number): Promise<boolean> {
+    try {
+      return await this.locked(pr, async () => {
+        const record = this.read(pr);
+        if (!record) {
+          throw new Error("session unknown");
+        }
+        if (record.model.kind === "claude") {
+          return true;
+        }
+        const status = await this.status(record, false);
+        if (status.active || ["session unknown", "permission-wait"].includes(status.reason)) {
+          throw new Error("worker session live or unknown; stop it first");
+        }
+        await this.setWorkState(record, "closed");
+        return true;
+      });
+    } catch (error) {
+      this.deps.report(`#${pr} session not closed: ${this.redact((error as Error).message)}`);
+      return false;
+    }
   }
   /** Collect activity/usage and this PR's segment cost, without GitHub reads. */
   async watchStatus(pr: number): Promise<WorkerSessionStatus> {

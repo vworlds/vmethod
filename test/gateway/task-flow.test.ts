@@ -1169,8 +1169,21 @@ test.each([
   f.done();
 });
 
-test("merge follow-up journals an idempotent worktree cleanup step", async () => {
+test("merge follow-up journals idempotent worktree and session cleanup steps", async () => {
   const f = fixture();
+  let closed = 0;
+  f.deps.workers!.close = async (pr) => {
+    expect(pr).toBe(27);
+    const journal = JSON.parse(
+      readFileSync(
+        join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+        "utf8"
+      )
+    );
+    expect(journal.done).not.toContain("worktree");
+    closed++;
+    return true;
+  };
   await f.flow().merge("27");
   await f.flow().merge("27");
   const journal = JSON.parse(
@@ -1180,8 +1193,50 @@ test("merge follow-up journals an idempotent worktree cleanup step", async () =>
     )
   );
   expect(journal.done.filter((step: string) => step === "worktree")).toEqual(["worktree"]);
+  expect(journal.done.filter((step: string) => step === "session")).toEqual(["session"]);
+  expect(closed).toBe(1);
   f.done();
 });
+
+test("merge session failure is nonfatal and retried without replaying completed steps", async () => {
+  const f = fixture();
+  let attempts = 0;
+  f.deps.workers!.close = async () => {
+    if (++attempts === 1) {
+      throw new Error("PATCH unavailable");
+    }
+    return true;
+  };
+  expect(await f.flow().merge("27")).toContain("Merged");
+  expect(f.events).toContain("report #27 session not closed: PATCH unavailable");
+  expect(await f.flow().merge("27")).toContain("Merged");
+  expect(await f.flow().merge("27")).toContain("Merged");
+  expect(attempts).toBe(2);
+  f.done();
+});
+
+test.each(["live", "unknown"] as const)(
+  "merge recovery never closes a %s session",
+  async (worker) => {
+    const f = fixture();
+    f.set({ state: "MERGED", worker });
+    let closed = 0;
+    f.deps.workers!.close = async () => {
+      closed++;
+      return true;
+    };
+    expect(await f.flow().merge("27")).toContain("Merged");
+    expect(closed).toBe(0);
+    const journal = JSON.parse(
+      readFileSync(
+        join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+        "utf8"
+      )
+    );
+    expect(journal.done).not.toContain("session");
+    f.done();
+  }
+);
 
 test("merged follow-up stops before removing the real task directory and branch, and retry is a no-op", async () => {
   const f = fixture();
