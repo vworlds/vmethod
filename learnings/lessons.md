@@ -33,3 +33,14 @@ uncommitted diff and its last focused test result.
 3. Cancel any scheduled resume for the expensive model.
 4. Record the switch in the model log as a new `segment` with `why: "quota"` (or
    `"escalation"` / `"finish"`).
+
+### Escalate luna workers that stop without a status
+
+_Source: vmethod orchestrator. Evidence: vmethod PRs #89, #92, #104, #105, #107, #109,
+#119, #123 and #124 (2026-10-18)._
+
+Luna workers may end a turn with a status-less summary such as “not implemented yet” or
+“tests not run” instead of posting READY, QUESTION or BLOCKED. Since #94, the watcher asks
+the CHECK-IN question, at most twice per round. If a worker stops without a status twice in
+the same round, escalate the task to sol (`worker model <pr> sol`). Treat Luna's own red
+tests reported as BLOCKED as a stop and escalate the same way.

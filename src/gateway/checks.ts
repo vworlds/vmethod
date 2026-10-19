@@ -6,6 +6,7 @@ import { reference, type ThreadRef } from "./refs.js";
 import { taskBranch, validateBranch } from "./git.js";
 import type { Operations, Verdict } from "./transport.js";
 import { validateLearningPr } from "./learning-check.js";
+import { liveBaseHead } from "./base-head.js";
 
 export interface CiSnapshot {
   target: ThreadRef;
@@ -104,8 +105,10 @@ export class ChecksService {
       : { code: 0, text: "checks: green; CI tested the current base" };
   }
 
+  /** Pin CI evidence to the live branch head, including a second read to detect movement. */
   async snapshot(ref: string): Promise<CiSnapshot> {
     const pr = await this.pull(ref);
+    pr.baseSha = await liveBaseHead(pr.base, { github: this.github, repo: pr.target.repo });
     const runs = await this.runs(pr.target, pr.head);
     const green = runs.length > 0 && runs.every((run) => completed(run) && successful(run));
     // A commit's author/committer timestamp is not evidence of what CI checked out.
@@ -148,7 +151,11 @@ export class ChecksService {
       }
     }
     const current = await this.pull(ref);
-    if (current.head !== pr.head || current.baseSha !== pr.baseSha) {
+    const currentBase = await liveBaseHead(current.base, {
+      github: this.github,
+      repo: current.target.repo,
+    });
+    if (current.head !== pr.head || current.base !== pr.base || currentBase !== pr.baseSha) {
       return { ...pr, runs: [], green: false, stale: true };
     }
     return { ...pr, runs, green, stale };

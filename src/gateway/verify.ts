@@ -13,6 +13,7 @@ import { ChecksService } from "./checks.js";
 import { GitTransport } from "./git.js";
 import { runVerifyHook } from "./verify-hook.js";
 import type { Operations, Verdict } from "./transport.js";
+import { liveBaseHead } from "./base-head.js";
 
 /** Orchestrator integration work; project recipes receive no gateway credentials. */
 export class VerificationService {
@@ -66,7 +67,7 @@ export class VerificationService {
       throw new Error("refresh-checks: fetch failed");
     }
     const head = (await git.run("rev-parse", `refs/remotes/origin/${snapshot.branch}`)).trim();
-    const base = (await git.run("rev-parse", `refs/remotes/origin/${snapshot.base}`)).trim();
+    const base = await liveBaseHead(snapshot.base, { git });
     if (head !== snapshot.head || base !== snapshot.baseSha) {
       return { code: 2, text: "refresh-checks: head or base moved; run again" };
     }

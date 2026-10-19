@@ -39,6 +39,13 @@ const checks = (runs = [run()]) => ({
   json: { check_runs: runs },
 });
 const ctx = { role: "worker", taskPr: 3 } as const;
+// Project commit.sha from the Get a branch response; substitute only the SHA.
+// Wire shape: https://docs.github.com/en/rest/branches/branches#get-a-branch
+const liveBase = (sha = base) => ({
+  path: `${prefix}/branches/dev`,
+  method: "GET",
+  json: { commit: { sha } },
+});
 
 test("wait-checks green pins the head and emits a final-line verdict using only REST", async () => {
   const f = fixtureServer([pull(), checks(), pull()]);
@@ -270,12 +277,56 @@ test.each([base, "c".repeat(40)])(
   async (testedBase) => {
     const f = orchestratorFixtureServer([
       pull(),
+      liveBase(),
       checks([run({ check_suite: { id: 50 } })]),
       workflow(testedBase),
       pull(),
+      liveBase(),
     ]);
     const result = await f.gateway.call("checkTaskCi", { ref: "3" }, { role: "orchestrator" });
     expect(result.code).toBe(testedBase === base ? 0 : 2);
+    f.done();
+  }
+);
+
+test("check-task-ci detects a live base move even when the PR and CI retain the old base", async () => {
+  const f = orchestratorFixtureServer([
+    pull(),
+    liveBase("c".repeat(40)),
+    checks([run({ check_suite: { id: 50 } })]),
+    workflow(),
+    pull(),
+    liveBase("c".repeat(40)),
+  ]);
+  expect(await f.gateway.call("checkTaskCi", { ref: "3" }, { role: "orchestrator" })).toEqual({
+    code: 2,
+    text: "checks: green, but the base moved or CI base is unknown; run refresh-checks",
+  });
+  f.done();
+});
+
+test("check-task-ci fails closed when the live base moves while reading CI evidence", async () => {
+  const f = orchestratorFixtureServer([
+    pull(),
+    liveBase(),
+    checks([run({ check_suite: { id: 50 } })]),
+    workflow(),
+    pull(),
+    liveBase("c".repeat(40)),
+  ]);
+  const result = await f.gateway.call("checkTaskCi", { ref: "3" }, { role: "orchestrator" });
+  expect(result.code).toBe(2);
+  expect(result.text).not.toContain("CI tested the current base");
+  f.done();
+});
+
+test.each([undefined, "not-a-sha"])(
+  "check-task-ci rejects an invalid live base SHA %s",
+  async (sha) => {
+    const f = orchestratorFixtureServer([pull(), { ...liveBase(), json: { commit: { sha } } }]);
+    await expect(
+      f.gateway.call("checkTaskCi", { ref: "3" }, { role: "orchestrator" })
+    ).rejects.toThrow("Invalid live base SHA");
     f.done();
   }
 );
@@ -285,7 +336,7 @@ test.each([
   { runs: [run({ status: "queued", conclusion: null })], code: 2 },
   { runs: [run({ conclusion: "failure" })], code: 1 },
 ])("check-task-ci gives a one-shot non-green verdict $code", async ({ runs, code }) => {
-  const f = orchestratorFixtureServer([pull(), checks(runs), pull()]);
+  const f = orchestratorFixtureServer([pull(), liveBase(), checks(runs), pull(), liveBase()]);
   expect((await f.gateway.call("checkTaskCi", { ref: "3" }, { role: "orchestrator" })).code).toBe(
     code
   );

@@ -778,6 +778,7 @@ test("grades stage locally, batch into one PR, and start fresh after merge witho
   };
   const workers = new WorkerService(f.root, f.config, f.env, f.deps, {
     metadata: async (pr) => ({
+      base: "dev",
       pr,
       issue: pr + 1,
       branch: "task",

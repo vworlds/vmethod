@@ -54,6 +54,13 @@ const workflow = (stale: boolean) => ({
     ],
   },
 });
+// Project commit.sha from the Get a branch response; substitute only the SHA.
+// Wire shape: https://docs.github.com/en/rest/branches/branches#get-a-branch
+const liveBase = (sha = base) => ({
+  path: `${prefix}/branches/dev`,
+  method: "GET",
+  json: { commit: { sha } },
+});
 const transfer = (command: string, ...refs: string[]) => [
   "-c",
   "credential.helper=",
@@ -245,11 +252,32 @@ console.log('ok fake hook'); console.error('hook stderr captured'); process.exit
 );
 
 test("refresh-checks leaves an already-current green branch untouched", async () => {
-  const f = fixtureServer([pull(), runs, workflow(false), pull()]);
+  const f = fixtureServer([pull(), liveBase(), runs, workflow(false), pull(), liveBase()]);
   expect(await f.gateway.call("refreshChecks", { ref: "3" }, { role: "orchestrator" })).toEqual({
     code: 0,
     text: "refresh-checks: base has not moved; no push",
   });
+  f.done();
+});
+
+test("refresh-checks retries without pushing if the fetched base moved after the CI snapshot", async () => {
+  const f = fixtureServer([pull(), liveBase(), runs, workflow(true), pull(), liveBase()]);
+  const done = gitScript(f, [
+    {
+      args: transfer(
+        "fetch",
+        "+refs/heads/dev:refs/remotes/origin/dev",
+        "+refs/heads/3-task:refs/remotes/origin/3-task"
+      ),
+    },
+    { args: ["rev-parse", "refs/remotes/origin/3-task"], output: sha },
+    { args: ["rev-parse", "refs/remotes/origin/dev"], output: second },
+  ]);
+  expect(await f.gateway.call("refreshChecks", { ref: "3" }, { role: "orchestrator" })).toEqual({
+    code: 2,
+    text: "refresh-checks: head or base moved; run again",
+  });
+  done();
   f.done();
 });
 
@@ -359,77 +387,83 @@ test("verify aborts a failed test merge and never invokes the hook", async () =>
   f.done();
 });
 
-test("refresh-checks creates a two-parent commit without modifying a checkout and pushes through the full gateway policy", async () => {
-  const f = fixtureServer([
-    pull(),
-    runs,
-    workflow(true),
-    pull(),
-    graph({
-      repository: {
-        pullRequest: item({
-          author: actor(1),
-          headRefName: "3-task",
-          baseRefName: "dev",
-          state: "OPEN",
-          headRepository: { nameWithOwner: "example/project" },
-        }),
+test.each([false, true])(
+  "refresh-checks creates a two-parent commit without modifying a checkout and pushes through the full gateway policy (live base moved=%s)",
+  async (moved) => {
+    const currentBase = moved ? second : base;
+    const f = fixtureServer([
+      pull(),
+      liveBase(currentBase),
+      runs,
+      workflow(!moved),
+      pull(),
+      liveBase(currentBase),
+      graph({
+        repository: {
+          pullRequest: item({
+            author: actor(1),
+            headRefName: "3-task",
+            baseRefName: "dev",
+            state: "OPEN",
+            headRepository: { nameWithOwner: "example/project" },
+          }),
+        },
+      }),
+    ]);
+    const done = gitScript(f, [
+      {
+        args: transfer(
+          "fetch",
+          "+refs/heads/dev:refs/remotes/origin/dev",
+          "+refs/heads/3-task:refs/remotes/origin/3-task"
+        ),
       },
-    }),
-  ]);
-  const done = gitScript(f, [
-    {
-      args: transfer(
-        "fetch",
-        "+refs/heads/dev:refs/remotes/origin/dev",
-        "+refs/heads/3-task:refs/remotes/origin/3-task"
-      ),
-    },
-    { args: ["rev-parse", "refs/remotes/origin/3-task"], output: sha },
-    { args: ["rev-parse", "refs/remotes/origin/dev"], output: base },
-    { args: ["merge-tree", "--write-tree", sha, base], output: tree },
-    {
-      args: [
-        "-c",
-        "user.name=orchestrator",
-        "-c",
-        "user.email=orchestrator@localhost",
-        "commit-tree",
-        tree,
-        "-p",
-        sha,
-        "-p",
-        base,
-        "-m",
-        "merge: bring in origin/dev to retest against the current base",
-      ],
-      output: commit,
-    },
-    { args: ["rev-parse", "--verify", `${commit}^{commit}`], output: commit },
-    { args: transfer("fetch", "+refs/heads/dev:refs/remotes/origin/dev") },
-    { args: ["rev-list", "--count", `refs/remotes/origin/dev..${commit}`], output: "2" },
-    {
-      args: [
-        "diff",
-        "--name-only",
-        "--diff-filter=ACMR",
-        "-z",
-        `refs/remotes/origin/dev...${commit}`,
-      ],
-      output: "src/ci.ts\0",
-    },
-    { args: transfer("push", `${commit}:refs/heads/3-task`) },
-    { args: ["update-ref", "refs/remotes/origin/3-task", commit] },
-  ]);
-  const result = await f.gateway.call("refreshChecks", { ref: "3" }, { role: "orchestrator" });
-  expect(result.code).toBe(0);
-  expect(result.text).toContain("pushed 3-task at eeeeeee");
-  done();
-  f.done();
-});
+      { args: ["rev-parse", "refs/remotes/origin/3-task"], output: sha },
+      { args: ["rev-parse", "refs/remotes/origin/dev"], output: currentBase },
+      { args: ["merge-tree", "--write-tree", sha, currentBase], output: tree },
+      {
+        args: [
+          "-c",
+          "user.name=orchestrator",
+          "-c",
+          "user.email=orchestrator@localhost",
+          "commit-tree",
+          tree,
+          "-p",
+          sha,
+          "-p",
+          currentBase,
+          "-m",
+          "merge: bring in origin/dev to retest against the current base",
+        ],
+        output: commit,
+      },
+      { args: ["rev-parse", "--verify", `${commit}^{commit}`], output: commit },
+      { args: transfer("fetch", "+refs/heads/dev:refs/remotes/origin/dev") },
+      { args: ["rev-list", "--count", `refs/remotes/origin/dev..${commit}`], output: "2" },
+      {
+        args: [
+          "diff",
+          "--name-only",
+          "--diff-filter=ACMR",
+          "-z",
+          `refs/remotes/origin/dev...${commit}`,
+        ],
+        output: "src/ci.ts\0",
+      },
+      { args: transfer("push", `${commit}:refs/heads/3-task`) },
+      { args: ["update-ref", "refs/remotes/origin/3-task", commit] },
+    ]);
+    const result = await f.gateway.call("refreshChecks", { ref: "3" }, { role: "orchestrator" });
+    expect(result.code).toBe(0);
+    expect(result.text).toContain("pushed 3-task at eeeeeee");
+    done();
+    f.done();
+  }
+);
 
 test("refresh-checks conflict does not create a commit or push", async () => {
-  const f = fixtureServer([pull(), runs, workflow(true), pull()]);
+  const f = fixtureServer([pull(), liveBase(), runs, workflow(true), pull(), liveBase()]);
   const done = gitScript(f, [
     {
       args: transfer(

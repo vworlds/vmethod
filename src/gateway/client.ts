@@ -19,12 +19,14 @@ export interface Dependencies {
     status(pr: number, forMerge?: boolean): Promise<"stopped" | "live" | "unknown">;
     resume(pr: number, prompt: string): Promise<string | void>;
     stop?(pr: number): Promise<string | void>;
+    /** Best-effort list closure; false leaves the merge journal step retryable. */
+    close?(pr: number): Promise<boolean>;
   };
   fetch: typeof fetch;
   exec: (
     file: string,
     args: readonly string[],
-    options?: { cwd?: string; env?: NodeJS.ProcessEnv }
+    options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number }
   ) => Promise<string>;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
@@ -803,7 +805,8 @@ export class OpencodeClient {
   }
 }
 
-class OpencodeError extends Error {
+/** Structured HTTP failure for bounded, status-specific OpenCode recovery. */
+export class OpencodeError extends Error {
   constructor(
     readonly status: number,
     method: string,

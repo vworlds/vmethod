@@ -225,7 +225,8 @@ worker adopt --from-legacy
 worker send <pr> <file> [--queue|--now]
 worker status [pr]
 worker log <pr> [n]
-worker stop <pr>
+worker stop <pr> [--cleanup]
+worker reopen <pr>
 worker wait <pr> [seconds]
 worker permit <pr> [once|always|reject]
 worker model <pr> <family> [--owner-approved] [--why reason]
@@ -317,8 +318,14 @@ segments. Writes use a per-PR exclusive lock and atomic rename. A lock left afte
 a crash must be removed only after confirming its operation is no longer running.
 Failed prompt submission leaves the created session recorded. Start refuses an
 existing known session, including an idle one; `--replace` interrupts and waits
-before replacing it. A lost session instead gets a re-entry prompt pointing to
-the PR description and the latest identity-verified orchestrator amendment.
+before replacing it. Every new context (start, replacement, lost-session re-entry,
+adoption or backend change) receives the same generated first prompt: inline
+authority rules, task values, command prefix and a checklist pointing to the
+pinned [worker guide](worker-guide.md). The worker reads the current PR and
+authenticated amendments through the gateway; the session's first message is no
+longer a copy of the PR body. Existing live contexts are not sent onboarding again.
+Start and review wakes resolve the model from the PR card's Model field, never a
+body line; migrate in-flight cards before adoption.
 
 Status distinguishes running, permission-wait, quota, provider-error, idle,
 idle without reply, and session unknown. Provider errors include their diagnostic
@@ -340,13 +347,16 @@ cannot confirm idle, it explicitly did not send. `--queue` submits opencode's
 queue delivery; default sends steer the active turn. Claude defaults refuse busy
 turns; queue waits for idle, and now interrupts before resuming. `wait` defaults
 to 600 seconds; permission waits are not completion. `permit` without a decision
-lists pending requests. Model changes preserve the session id, synchronize the
+lists pending requests. Same-backend model changes preserve the session id, synchronize the
 PR's Model card, and add a segment with `--why` (default `owner-request`). Each
 switch posts `[orchestrator] NOTE: model switched to <family> (<why>)` on the PR
 without changing Progress; follow with `review <pr> answer <file>` to hand back
 the turn. Selecting the unchanged model only synchronizes Model and the session
-title; it does not post a switch note. A
-cross-backend switch cannot preserve context and is refused. Gates apply equally
+title; it does not post a switch note. A cross-backend switch requires an idle
+worker and creates a new session with the generated first prompt, retaining the
+previous usage segments but not conversation context. Card-driven resume changes
+also enforce model gates; use an explicitly authorized `worker model` command
+before resuming an owner-gated change. Gates apply equally
 to family names and configured raw ids; unconfigured provider/id selections need
 an explicit `other` family policy. `models` lists configured gates/fallbacks and
 the models offered by opencode. Suggestions use Estimate and task labels and
@@ -548,7 +558,10 @@ The last output line is the verdict. `wait-checks` exits **0** green, **1** red
 (with failing checks and a short digest), **2** no verdict/head moved (run again,
 never report BLOCKED), or **3** conflict (merge the base, push, run again).
 `check-task-ci` uses the same codes, but green also requires every trusted check's
-workflow-associated PR head/base SHAs to match the current PR. Missing workflow
+workflow-associated PR head/base SHAs to match the current PR head and live base
+branch head, not the PR's potentially stale base SHA. `check-task-ci` and
+`refresh-checks` read the branch endpoint and recheck it after collecting CI evidence;
+`merge-task` resolves its fetched base ref through the same live-base helper. Missing workflow
 evidence fails closed with code 2; commit timestamps cannot establish the tested
 base. It returns check names, without downloading failure logs. `refresh-checks`
 returns 0 for a successful push or no-op, 2 for a ref moving during preparation,
@@ -714,6 +727,60 @@ and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own thei
 signatures. The gateway wires worker status, stop and resume to the recorded opencode
 or Claude session. Only the merge guard treats missing records as stopped;
 ordinary worker status still reports a missing session as unknown.
+
+### Task worktree cleanup
+
+After confirming a merge and stopping its worker, `merge-task` journals a `worktree`
+step that removes the task tree, prunes Git worktree metadata and deletes its local
+branch. Recovery retries unfinished cleanup; completed steps are not replayed.
+Pack branches are retained. A safety skip reports the path and reason without
+blocking the other merge follow-up steps.
+
+Before removing an eligible tree, a separate journaled `session` step hides the
+stopped opencode session from OpenChamber by setting
+`metadata.openchamber.work.state` to `closed`, with `closedAt` and
+`closedBy: vmethod`. It reads and preserves all other metadata, including links;
+it never deletes the session, title or history. Already-closed sessions are a no-op.
+Claude sessions are skipped because they have no OpenChamber list. A failed update
+reports `session not closed: <reason>` without failing the merge; recovery retries
+the unfinished session step.
+
+OpenCode requires the session's location directory for PATCH. If an old task's
+tree is already gone and the update returns 404, cleanup temporarily creates an
+empty directory at the recorded, validated path and retries. It removes only its
+own empty placeholder afterward, never an existing directory or newly added files.
+
+Use `vmethod worker reopen <pr>` to show an old recorded opencode session again for
+inspection. This sets its work state to `open`, preserves the remaining metadata
+and does not restart the worker or recreate its worktree. Claude is a no-op.
+
+For a task closed without merging, the watcher reports a cleanup candidate. Run
+`vmethod worker stop <pr> --cleanup` to interrupt its recorded session and attempt
+the same guarded cleanup and session closure. Stopping alone never removes files
+or hides sessions.
+
+Use orchestrator-only `vmethod worktrees` to list merged/closed task trees and their
+sizes in allocated KiB, with a total of removable space. `vmethod worktrees --prune`
+rechecks the guards, removes eligible trees and reports the total actually freed.
+It also closes their stopped opencode sessions with the same best-effort update.
+Size measurements are best-effort, with a separate two-minute timeout per tree.
+A failed or invalid measurement prints `size unknown` and does not prevent listing
+or guarded pruning of that tree or later trees. Totals show the measured KiB plus
+the count of eligible/removed trees with unknown sizes, never treating unknown as zero.
+This uses the existing orchestrator-only `worker` transport operation. It never
+stops sessions implicitly. Open tasks, ambiguous branch reuse and foreign PR heads
+are not cleanup candidates.
+
+Cleanup only touches registered trees under this repository's configured
+`branches.worktreeRoot`, with `branches.worktreePrefix` and an exact task-branch
+match. Main/current checkouts, symlink aliases and other repositories are refused.
+Tracked modifications and untracked non-ignored files are retained; ignored files
+such as `node_modules` and `.tmp/` may be removed. Local commits must be reachable
+from the merged PR head or the local base branch; for an unmerged closed PR, only
+the base proves containment. Otherwise cleanup reports unpushed work and retains
+the tree. A live or unknown session, unavailable commit objects or failed safety
+read also retains data. Inspect the reported reason before retrying; do not bypass
+these checks with a manual forced removal.
 
 Merge follow-up journals live in the per-user state directory. A partial failure
 resumes board, issue, branch and checkout work without merging again. Already-merged

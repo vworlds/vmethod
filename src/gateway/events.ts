@@ -1664,7 +1664,7 @@ export class EventLoop {
       this.emit(
         `closed-${number}@${key(str(data.closed_at))}`,
         "closed",
-        `PR #${number} is now CLOSED${this.previewText(person, str(data.title))} ${url}`
+        `PR #${number} is now CLOSED${this.previewText(person, str(data.title))}; task worktree is a cleanup candidate: run worker stop ${number} --cleanup (safety guards apply) ${url}`
       );
       this.clearPrState(number);
       this.queueProgress(number, { state: null, round: null, ci: "ok" });

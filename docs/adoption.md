@@ -70,6 +70,15 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       For a `button-merge` event, the orchestrator runs `merge-task <n>` explicitly.
       This replaces legacy Bash watchers' automatic follow-up (vecs#358): the same
       end result, with one explicit step. See the [watch guide](orchestrator-guide.md#watch-without-wasting-budget).
+- [ ] Migrate old open task-PR bodies to the task-only layout in
+      `templates/task-pr.md`: retain the verbatim task specification, approval basis,
+      hold banner, machine markers and opening vmethod version; remove execution
+      boilerplate. Do this manually where necessary; there is no compatibility
+      parser for worker-model body lines.
+- [ ] Set the **Model** field on every in-flight PR card before starting, adopting
+      or resuming its worker. Body model lines are not a fallback. Fresh contexts
+      receive a generated first prompt pointing to the pinned worker guide; live
+      sessions keep their context without receiving onboarding again.
 
 ## Legacy worker transition
 
