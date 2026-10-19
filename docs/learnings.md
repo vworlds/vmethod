@@ -166,7 +166,14 @@ a new `vN` stem. Delivery JSONL and annotation JSONL remain separate formats.
 annotations, checks their delivery-record digests, and regenerates family pages and
 `learnings/models/by-domain.md`. Legacy handwritten grade judgements are excluded
 from model inputs; qualitative evidence comes from threads and their annotations.
-Every generated claim cites delivery PR URLs. All views are validated before any
+Every generated claim cites delivery PR URLs: family claims may cite only deliveries
+containing that family, including comparative claims; domain claims may cite any
+supplied delivery. The prompt lists allowed URLs per family and for domains.
+Comment/issue URLs are not allowed, even when present in annotation evidence.
+Rejected citations name the source URL and offending claim. Aggregation retries
+invalid JSON, schema or citation output once in a fresh session, without adding
+transport/provider retries. Failed attempts publish no views.
+All views are validated before any
 page is replaced. Review the diff before committing: generation never commits,
 pushes or opens a PR. Public `learnings submit` includes new immutable annotation
 files in the existing add-only project submission; central family-page changes

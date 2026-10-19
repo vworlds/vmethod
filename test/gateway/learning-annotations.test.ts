@@ -248,9 +248,7 @@ for (const action of ["annotate", "aggregate"] as const) {
               domains: [{ domain: "tooling", claims: [claim("Evidence covers tooling.")] }],
             };
       f.replies[0] = wrap(JSON.stringify(response));
-      if (action === "annotate") {
-        f.replies.push(f.replies[0]);
-      }
+      f.replies.push(f.replies[0]);
       await expect(f.service.command({ action })).rejects.toThrow();
       expect(existsSync(join(f.directory, "notes-31-v1.jsonl"))).toBe(false);
       expect(readFileSync(familyPage, "utf8")).toBe("Previous reviewed advice.\n");
@@ -304,51 +302,76 @@ test("batch continues after two invalid responses, reports the failed PR and res
     learningsVerb(transport, ["annotate"], { VMETHOD_ROLE: "orchestrator" })
   ).rejects.toThrow("2 annotated, 1 failed (#32)");
   expect(readdirSync(f.directory)).toEqual(["notes-31-v1.jsonl", "notes-33-v1.jsonl"]);
-  expect(f.deps.report).toHaveBeenCalledWith(expect.stringMatching(/^#32: .*citation/));
+  expect(f.deps.report).toHaveBeenCalledWith("#32: unsupported source https://evil.invalid");
   f.replies.push(generated(32));
   expect(await f.service.command({ action: "annotate" })).toBe("1 annotated, 0 failed");
   expect(f.prompts).toHaveLength(5);
   f.done();
 });
 
-test.each(["JSON", "schema", "citation"])(
-  "invalid %s response retries once in a fresh session and succeeds",
-  async (kind) => {
-    const f = fixture();
-    const invalid =
-      kind === "JSON"
-        ? "{bad JSON}"
-        : kind === "schema"
-          ? { ...generated(), impressions: [] }
-          : { ...generated(), findings: [{ text: "unsupported", sources: [] }] };
-    f.replies.splice(0, 1, invalid, generated());
-    const fetch = f.deps.fetch;
-    let sessions = 0;
-    const interrupted: string[] = [];
-    f.deps.fetch = async (input, init) => {
-      const url = new URL(String(input));
-      if (url.pathname === "/api/session" && init?.method === "POST") {
-        const response = await fetch(input, init);
-        const body = (await response.json()) as { data: { id: string } };
-        body.data.id = `ses_attempt${++sessions}`;
-        return Response.json(body);
+for (const action of ["annotate", "aggregate"] as const) {
+  test.each(["JSON", "schema", "citation"])(
+    `${action}: invalid %s response retries once in a fresh session and succeeds`,
+    async (kind) => {
+      const f = fixture();
+      const aggregate = {
+        families: [{ family: "glm-flash", claims: [claim("Evidence.")] }],
+        domains: [{ domain: "tooling", claims: [claim("Evidence.")] }],
+      };
+      const invalid =
+        kind === "JSON"
+          ? "{bad JSON}"
+          : kind === "schema"
+            ? action === "annotate"
+              ? { ...generated(), impressions: [] }
+              : { ...aggregate, domains: [] }
+            : action === "annotate"
+              ? { ...generated(), findings: [{ text: "unsupported", sources: [] }] }
+              : {
+                  ...aggregate,
+                  families: [
+                    {
+                      family: "glm-flash",
+                      claims: [{ text: "bad source", sources: [`${url(31)}#issuecomment-1`] }],
+                    },
+                  ],
+                };
+      f.replies.splice(0, 1, invalid, action === "annotate" ? generated() : aggregate);
+      const fetch = f.deps.fetch;
+      let sessions = 0;
+      const interrupted: string[] = [];
+      f.deps.fetch = async (input, init) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/api/session" && init?.method === "POST") {
+          const response = await fetch(input, init);
+          const body = (await response.json()) as { data: { id: string } };
+          body.data.id = `ses_attempt${++sessions}`;
+          return Response.json(body);
+        }
+        if (url.pathname.endsWith("/interrupt")) {
+          interrupted.push(url.pathname);
+        }
+        url.pathname = url.pathname.replace(/ses_attempt\d+/, "ses_recorded");
+        return fetch(url, init);
+      };
+      const result = await f.service.command({ action });
+      expect(result).toContain(action === "annotate" ? "1 annotated, 0 failed" : "Generated 2");
+      expect(sessions).toBe(2);
+      expect(interrupted).toEqual([
+        "/api/session/ses_attempt1/interrupt",
+        "/api/session/ses_attempt2/interrupt",
+      ]);
+      if (action === "annotate") {
+        expect(readdirSync(f.directory)).toEqual(["notes-31-v1.jsonl"]);
+      } else {
+        expect(readFileSync(join(f.root, "learnings/models/glm-flash.md"), "utf8")).toContain(
+          "Evidence."
+        );
       }
-      if (url.pathname.endsWith("/interrupt")) {
-        interrupted.push(url.pathname);
-      }
-      url.pathname = url.pathname.replace(/ses_attempt\d+/, "ses_recorded");
-      return fetch(url, init);
-    };
-    expect(await f.service.command({ action: "annotate" })).toBe("1 annotated, 0 failed");
-    expect(sessions).toBe(2);
-    expect(interrupted).toEqual([
-      "/api/session/ses_attempt1/interrupt",
-      "/api/session/ses_attempt2/interrupt",
-    ]);
-    expect(readdirSync(f.directory)).toEqual(["notes-31-v1.jsonl"]);
-    f.done();
-  }
-);
+      f.done();
+    }
+  );
+}
 
 test("transport failure is not retried and does not prevent the next PR from publishing", async () => {
   const f = fixture([31, 32]);
@@ -450,6 +473,7 @@ test("aggregate validates all views before replacing any family page and require
     families: [{ family: "glm-flash", claims: [claim("Useful for tooling.")] }],
     domains: [{ domain: "tooling", claims: [{ text: "unsupported", sources: [] }] }],
   });
+  f.replies.push(f.replies[0]);
   await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(
     "by-domain: tooling, claim 1: Every annotation claim requires a supported citation"
   );
@@ -466,6 +490,73 @@ test("aggregate validates all views before replacing any family page and require
   expect(f.prompts.at(-1)).toContain("recordDigest");
   f.done();
 }, 30000);
+
+test.each([url(32), `${url(31)}#issuecomment-1`, `https://github.com/${repo}/issues/9`])(
+  "aggregate refuses and names disallowed family source %s after one retry",
+  async (source) => {
+    const f = fixture([31, 32]);
+    f.records[1].segments = [{ family: "sol", model: "fake/sol", rounds: [1], why: "start" }];
+    const response = {
+      families: [
+        { family: "glm-flash", claims: [{ text: "A comparison.", sources: [source] }] },
+        { family: "sol", claims: [claim("Sol evidence.", 32)] },
+      ],
+      domains: [{ domain: "tooling", claims: [claim("Domain evidence.", 32)] }],
+    };
+    f.replies.splice(0, f.replies.length, response, response);
+    const dir = join(f.root, "learnings/models");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "glm-flash.md"), "reviewed advice\n");
+    await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(
+      `glm-flash model learnings, claim 1: unsupported source ${source}`
+    );
+    expect(f.prompts).toHaveLength(2);
+    expect(readFileSync(join(dir, "glm-flash.md"), "utf8")).toBe("reviewed advice\n");
+    expect(existsSync(join(dir, "sol.md"))).toBe(false);
+    expect(existsSync(join(dir, "by-domain.md"))).toBe(false);
+    expect(f.prompts[0]).toContain(
+      `"familyDeliveryPrUrls":{"glm-flash":["${url(31)}"],"sol":["${url(32)}"]}`
+    );
+    expect(f.prompts[0]).toContain(`"domainDeliveryPrUrls":["${url(31)}","${url(32)}"]`);
+    expect(f.prompts[0]).toContain(
+      "Each family claim must cite only exact delivery PR URLs from that family's records"
+    );
+    expect(f.prompts[0]).toContain("Domain claims may cite any delivery PR URL");
+    expect(f.prompts[0]).toContain("No comment URLs or issue URLs are allowed");
+    f.done();
+  }
+);
+
+test("domain claims may cite deliveries from any family, while family claims use their own records", async () => {
+  const f = fixture([31, 32]);
+  f.records[1].segments = [{ family: "sol", model: "fake/sol", rounds: [1], why: "start" }];
+  f.replies.splice(0, f.replies.length, {
+    families: [
+      { family: "glm-flash", claims: [claim("Flash evidence.")] },
+      { family: "sol", claims: [claim("Sol evidence.", 32)] },
+    ],
+    domains: [
+      { domain: "tooling", claims: [{ text: "Domain comparison.", sources: [url(31), url(32)] }] },
+    ],
+  });
+  expect(await f.service.command({ action: "aggregate" })).toContain("Generated 3");
+  const text = readFileSync(join(f.root, "learnings/models/by-domain.md"), "utf8");
+  expect(text).toContain(`[PR](${url(31)})`);
+  expect(text).toContain(`[PR](${url(32)})`);
+  f.done();
+}, 30000);
+
+test("aggregate does not add a retry for transport failures", async () => {
+  const f = fixture();
+  let attempts = 0;
+  f.deps.fetch = async () => {
+    attempts++;
+    throw new Error("fixture transport failure");
+  };
+  await expect(f.service.command({ action: "aggregate" })).rejects.toThrow("aggregate:");
+  expect(attempts).toBe(1);
+  expect(f.prompts).toEqual([]);
+});
 
 test.each([
   [
@@ -492,6 +583,7 @@ test.each([
 ] as const)("aggregate identifies the offending %s", async (_name, response, message) => {
   const f = fixture();
   f.replies[0] = response;
+  f.replies.push(response);
   await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(message);
   expect(existsSync(join(f.root, "learnings/models/glm-flash.md"))).toBe(false);
   f.done();
