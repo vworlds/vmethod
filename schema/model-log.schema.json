@@ -20,6 +20,8 @@
     "notes"
   ],
   "properties": {
+    "metrics": { "$ref": "#/$defs/metrics" },
+    "tokens": { "$ref": "#/properties/segments/items/properties/tokens" },
     "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
     "repo": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
     "pr": { "type": "integer", "minimum": 1 },
@@ -38,7 +40,24 @@
         "required": ["family", "model", "rounds", "why"],
         "properties": {
           "family": { "type": "string", "minLength": 1 },
+          "metrics": { "$ref": "#/$defs/metrics" },
+          "switchReason": {
+            "enum": [
+              "quota",
+              "stopped-twice",
+              "red-tests-blocked",
+              "amendment-ignored",
+              "owner-hint",
+              "conflict-only",
+              "orchestrator-judgement"
+            ]
+          },
           "model": { "type": "string", "minLength": 1 },
+          "points_open": { "anyOf": [{ "$ref": "#/properties/points_open" }, { "type": "null" }] },
+          "points_final": {
+            "anyOf": [{ "$ref": "#/properties/points_final" }, { "type": "null" }]
+          },
+          "outcome": { "enum": ["merged", "abandoned", "switched", "replaced"] },
           "tokens": {
             "type": ["object", "null"],
             "additionalProperties": false,
@@ -111,5 +130,58 @@
       }
     },
     "notes": { "type": "string" }
+  },
+  "$defs": {
+    "count": { "type": "integer", "minimum": 0 },
+    "measurement": { "type": ["number", "null"], "minimum": 0 },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviews",
+        "checkins",
+        "stopsWithoutStatus",
+        "blocked",
+        "questions",
+        "escalations",
+        "workingMs",
+        "ownerWaitMs",
+        "peakContext",
+        "compactions",
+        "diff"
+      ],
+      "properties": {
+        "reviews": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["changes", "answer", "conflict", "ownerChange"],
+          "properties": {
+            "changes": { "$ref": "#/$defs/count" },
+            "answer": { "$ref": "#/$defs/count" },
+            "conflict": { "$ref": "#/$defs/measurement" },
+            "ownerChange": { "$ref": "#/$defs/count" }
+          }
+        },
+        "checkins": { "$ref": "#/$defs/measurement" },
+        "stopsWithoutStatus": { "$ref": "#/$defs/measurement" },
+        "blocked": { "$ref": "#/$defs/count" },
+        "questions": { "$ref": "#/$defs/count" },
+        "escalations": { "$ref": "#/$defs/count" },
+        "workingMs": { "$ref": "#/$defs/measurement" },
+        "ownerWaitMs": { "$ref": "#/$defs/measurement" },
+        "peakContext": { "$ref": "#/$defs/measurement" },
+        "compactions": { "$ref": "#/$defs/measurement" },
+        "diff": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["files", "additions", "deletions"],
+          "properties": {
+            "files": { "$ref": "#/$defs/count" },
+            "additions": { "$ref": "#/$defs/count" },
+            "deletions": { "$ref": "#/$defs/count" }
+          }
+        }
+      }
+    }
   }
 }

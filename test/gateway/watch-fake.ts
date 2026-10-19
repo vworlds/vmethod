@@ -106,6 +106,7 @@ export class WatchFake {
   staleWorker: WorkerSessionStatus | Error = { reason: "session unknown", active: false };
   staleWorkerReads: number[] = [];
   workerSends: { pr: number; text: string }[] = [];
+  workerMetrics: { pr: number; event: import("../../src/learning-metrics.js").MetricEvent }[] = [];
   workerStatus?: (pr: number) => Promise<WorkerSessionStatus>;
   watchPeople = people;
   fields: ObjectData[] = structuredClone(recordedBoard.fields.nodes);
@@ -778,6 +779,9 @@ export class WatchFake {
         },
         workerSend: async (pr, text) => {
           this.workerSends.push({ pr, text });
+        },
+        workerMetric: async (pr, event) => {
+          this.workerMetrics.push({ pr, event });
         },
         resolveConflicts: this.resolveConflicts,
         conflictPending: this.conflictPending,

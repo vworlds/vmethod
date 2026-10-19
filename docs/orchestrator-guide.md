@@ -210,6 +210,12 @@ Use `checks.release` and project hooks for the actual recipe. A new package need
 its registry bootstrap and trusted publishing/provenance configuration before its
 first release; check this explicitly rather than discovering it during publishing.
 
+Before publishing, run `learnings annotate --since <last-release-ISO-date>` and
+`learnings aggregate` as the orchestrator, review the cited annotations and generated
+family/by-domain advice, and submit the learning changes for review. Each project
+annotates its own repository; apply [private reduction](learnings.md#annotate-threads-and-regenerate-advice)
+before any private evidence leaves it.
+
 ## Models and grading
 
 Select from owner-maintained `models.yaml`, its `kind` and `gate`, current quota and
@@ -242,11 +248,13 @@ work to a text-only fallback.
 Track the actual family on the PR after a successful switch.
 
 Use `grade` (vmethod 1.0, #9) after every closed delivery, merged or not. Update the
-**issue's** final Estimate, never the PR's. Record initial/final points, model
-segments and reasons, rounds and causes, outcome, prompt defects, stalls and findings.
-Separate worker defects from design changes, owner questions, integration and prompt
-defects so calibration is fair. Grade outcomes rather than task size; owner rejection
-despite green metrics is valuable evidence. Revise model guidance from experience.
+**issue's** final Estimate, never the PR's. Grade records exact event metrics,
+initial/final points, segments, structured switch reasons and outcome, not handwritten
+judgement. Put **all learnable judgement in the thread**: REVIEW, OWNER REVIEW,
+ANSWER and switch NOTEs, never only in chat. State round causes and findings plainly
+so the later annotation can distinguish worker defects, owner changes and prompt
+defects without guessing. Use `worker model --reason <category> --why "details"`;
+the fixed categories and telemetry semantics are in [shared learnings](learnings.md#exact-grade-telemetry).
 `grade` stages the raw record in the ignored, untracked `.vmethod/model-log.jsonl`
 and automatically submits through the [learning pipeline](learnings.md#submit-delivery-records),
 including private reduction. New grades append immutable files to the project's

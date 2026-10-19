@@ -47,6 +47,7 @@
       "properties": { "preview": { "type": "boolean", "default": false } }
     },
     "learningsPrivacy": { "enum": ["public", "private"] },
+    "learningsModel": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
     "scope": {
       "type": "object",
       "additionalProperties": false,

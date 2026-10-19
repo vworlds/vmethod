@@ -825,31 +825,47 @@ test.each(["auto-", "", "legacy"])(
   }
 );
 
-test("a worker idle without reply sends one check-in per stop and again after recovery", async () => {
-  const f = setup();
-  f.task();
-  f.worktree();
-  f.staleWorker = { reason: "idle without reply", active: false, updated: f.clock };
-  const loop = f.loop();
-  const first = await f.once(loop);
-  expect(first).toEqual([]);
-  expect(f.workerSends).toHaveLength(1);
-  for (let i = 0; i < 6; i++) {
-    expect(await f.once(loop)).toEqual([]);
+test.each([true, false])(
+  "a worker idle without reply sends one check-in per stop and again after recovery (timestamps=%s)",
+  async (timestamps) => {
+    const f = setup();
+    f.task();
+    f.worktree();
+    f.staleWorker = {
+      reason: "idle without reply",
+      active: false,
+      ...(timestamps ? { updated: f.clock } : {}),
+    };
+    const loop = f.loop();
+    const first = await f.once(loop);
+    expect(first).toEqual([]);
+    expect(f.workerSends).toHaveLength(1);
+    for (let i = 0; i < 6; i++) {
+      expect(await f.once(loop)).toEqual([]);
+    }
+    f.staleWorker = {
+      reason: "running",
+      active: true,
+      ...(timestamps ? { updated: f.clock } : {}),
+    };
+    for (let i = 0; i < 6; i++) {
+      expect(await f.once(loop)).toEqual([]);
+    }
+    f.staleWorker = {
+      reason: "idle without reply",
+      active: false,
+      ...(timestamps ? { updated: f.clock } : {}),
+    };
+    const stops = [];
+    for (let i = 0; i < 6; i++) {
+      stops.push(...(await f.once(loop)));
+    }
+    expect(stops).toEqual([]);
+    expect(f.workerSends).toHaveLength(2);
+    expect(new Set(f.workerMetrics.map((m) => m.event.id)).size).toBe(4);
+    expect(f.reports).toEqual([]);
   }
-  f.staleWorker = { reason: "running", active: true, updated: f.clock };
-  for (let i = 0; i < 6; i++) {
-    expect(await f.once(loop)).toEqual([]);
-  }
-  f.staleWorker = { reason: "idle without reply", active: false, updated: f.clock };
-  const stops = [];
-  for (let i = 0; i < 6; i++) {
-    stops.push(...(await f.once(loop)));
-  }
-  expect(stops).toEqual([]);
-  expect(f.workerSends).toHaveLength(2);
-  expect(f.reports).toEqual([]);
-});
+);
 
 test("an idle worker with no protocol comment gets two check-ins then an alert", async () => {
   const f = setup();
@@ -872,6 +888,9 @@ test("an idle worker with no protocol comment gets two check-ins then an alert",
     "[orchestrator] CHECK-IN: your turn ended without a status comment on the PR. Post exactly one of READY, QUESTION, BLOCKED or DESIGN on PR #24 with `vmethod pr-comment`. If you are not done, finish only the remaining acceptance steps first, adding no new scope. If you are unsure or stuck, post QUESTION or BLOCKED and stop."
   );
   expect(events.filter((event) => event.line.includes("stopped without reply"))).toHaveLength(1);
+  expect(f.workerMetrics.filter((m) => m.event.type === "stop")).toHaveLength(3);
+  expect(f.workerMetrics.filter((m) => m.event.type === "checkin")).toHaveLength(2);
+  expect(new Set(f.workerMetrics.map((m) => m.event.id)).size).toBe(5);
 });
 
 test("a new orchestrator review prompt resets the check-in count", async () => {

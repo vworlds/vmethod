@@ -96,6 +96,7 @@ export interface LoopHost {
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
   workerSend?: (pr: number, text: string) => Promise<string | void>;
+  workerMetric?: (pr: number, event: import("../learning-metrics.js").MetricEvent) => Promise<void>;
   resolveConflicts?: (pr: number) => Promise<string>;
   conflictPending?: (pr: number) => boolean;
   board: Pick<BoardService, "set">;
@@ -3387,6 +3388,18 @@ export class EventLoop {
       if (stop === previous) {
         continue;
       }
+      // A backend without updated timestamps can return the same idle key after recovery.
+      // Persist a transition sequence before handing events off, so crash retries reuse ids.
+      const metricMarker = `worker-metric-${pr.number}`;
+      const metric = object(safeJson(this.readMarker(metricMarker)));
+      const priorSequence = Number(metric.sequence ?? 0);
+      if (!Number.isSafeInteger(priorSequence) || priorSequence < 0) {
+        throw new Error(`Invalid worker metric sequence for #${pr.number}`);
+      }
+      const sequence =
+        metric.stop === stop && metric.previous === previous ? priorSequence : priorSequence + 1;
+      this.writeMarker(metricMarker, JSON.stringify({ stop, previous, sequence }));
+      const metricId = `${key(this.dir)}-${pr.number}-${sequence}`;
       if (status.state === "permission") {
         if (
           this.emit(
@@ -3414,6 +3427,8 @@ export class EventLoop {
           });
         }
       } else if (status.state === "idle") {
+        const at = new Date(this.host.deps.now()).toISOString();
+        await this.host.workerMetric?.(pr.number, { id: `stop-${metricId}`, at, type: "stop" });
         const prompt = object(safeJson(this.readMarker(`worker-prompt-${pr.number}`)));
         const round = str(prompt.id) || "unknown";
         const count = Number(this.readMarker(`worker-checkin-${pr.number}-${key(round)}`) || 0);
@@ -3423,6 +3438,11 @@ export class EventLoop {
             `[orchestrator] CHECK-IN: your turn ended without a status comment on the PR. Post exactly one of READY, QUESTION, BLOCKED or DESIGN on PR #${pr.number} with \`vmethod pr-comment\`. If you are not done, finish only the remaining acceptance steps first, adding no new scope. If you are unsure or stuck, post QUESTION or BLOCKED and stop.`
           );
           this.writeMarker(`worker-checkin-${pr.number}-${key(round)}`, String(count + 1));
+          await this.host.workerMetric?.(pr.number, {
+            id: `checkin-${metricId}`,
+            at,
+            type: "checkin",
+          });
         } else {
           this.emit(
             `w-${pr.number}@${this.host.deps.now()}`,

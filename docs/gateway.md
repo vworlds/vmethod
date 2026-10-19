@@ -60,7 +60,9 @@ Names, titles, protocol tags and commit metadata confer no authority.
 
 Learning operations use the same transport: `learnings(LearningInput) → string`
 and central CI's `learningCheck({ref, label?}) → string`. Read/show/report are
-available to workers; submit and label writes require orchestrator context.
+available to workers; submit, annotate, aggregate and label writes require orchestrator context.
+Annotation and aggregation use the gateway's OpenCode client with tool-denied
+sessions; neither launches a task worker. See the [generation commands](learnings.md#annotate-threads-and-regenerate-advice).
 Submission additionally verifies the token viewer against central numeric identity
 and explicit `repos` bindings. See [shared learnings](learnings.md).
 
@@ -237,7 +239,7 @@ worker stop <pr> [--cleanup]
 worker reopen <pr>
 worker wait <pr> [seconds]
 worker permit <pr> [once|always|reject]
-worker model <pr> <family> [--owner-approved] [--why reason]
+worker model <pr> <family> [--owner-approved] [--reason category] [--why details]
 worker models
 worker health
 suggest-model <issue>
@@ -360,7 +362,8 @@ queue delivery; default sends steer the active turn. Claude defaults refuse busy
 turns; queue waits for idle, and now interrupts before resuming. `wait` defaults
 to 600 seconds; permission waits are not completion. `permit` without a decision
 lists pending requests. Same-backend model changes preserve the session id, synchronize the
-PR's Model card, and add a segment with `--why` (default `owner-request`). Each
+PR's Model card, and add a segment with a fixed `--reason` category plus `--why`
+details (default `owner-request`). See [exact telemetry](learnings.md#exact-grade-telemetry). Each
 switch posts `[orchestrator] NOTE: model switched to <family> (<why>)` on the PR
 without changing Progress; follow with `review <pr> answer <file>` to hand back
 the turn. Selecting the unchanged model only synchronizes Model and the session

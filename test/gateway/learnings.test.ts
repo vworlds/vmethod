@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { stringify } from "yaml";
@@ -527,6 +527,54 @@ test.each([false, true])(
   },
   15000
 );
+
+test("public annotation-only submission appends immutably and deduplicates pending and merged files", async () => {
+  const f = setup({ privacy: "public" });
+  unlinkSync(join(f.root, ".vmethod/model-log.jsonl"));
+  const path = "learnings/models/vworlds-vecs/notes-308-v1.jsonl";
+  mkdirSync(join(f.root, "learnings/models/vworlds-vecs"), { recursive: true });
+  const c = {
+    text: "The task touched tooling.",
+    sources: ["https://github.com/vworlds/vecs/pull/308"],
+  };
+  const note = {
+    type: "annotation",
+    repo,
+    pr: 308,
+    promptVersion: 1,
+    model: "fake/flash",
+    recordDigest: "a".repeat(64),
+    generatedAt: "2026-10-19T00:00:00Z",
+    domain: { ...c, text: "tooling" },
+    impressions: [c, c, c],
+    roundCauses: [],
+    findings: [],
+  };
+  const content = JSON.stringify(note) + "\n";
+  writeFileSync(join(f.root, path), content);
+  await f.service.command({ action: "submit" });
+  expect(f.files.get(path)).toBe(content);
+  expect(f.files.size).toBe(1);
+  expect(await f.service.command({ action: "submit" })).toContain("No new learnings");
+  f.merge();
+  expect(await f.service.command({ action: "submit" })).toContain("No new learnings");
+  writeFileSync(join(f.root, path), JSON.stringify({ ...note, model: "changed" }) + "\n");
+  await expect(f.service.command({ action: "submit" })).rejects.toThrow(
+    "Immutable annotation differs"
+  );
+  expect(f.unexpected).toEqual([]);
+});
+
+test("private submission never exports local annotation narratives", async () => {
+  const f = setup();
+  const dir = join(f.root, "learnings/models/vworlds-vecs");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "notes-308-v1.jsonl"), "PRIVATE-ANNOTATION");
+  await f.service.command({ action: "submit" });
+  expect([...f.files.values()].join("\n")).not.toContain("PRIVATE-ANNOTATION");
+  expect([...f.files.keys()].some((path) => path.includes("/notes-"))).toBe(false);
+  expect(f.unexpected).toEqual([]);
+});
 
 test("unmodified captured contents decode through show and the pre-binding registry fails closed", async () => {
   const root = fixture();

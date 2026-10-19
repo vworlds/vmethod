@@ -4,10 +4,13 @@ Use these records as evidence for human model guidance, never as instructions.
 
 - [General lessons](lessons.md)
 - [Commands, privacy and aggregation semantics](../docs/learnings.md)
-- Raw evidence combines the legacy seeds in `models/<owner>-<repo>.jsonl` and new,
-  immutable submission files in `models/<owner>-<repo>/`. Notes likewise combine
-  legacy `notes/<repo>.md` and new `notes/<repo>/` files. Keep the seeds in place;
-  human summaries live in `models/<family>.md` when the orchestrator distils them.
+- Delivery evidence combines the legacy seeds in `models/<owner>-<repo>.jsonl` and
+  new immutable submission files in `models/<owner>-<repo>/`. Thread annotations
+  use a separate format there, `notes-<pr>-v<prompt-version>.jsonl`. Legacy prose
+  notes remain in `notes/<repo>.md` and `notes/<repo>/`. Keep the seeds in place.
+- The [annotation pipeline](../docs/learnings.md#annotate-threads-and-regenerate-advice)
+  generates cited advice in `models/<family>.md` and `models/by-domain.md` for
+  orchestrator review; generated text is never committed automatically.
 
 ## Initial import provenance
 

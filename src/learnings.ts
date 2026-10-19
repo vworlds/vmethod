@@ -1,6 +1,7 @@
 import { Ajv } from "ajv";
 import { sumUsd, type Tokens } from "./cost.js";
 import schema from "../schema/model-log.schema.json" with { type: "json" };
+import type { ExactMetrics, SwitchReason } from "./learning-metrics.js";
 
 export interface ModelRecord {
   date: string;
@@ -16,8 +17,15 @@ export interface ModelRecord {
     tokens?: Tokens | null;
     usd?: number | null;
     reportedUsd?: number;
+    switchReason?: SwitchReason;
+    metrics?: ExactMetrics;
+    points_open?: number | null;
+    points_final?: number | null;
+    outcome?: string;
   }[];
   usd?: number | null;
+  metrics?: ExactMetrics;
+  tokens?: Tokens | null;
   costSource?: "backfill" | "backfill-partial";
   costBasis?: "api-list";
   costCoverage?: "complete" | "partial";

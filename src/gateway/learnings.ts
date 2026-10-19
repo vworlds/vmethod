@@ -18,6 +18,9 @@ import { learningAuthor, learningPaths } from "./learning-policy.js";
 import { learningFiles } from "./learning-check.js";
 import { object, untrusted, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
+import type { AnnotationInput } from "./learning-annotations.js";
+import { annotation, isAnnotationPath } from "./learning-annotations.js";
+import { switchReasons } from "../learning-metrics.js";
 
 declare const __LEARNINGS__: Record<string, string>;
 const central = "vworlds/vmethod";
@@ -38,7 +41,14 @@ const tags = new Set(
     " "
   )
 );
-const reasons = new Set(["start", "quota", "escalation", "rebase", "owner-request"]);
+const reasons = new Set([
+  "start",
+  "quota",
+  "escalation",
+  "rebase",
+  "owner-request",
+  ...switchReasons,
+]);
 const kinds = new Set([
   "tooling",
   "tooling-security",
@@ -51,7 +61,7 @@ const kinds = new Set([
   "other",
 ]);
 
-export interface LearningInput {
+export interface LearningReadInput {
   action: "submit" | "show" | "report";
   family?: string;
   kind?: string;
@@ -59,6 +69,7 @@ export interface LearningInput {
   notes?: string;
   includeText?: number[];
 }
+export type LearningInput = LearningReadInput | AnnotationInput;
 
 /** Private reduction reconstructs every field; no unconstrained narrative survives by copying. */
 export function privateLearning(record: ModelRecord, includeText = false): ModelRecord {
@@ -77,8 +88,16 @@ export function privateLearning(record: ModelRecord, includeText = false): Model
       ...(segment.tokens === undefined ? {} : { tokens: segment.tokens }),
       ...(segment.usd === undefined ? {} : { usd: segment.usd }),
       ...(segment.reportedUsd === undefined ? {} : { reportedUsd: segment.reportedUsd }),
+      ...(segment.metrics === undefined ? {} : { metrics: segment.metrics }),
+      ...(segment.switchReason === undefined ? {} : { switchReason: segment.switchReason }),
+      ...(segment.points_open === undefined ? {} : { points_open: segment.points_open }),
+      ...(segment.points_final === undefined ? {} : { points_final: segment.points_final }),
+      ...(segment.outcome === undefined ? {} : { outcome: segment.outcome }),
     })),
     ...(record.usd === undefined ? {} : { usd: record.usd }),
+    ...(record.metrics === undefined ? {} : { metrics: record.metrics }),
+    ...(record.tokens === undefined ? {} : { tokens: record.tokens }),
+    ...(record.costCoverage === undefined ? {} : { costCoverage: record.costCoverage }),
     points_open: record.points_open,
     points_final: record.points_final,
     rounds: record.rounds,
@@ -119,7 +138,14 @@ export class LearningsService {
   ) {}
 
   async command(input: LearningInput): Promise<string> {
-    if (input.family !== undefined && !/^[a-z][a-z0-9-]*$/.test(input.family)) {
+    if (input.action === "annotate" || input.action === "aggregate") {
+      throw new Error("Generation requires the server learning adapter");
+    }
+    if (
+      "family" in input &&
+      input.family !== undefined &&
+      !/^[a-z][a-z0-9-]*$/.test(input.family)
+    ) {
       throw new Error("Invalid learning family");
     }
     switch (input.action) {
@@ -165,16 +191,46 @@ export class LearningsService {
     return output.join("\n\n");
   }
 
-  private report(input: LearningInput): string {
+  /** Read delivery records only: immutable annotation JSONL is a separate wire format. */
+  records(): ModelRecord[] {
     const directory = join(this.root, "learnings/models");
     const texts = existsSync(directory)
       ? readdirSync(directory, { recursive: true })
           .map(String)
-          .filter((name) => name.endsWith(".jsonl"))
+          .filter((name) => name.endsWith(".jsonl") && !isAnnotationPath(name))
+          .sort()
+          .map((name) => readFileSync(join(directory, name), "utf8"))
+      : [];
+    if (!texts.length) {
+      texts.push(
+        ...Object.entries(this.snapshot)
+          .filter(([path]) => path.endsWith(".jsonl") && !isAnnotationPath(path))
+          .map(([, text]) => text)
+      );
+    }
+    const staging = join(this.root, ".vmethod/model-log.jsonl");
+    if (existsSync(staging)) {
+      texts.push(readFileSync(staging, "utf8"));
+    }
+    if (!texts.length) {
+      throw new Error("No model-log inputs available");
+    }
+    return unionRecords(texts);
+  }
+
+  private report(input: LearningReadInput): string {
+    const directory = join(this.root, "learnings/models");
+    const texts = existsSync(directory)
+      ? readdirSync(directory, { recursive: true })
+          .map(String)
+          .filter((name) => name.endsWith(".jsonl") && !isAnnotationPath(name))
           .sort()
           .map((name) => readFileSync(join(directory, name), "utf8"))
       : Object.entries(this.snapshot)
-          .filter(([path]) => /^learnings\/models\/(?:[^/]+\/)?[^/]+\.jsonl$/.test(path))
+          .filter(
+            ([path]) =>
+              /^learnings\/models\/(?:[^/]+\/)?[^/]+\.jsonl$/.test(path) && !isAnnotationPath(path)
+          )
           .map(([, text]) => text);
     if (!texts.length) {
       throw new Error("No model-log inputs available for report");
@@ -186,7 +242,7 @@ export class LearningsService {
     return plainReport(report);
   }
 
-  private async submit(input: LearningInput): Promise<string> {
+  private async submit(input: LearningReadInput): Promise<string> {
     if (!["public", "private"].includes(String(this.config.learningsPrivacy))) {
       throw new Error("Set learningsPrivacy explicitly before submitting");
     }
@@ -195,8 +251,17 @@ export class LearningsService {
         "Private distilled notes cannot be cleared per record; use record notes with --include-text <pr>"
       );
     }
-    const records = modelRecords(readFileSync(join(this.root, ".vmethod/model-log.jsonl"), "utf8"));
     const repo = String(this.config.repo).toLowerCase();
+    const logFile = join(this.root, ".vmethod/model-log.jsonl");
+    const annotationsDirectory = join(this.root, "learnings/models", repo.replace("/", "-"));
+    const annotationOnly =
+      this.config.learningsPrivacy === "public" &&
+      existsSync(annotationsDirectory) &&
+      readdirSync(annotationsDirectory).some((name) =>
+        /^notes-\d+-v\d+(?:-\d+)?\.jsonl$/.test(name)
+      );
+    const records =
+      !existsSync(logFile) && annotationOnly ? [] : modelRecords(readFileSync(logFile, "utf8"));
     if (records.some((record) => record.repo.toLowerCase() !== repo)) {
       throw new Error("Model log contains a foreign repository");
     }
@@ -230,7 +295,7 @@ export class LearningsService {
   }
 
   private async submitLocked(
-    input: LearningInput,
+    input: LearningReadInput,
     records: ModelRecord[],
     repo: string,
     directory: string,
@@ -308,6 +373,39 @@ export class LearningsService {
             },
           ]),
     ];
+    // Annotations are independent immutable evidence, not replacement delivery records.
+    const localAnnotations = join(this.root, logDirectory);
+    if (this.config.learningsPrivacy === "public" && existsSync(localAnnotations)) {
+      for (const name of readdirSync(localAnnotations)
+        .filter((name) => /^notes-\d+-v\d+(?:-\d+)?\.jsonl$/.test(name))
+        .sort()) {
+        const path = `${logDirectory}/${name}`;
+        const content = readFileSync(join(localAnnotations, name), "utf8");
+        const values = content
+          .trim()
+          .split("\n")
+          .map((line) => annotation(JSON.parse(line)));
+        if (
+          values.length !== 1 ||
+          values[0].repo.toLowerCase() !== repo ||
+          !new RegExp(`^notes-${values[0].pr}-v${values[0].promptVersion}(?:-\\d+)?\\.jsonl$`).test(
+            name
+          )
+        ) {
+          throw new Error("Annotation does not match project/path");
+        }
+        const prior =
+          pending.annotations.get(path) ??
+          (paths.includes(path) ? await this.requiredContent(central, path, parent) : undefined);
+        if (prior !== undefined) {
+          if (prior !== content) {
+            throw new Error(`Immutable annotation differs: ${path}`);
+          }
+        } else {
+          files.push({ path, content });
+        }
+      }
+    }
     const receipt = {
       submitted: fresh.map((record) => record.pr),
       sharedAt: parent,
@@ -590,6 +688,7 @@ export class LearningsService {
     const [owner, name] = repo.split("/");
     const texts: string[] = [];
     const notes: string[] = [];
+    const annotations = new Map<string, string>();
     const urls: string[] = [];
     const targets: { number: number; branch: string; head: string; addOnly: boolean }[] = [];
     for (let page = 1; ; page++) {
@@ -655,7 +754,17 @@ export class LearningsService {
         }
         for (const file of files) {
           const content = await this.requiredContent(`${author.login}/vmethod`, file.filename, ref);
-          if (file.filename.endsWith(".jsonl")) {
+          if (/\/notes-\d+-v\d+(?:-\d+)?\.jsonl$/.test(file.filename)) {
+            const value = annotation(JSON.parse(content.trim()));
+            if (value.repo.toLowerCase() !== repo) {
+              throw new Error("Foreign pending annotation");
+            }
+            const prior = annotations.get(file.filename);
+            if (prior !== undefined && prior !== content) {
+              throw new Error("Conflicting pending annotation");
+            }
+            annotations.set(file.filename, content);
+          } else if (file.filename.endsWith(".jsonl")) {
             texts.push(content);
           } else {
             notes.push(content);
@@ -692,12 +801,12 @@ export class LearningsService {
     if (records.some((record) => record.repo.toLowerCase() !== repo)) {
       throw new Error("Pending model log contains a foreign repository");
     }
-    return { records, notes, urls, targets };
+    return { records, notes, annotations, urls, targets };
   }
 
   private async readRecords(repo: string, paths: string[], ref: string, source?: string) {
     const texts: string[] = [];
-    for (const path of paths.filter((path) => path.endsWith(".jsonl"))) {
+    for (const path of paths.filter((path) => path.endsWith(".jsonl") && !isAnnotationPath(path))) {
       texts.push(await this.requiredContent(repo, path, ref));
     }
     const records = unionRecords(texts);
@@ -736,7 +845,9 @@ export class LearningsService {
       origin = "bundled snapshot";
     }
     const records = unionRecords(
-      texts.filter(([path]) => path.endsWith(".jsonl")).map(([, text]) => text)
+      texts
+        .filter(([path]) => path.endsWith(".jsonl") && !isAnnotationPath(path))
+        .map(([, text]) => text)
     ).filter((record) => !family || record.segments.some((segment) => segment.family === family));
     return [
       ...(records.length
@@ -745,7 +856,10 @@ export class LearningsService {
           ]
         : []),
       ...texts
-        .filter(([path]) => path.startsWith("learnings/notes/"))
+        .filter(
+          ([path]) =>
+            path.startsWith("learnings/notes/") || /\/notes-\d+-v\d+(?:-\d+)?\.jsonl$/.test(path)
+        )
         .map(([path, text]) => `from ${origin} (${path})\n${untrusted(text)}`),
     ];
   }

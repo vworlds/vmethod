@@ -768,6 +768,16 @@ export class OpencodeClient {
       }
     }
     const detail = {
+      compactions: uniqueMessages
+        .map(object)
+        .filter(
+          (m) =>
+            m.type === "compaction" &&
+            m.status === "completed" &&
+            typeof m.id === "string" &&
+            typeof object(m.time).created === "number"
+        )
+        .map((m) => ({ id: String(m.id), created: Number(object(m.time).created) })),
       requests: opencodeRequests(uniqueMessages),
       ...(usage ? { usage } : {}),
       title: typeof session.title === "string" ? session.title : undefined,
@@ -836,6 +846,8 @@ export interface WorkerSessionStatus {
   usage?: Usage;
   /** Per-request usage from assistant messages, separate from cumulative totals. */
   requests?: CostRequest[];
+  /** Completed compaction events, identified across repeated history polls. */
+  compactions?: { id: string; created: number }[];
   /** This task PR's own segments, for the existing board poll; never an issue rollup. */
   prCost?: { pr: number; usd: number | null; lowerBound?: boolean };
 }

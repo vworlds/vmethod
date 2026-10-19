@@ -20,6 +20,13 @@ import {
 } from "../cost.js";
 import { modelRecord } from "../learnings.js";
 import {
+  exactMetrics,
+  switchReasons,
+  type MetricEvent,
+  type SwitchReason,
+  type ExactMetrics,
+} from "../learning-metrics.js";
+import {
   accessSync,
   appendFileSync,
   constants,
@@ -71,6 +78,12 @@ interface Segment {
   usd?: number | null;
   lowerBound?: boolean;
   requests?: RequestCosts;
+  switchReason?: SwitchReason;
+  compactionIds?: string[];
+  startOid?: string;
+  endOid?: string;
+  pointsOpen?: number | null;
+  pointsFinal?: number | null;
 }
 interface Session {
   version: 1;
@@ -92,6 +105,8 @@ interface Session {
   pendingWake?: string[];
   conflictModel?: Model;
   pendingConflict?: { model: Model; base: string };
+  metricEvents?: MetricEvent[];
+  metricEventsComplete?: boolean;
 }
 export interface TaskMetadata {
   pr: number;
@@ -112,7 +127,11 @@ export interface TaskMetadata {
   model?: string;
   kind: string;
   merged: boolean;
-  comments: { body: string; role: string; date: string }[];
+  closedAt?: string;
+  headOid?: string;
+  baseOid?: string;
+  diff?: ExactMetrics["diff"];
+  comments: { body: string; role: string; date: string; url?: string }[];
 }
 export interface WorkerHooks {
   metadata(pr: number): Promise<TaskMetadata>;
@@ -129,6 +148,7 @@ export interface WorkerHooks {
   submitLearnings?(): Promise<string>;
   workerIdentity(): Promise<NodeJS.ProcessEnv>;
   issue(ref: number): Promise<{ estimate?: number; kind: string }>;
+  diffStats?(pr: number, base: string, head: string): Promise<ExactMetrics["diff"]>;
 }
 
 export class WorkerService {
@@ -167,6 +187,19 @@ export class WorkerService {
   }
   private client() {
     return new OpencodeClient(this.env, this.deps.fetch, this.deps.now);
+  }
+  /** Persist watcher observations by event id, independently of its short-lived notification journal. */
+  async recordMetric(pr: number, event: MetricEvent): Promise<void> {
+    await this.locked(pr, async () => {
+      const record = this.read(pr);
+      if (!record || record.finalized) {
+        return;
+      }
+      if (!(record.metricEvents ??= []).some((e) => e.id === event.id)) {
+        record.metricEvents.push(event);
+        this.save(record);
+      }
+    });
   }
   readSessionForCost(id: string): Promise<unknown | undefined> {
     return this.client().costSession(id);
@@ -240,7 +273,14 @@ export class WorkerService {
     return Math.max(
       1,
       ...meta.comments.map((c) =>
-        Number(/(?:REVIEW|READY FOR REVIEW).*?round\s+(\d+)/i.exec(c.body)?.[1] ?? 1)
+        Number(
+          (c.role === "orchestrator"
+            ? /^\[orchestrator\] REVIEW round\s+(\d+)/i
+            : c.role === "worker"
+              ? /^\[worker\] READY FOR REVIEW \(round\s+(\d+)\)/i
+              : /$^/
+          ).exec(c.body)?.[1] ?? 1
+        )
       )
     );
   }
@@ -335,6 +375,16 @@ export class WorkerService {
     }
     if (status.usage && !record.finalized) {
       const segment = record.segments.at(-1)!;
+      if (status.compactions) {
+        segment.compactionIds = [
+          ...new Set([
+            ...(segment.compactionIds ?? []),
+            ...status.compactions
+              .filter((c) => c.created >= Date.parse(segment.at))
+              .map((c) => c.id),
+          ]),
+        ];
+      }
       segment.usage = usageDelta(
         status.usage,
         segment.baseline ?? { tokens: zeroTokens(), reportedUsd: 0 }
@@ -712,15 +762,27 @@ export class WorkerService {
         const selected = rest[0];
         let approved = false,
           why = "owner-request";
+        let reason: SwitchReason | undefined;
         for (let i = 1; i < rest.length; i++) {
           if (rest[i] === "--owner-approved" && !approved) {
             approved = true;
           } else if (rest[i] === "--why" && rest[i + 1]) {
             why = rest[++i];
+          } else if (rest[i] === "--reason" && rest[i + 1]) {
+            const value = rest[++i];
+            if (!switchReasons.includes(value as SwitchReason)) {
+              throw new Error(`Invalid switch reason: ${value}`);
+            }
+            reason = value as SwitchReason;
           } else {
-            throw new Error("Usage: worker model <pr> <family> [--owner-approved] [--why reason]");
+            throw new Error(
+              "Usage: worker model <pr> <family> [--owner-approved] [--reason category] [--why details]"
+            );
           }
         }
+        reason ??= switchReasons.includes(why as SwitchReason)
+          ? (why as SwitchReason)
+          : "orchestrator-judgement";
         const model = this.resolve(selected, approved);
         if (model.family === record.model.family && model.model === record.model.model) {
           if (record.model.kind === "opencode") {
@@ -730,11 +792,11 @@ export class WorkerService {
           return `Model unchanged for ${record.id}; PR Model synchronized`;
         }
         const meta = await this.hooks.metadata(pr);
-        await this.changeModel(record, model, meta, why);
+        await this.changeModel(record, model, meta, why, undefined, reason);
         await this.hooks.setModel(pr, model.family);
         await this.hooks.modelComment(
           pr,
-          `[orchestrator] NOTE: model switched to ${model.family} (${why.replace(/\s+/g, " ").trim()})`
+          `[orchestrator] NOTE: model switched to ${model.family} (${why.replace(/\s+/g, " ").trim()}); reason: ${reason}`
         );
         return `Switched ${record.id} to ${model.family}`;
       }
@@ -843,7 +905,8 @@ export class WorkerService {
     model: Model,
     meta: TaskMetadata,
     why: string,
-    boundaryStatus?: WorkerSessionStatus
+    boundaryStatus?: WorkerSessionStatus,
+    reason: SwitchReason = "orchestrator-judgement"
   ) {
     const backendChanged = model.kind !== record.model.kind;
     const boundary = boundaryStatus ?? (await this.status(record, false, undefined, false));
@@ -884,11 +947,16 @@ export class WorkerService {
       record.id = randomUUID();
     }
     record.model = model;
+    record.segments.at(-1)!.endOid = meta.headOid;
+    record.segments.at(-1)!.pointsFinal = meta.estimate ?? null;
     record.segments.push({
       family: model.family,
       model: model.model,
       rounds: [this.round(meta)],
       why,
+      switchReason: reason,
+      startOid: meta.headOid,
+      pointsOpen: meta.estimate ?? null,
       at: new Date(this.deps.now()).toISOString(),
       ...(!backendChanged
         ? { baseline: boundary.usage }
@@ -925,7 +993,18 @@ export class WorkerService {
     if (record.model.family !== model.family || record.model.model !== model.model) {
       this.resolve(meta.model ?? "", false);
       const backendChanged = record.model.kind !== model.kind;
-      await this.changeModel(record, model, meta, "PR Model changed on resume", status);
+      await this.changeModel(
+        record,
+        model,
+        meta,
+        "PR Model changed on resume",
+        status,
+        "owner-hint"
+      );
+      await this.hooks.modelComment(
+        record.pr,
+        `[orchestrator] NOTE: model switched to ${model.family} (PR Model changed on resume); reason: owner-hint`
+      );
       return backendChanged;
     }
     return false;
@@ -1062,6 +1141,11 @@ export class WorkerService {
     if (meta.state !== "OPEN" || meta.merged || meta.blocked || taskHeld(meta.title, meta.body)) {
       throw new Error("Conflict task is closed, blocked or on hold");
     }
+    await this.recordMetric(pr, {
+      id: `conflict-${meta.headOid ?? base}-${base}`,
+      at: new Date(this.deps.now()).toISOString(),
+      type: "conflict",
+    });
     const previous = this.read(pr);
     const status = previous ? await this.watchStatus(pr) : undefined;
     const live = previous && status?.reason !== "session unknown";
@@ -1128,11 +1212,12 @@ export class WorkerService {
       return;
     }
     const meta = await this.hooks.metadata(record.pr);
-    await this.changeModel(record, model, meta, why, boundary);
+    const reason = why.includes("conflict") ? "conflict-only" : "orchestrator-judgement";
+    await this.changeModel(record, model, meta, why, boundary, reason);
     await this.hooks.setModel(record.pr, model.family);
     await this.hooks.modelComment(
       record.pr,
-      `[orchestrator] NOTE: model switched to ${model.family} (${why.replace(/\s+/g, " ").trim()})`
+      `[orchestrator] NOTE: model switched to ${model.family} (${why.replace(/\s+/g, " ").trim()}); reason: ${reason}`
     );
   }
   private async adopt(pr: number, id: string, legacy?: { key?: string }): Promise<string> {
@@ -1222,7 +1307,9 @@ export class WorkerService {
           model: model.model,
           rounds: [this.round(meta)],
           why: legacySnapshot ? "legacy snapshot at adoption" : "adopt",
+          pointsOpen: points,
           at: new Date(this.deps.now()).toISOString(),
+          startOid: meta.headOid ?? meta.baseOid,
         },
       ],
     };
@@ -1395,6 +1482,10 @@ export class WorkerService {
     if (typeof response.id !== "string" || !/^[\w-]+$/.test(response.id)) {
       throw new Error("Server returned no valid session id");
     }
+    if (previous?.segments.length) {
+      previous.segments.at(-1)!.endOid ??= meta.headOid;
+      previous.segments.at(-1)!.pointsFinal ??= meta.estimate ?? null;
+    }
     const record: Session = {
       version: 1,
       repo: String(this.config.repo),
@@ -1404,6 +1495,8 @@ export class WorkerService {
       id: response.id,
       model,
       points_open: points,
+      metricEvents: previous?.metricEvents ?? [],
+      metricEventsComplete: previous ? previous.metricEventsComplete === true : true,
       segments: [
         ...(previous?.segments ?? []),
         {
@@ -1417,7 +1510,10 @@ export class WorkerService {
               : override
                 ? `override: ${override.reason}`
                 : "start",
+          pointsOpen: previous ? (meta.estimate ?? null) : points,
           at: new Date(this.deps.now()).toISOString(),
+          startOid: meta.headOid ?? meta.baseOid,
+          ...(previous?.segments.length ? { switchReason: "orchestrator-judgement" as const } : {}),
           ...(model.kind === "claude" && previous
             ? {
                 baseline: claudeUsage(
@@ -1436,6 +1532,15 @@ export class WorkerService {
     };
     this.save(record);
     await this.prompt(record, conflictPrompt ?? this.firstPrompt(record, meta), "steer", false);
+    if (
+      previous &&
+      (previous.model.family !== model.family || previous.model.model !== model.model)
+    ) {
+      await this.hooks.modelComment(
+        pr,
+        `[orchestrator] NOTE: model switched to ${model.family} (new worker context); reason: orchestrator-judgement`
+      );
+    }
     if (model.kind === "opencode") {
       const firstTurn = object(
         object(await this.client().request("GET", this.idPath(record))).data
@@ -1467,21 +1572,76 @@ export class WorkerService {
       if (points === undefined || !estimateScale.includes(points)) {
         throw new Error("Invalid final Estimate");
       }
+      const switched = (index: number) =>
+        index > 0 &&
+        (session.segments[index].model !== session.segments[index - 1].model ||
+          session.segments[index].family !== session.segments[index - 1].family);
+      const metricsFor = (index?: number) => {
+        const segment = index === undefined ? undefined : session.segments[index];
+        const segments = segment ? [segment] : session.segments;
+        const requests = segments.flatMap((s) => Object.values(s.requests ?? {}));
+        return exactMetrics({
+          start: segment?.at ?? session.segments[0].at,
+          end:
+            index === undefined
+              ? meta.closedAt
+              : (session.segments[index + 1]?.at ?? meta.closedAt),
+          comments: meta.comments,
+          events: session.metricEventsComplete ? session.metricEvents : undefined,
+          escalations: segment
+            ? Number(switched(index!))
+            : session.segments.reduce((n, _s, i) => n + Number(switched(i)), 0),
+          peakContext: requests.length
+            ? requests.reduce((peak, r) => Math.max(peak, r.tokens.input + r.tokens.cached), 0)
+            : null,
+          compactions: segments.every((s) => s.compactionIds !== undefined)
+            ? segments.reduce((n, s) => n + s.compactionIds!.length, 0)
+            : null,
+          diff: index === undefined ? meta.diff : null,
+        });
+      };
+      const segmentRecords = [];
+      for (const [index, segment] of session.segments.entries()) {
+        const { family, model, rounds, why, usage, usd } = segment;
+        const metrics = metricsFor(index);
+        const endOid = segment.endOid ?? meta.headOid;
+        if (segment.startOid && endOid && this.hooks.diffStats) {
+          metrics.diff = await this.hooks.diffStats(pr, segment.startOid, endOid);
+        }
+        segmentRecords.push({
+          family,
+          model,
+          rounds,
+          why,
+          points_open: segment.pointsOpen ?? (index === 0 ? session.points_open : null),
+          points_final:
+            index === session.segments.length - 1 ? points : (segment.pointsFinal ?? null),
+          outcome:
+            index === session.segments.length - 1
+              ? meta.merged
+                ? "merged"
+                : "abandoned"
+              : switched(index + 1)
+                ? "switched"
+                : "replaced",
+          ...(index && segment.switchReason ? { switchReason: segment.switchReason } : {}),
+          tokens: usage?.tokens ?? null,
+          usd: usd ?? null,
+          metrics,
+          ...(usage?.reportedUsd === undefined ? {} : { reportedUsd: usage.reportedUsd }),
+        });
+      }
       const record = {
         date: new Date(this.deps.now()).toISOString().slice(0, 10),
         repo: this.config.repo,
         pr,
         task: meta.title,
         kind: meta.kind,
-        segments: session.segments.map(({ family, model, rounds, why, usage, usd }) => ({
-          family,
-          model,
-          rounds,
-          why,
-          tokens: usage?.tokens ?? null,
-          usd: usd ?? null,
-          ...(usage?.reportedUsd === undefined ? {} : { reportedUsd: usage.reportedUsd }),
-        })),
+        segments: segmentRecords,
+        metrics: metricsFor(),
+        tokens: session.segments.every((s) => s.usage)
+          ? session.segments.reduce((sum, s) => addTokens(sum, s.usage!.tokens), zeroTokens())
+          : null,
         usd: sumUsd(session.segments.map((segment) => segment.usd)),
         ...(session.segments.some((segment) => segment.lowerBound)
           ? { costCoverage: "partial" }

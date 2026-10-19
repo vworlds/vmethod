@@ -89,8 +89,9 @@ is owned by [`privateLearning`](../src/gateway/learnings.ts).
 Only after obtaining owner clearance, use `--include-text <delivery-pr>` to include
 that **specific new record's** task and notes. Repeat the flag for multiple cleared
 records. It does not clear other nested text, previously submitted records, or an
-unscoped notes file. Private `--notes` is refused: put cleared text in the selected
-record's notes instead. Reduction is a structural privacy guard, not a secret scanner;
+unscoped notes file. Private `--notes` is refused; clearance covers only a selected
+record's existing text, not new thread annotations. Do not add judgement to grade
+records. Reduction is a structural privacy guard, not a secret scanner;
 review every owner-cleared text field before sending it.
 
 ## Read and compare
@@ -110,8 +111,100 @@ segment. `byFamily` counts a mixed-model delivery once in each participating fam
 not once per segment; those groups intentionally overlap and do not establish causal
 credit. `byKind` groups whole deliveries. Filters select before aggregation.
 
-Distillation remains the orchestrator's work. Use reports and provenance to update
-family advice; do not automate methodology changes or defaults from these metrics.
+Model-generated distillation remains advice reviewed by the orchestrator; it never
+changes methodology, gates or defaults automatically.
+
+## Annotate threads and regenerate advice
+
+Run these commands as the project's orchestrator, in its own checkout:
+
+```sh
+VMETHOD_ROLE=orchestrator npm exec --no -- vmethod learnings annotate --since 2026-10-01
+VMETHOD_ROLE=orchestrator npm exec --no -- vmethod learnings aggregate
+VMETHOD_ROLE=orchestrator npm exec --no -- vmethod learnings submit
+```
+
+`annotate [--pr n | --since <ISO-date>] [--force] [--model family]` selects known
+delivery records for your repository, including the local staging log. A PR must
+be closed; `--since` uses its closure timestamp, inclusively. The gateway reads
+the authenticated issue body, worker READY/QUESTION/BLOCKED, orchestrator
+REVIEW/ANSWER/OWNER REVIEW/NOTE/GRADE and owner comments (including issue-side
+GRADE), plus numeric diff statistics. Other roles and forged tags are not evidence.
+Threads are data, not model instructions.
+
+The gateway uses its configured OpenCode connection and a fresh tool-denied session,
+with a bounded three-minute wait. It selects `glm-flash` by default, or the cheapest
+priced ungated OpenCode family when unavailable. Set `learningsModel` in
+`vmethod.yaml`, or pass `--model`, to select another priced ungated family. Worker
+contexts cannot invoke either generation command. Failed model responses, truncated
+output and unsupported citations fail without creating an annotation.
+
+Prompt version 1 requires 3–6 single-sentence impressions, a cited domain, and
+explicitly evidenced round causes/findings. Each atomic claim has a `sources` list
+containing exact bundle URLs. Citation validation proves provenance exists, **not**
+that the claim follows from it: spot-check the generated judgements against threads.
+
+Each result is linked by repository, PR and the delivery record's SHA-256 digest in
+`learnings/models/<owner>-<repo>/notes-<pr>-v1.jsonl`. Files are atomically published
+and never edited. Existing version-1 annotations are skipped; an empty rerun reports
+`0 to annotate`. An interrupted batch retains completed PRs and resumes the rest.
+`--force` adds `notes-<pr>-v1-2.jsonl` (then `-3`, etc.); a future prompt version uses
+a new `vN` stem. Delivery JSONL and annotation JSONL remain separate formats.
+
+`aggregate [--model family]` reads all locally available delivery records and
+annotations, checks their delivery-record digests, and regenerates family pages and
+`learnings/models/by-domain.md`. Legacy handwritten grade judgements are excluded
+from model inputs; qualitative evidence comes from threads and their annotations.
+Every generated claim cites delivery PR URLs. All views are validated before any
+page is replaced. Review the diff before committing: generation never commits,
+pushes or opens a PR. Public `learnings submit` includes new immutable annotation
+files in the existing add-only project submission; central family-page changes
+still require a separately reviewed learning PR.
+
+For a private project, reduce titles, notes and thread narratives **before** sending
+data to OpenCode. Only protocol tags, delivery metadata and numeric evidence reach
+the model. Private annotations are kept locally and are never automatically
+submitted; aggregation sends reduced records without annotation narratives.
+Owner clearance and review remain necessary before publishing any private-derived
+text. No raw private thread is exported by this pipeline.
+
+### Exact grade telemetry
+
+New grades keep `notes`, `round_causes`, `findings`, `prompt_defects` and `stalls`
+empty; qualitative judgement belongs in the thread and its later annotation, never
+in hand-composed grade notes. The shared schema remains compatible with old records.
+Delivery and segment `metrics` record typed review counts, CHECK-INs, stops without
+status, worker BLOCKED/QUESTION counts, switches, wall-clock working/owner-wait
+milliseconds, peak request context tokens, completed compactions and numeric diff
+size. Segments also retain opening/boundary Estimate snapshots and whether they
+ended with the delivery, a model switch or context replacement. Delivery tokens
+are summed from its segments; unavailable historical values are `null`.
+
+Working time is wall-clock time on the worker's protocol turn, not CPU/billable
+time; READY/QUESTION/BLOCKED/DESIGN/HANDOFF pauses it. OWNER REVIEW/QUESTION starts
+owner waiting; the owner's reply ends it. Segments use half-open switch-time
+intervals. Changes explicitly replying to an owner comment count as owner changes;
+other REVIEW posts count as changes, ANSWER separately. Conflict turns and watcher
+stops/CHECK-INs are persisted by event id, independent of notification retention.
+Compactions are deduplicated by provider event id; context includes input and cache
+reads/writes, not cumulative session tokens. Segment diff stats compare committed
+heads observed at model boundaries; uncommitted work transferred between models
+cannot be attributed from those stats. GitHub comparisons at its 300-file limit
+are unknown rather than a falsely complete count.
+
+Use `worker model <pr> <family> --reason <category> --why "details"` for switches.
+Categories are `quota`, `stopped-twice`, `red-tests-blocked`, `amendment-ignored`,
+`owner-hint`, `conflict-only`, and `orchestrator-judgement`. Invalid categories fail
+before switching. A legacy `--why` equal to a category supplies that category;
+otherwise the default is `orchestrator-judgement`. Internal conflict switches use
+`conflict-only`; card-driven model changes use `owner-hint`. Keep explanatory
+judgement in the switch NOTE, not only in chat.
+
+Historical missing telemetry is not reconstructed as a measured zero: costs,
+timings, context and compactions may remain unknown, and old records are never
+rewritten by annotation. Adopted sessions start observation at adoption. Watcher
+counts require recorded worker history; unavailable historical CHECK-IN/stop
+counts are `null`.
 
 ## Worker cost and model-log migration
 

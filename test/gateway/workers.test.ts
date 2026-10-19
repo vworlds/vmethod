@@ -216,6 +216,128 @@ const start: Request[] = [
   },
   { path: "/api/session/ses_fake", data: { id: "ses_fake", title: "project#31" } },
 ];
+test("grade emits delivery and segment event metrics without qualitative notes and validates switch categories", async () => {
+  const f = fixture([...start], true);
+  await f.service.command(["start", "31"]);
+  const time = (seconds: number) => new Date(seconds * 1000).toISOString();
+  const event = { id: "stop-1", at: time(1), type: "stop" as const };
+  await f.service.recordMetric(31, event);
+  await f.service.recordMetric(31, event);
+  await f.service.recordMetric(31, { id: "checkin-1", at: time(1), type: "checkin" });
+  f.meta.state = "CLOSED";
+  f.meta.merged = true;
+  f.meta.closedAt = time(20);
+  f.meta.headOid = "c".repeat(40);
+  f.meta.diff = { files: 3, additions: 20, deletions: 4 };
+  f.meta.comments = [
+    { role: "orchestrator", body: "[orchestrator] REVIEW round 1", date: time(2) },
+    { role: "worker", body: "[worker] BLOCKED", date: time(4) },
+    { role: "orchestrator", body: "[orchestrator] ANSWER", date: time(6) },
+    { role: "worker", body: "[worker] QUESTION", date: time(12) },
+    { role: "orchestrator", body: "[orchestrator] OWNER REVIEW", date: time(14) },
+    { role: "owner", body: "accepted", date: time(18) },
+    { role: "collaborator", body: "[orchestrator] REVIEW round 999", date: time(19) },
+  ];
+  const saved = f.record();
+  saved.finalized = true;
+  saved.segments = [
+    {
+      ...saved.segments[0],
+      pointsOpen: 8,
+      pointsFinal: 13,
+      startOid: "a".repeat(40),
+      endOid: "b".repeat(40),
+      usage: { tokens: { input: 100, output: 10, cached: 50 } },
+      usd: 0.1,
+      requests: { m1: { tokens: { input: 100, output: 10, cached: 50 }, usd: 0.1 } },
+      compactionIds: ["compact-1"],
+    },
+    {
+      family: "sol",
+      model: "fake/sol",
+      rounds: [1],
+      why: "Repeated silent stops",
+      switchReason: "stopped-twice",
+      pointsOpen: 13,
+      at: time(10),
+      startOid: "b".repeat(40),
+      usage: { tokens: { input: 200, output: 20, cached: 60 } },
+      usd: 0.2,
+      requests: { m2: { tokens: { input: 200, output: 20, cached: 60 }, usd: 0.2 } },
+      compactionIds: [],
+    },
+  ];
+  const file = join(f.root, "state/vmethod/example-state/workers/31.json");
+  writeFileSync(file, JSON.stringify(saved));
+  f.hooks.diffStats = vi.fn(async () => ({ files: 1, additions: 10, deletions: 2 }));
+  await f.service.grade(31, 5);
+  const log = readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8");
+  const value = JSON.parse(log);
+  expect(value.tokens).toEqual({ input: 300, output: 30, cached: 110 });
+  expect(value.usd).toBeCloseTo(0.3);
+  expect(value.metrics).toMatchObject({
+    reviews: { changes: 1, answer: 1 },
+    blocked: 1,
+    questions: 1,
+    escalations: 1,
+    checkins: 1,
+    stopsWithoutStatus: 1,
+    workingMs: 10000,
+    ownerWaitMs: 4000,
+    peakContext: 260,
+    compactions: 1,
+    diff: f.meta.diff,
+  });
+  expect(value.segments[0].metrics).toMatchObject({
+    workingMs: 8000,
+    questions: 0,
+    stopsWithoutStatus: 1,
+    peakContext: 150,
+    compactions: 1,
+  });
+  expect(value.segments[0]).toMatchObject({
+    points_open: 8,
+    points_final: 13,
+    outcome: "switched",
+  });
+  expect(value.segments[1]).toMatchObject({ points_open: 13, points_final: 5, outcome: "merged" });
+  expect(value.segments[1]).toMatchObject({
+    switchReason: "stopped-twice",
+    usd: 0.2,
+    metrics: {
+      workingMs: 2000,
+      ownerWaitMs: 4000,
+      questions: 1,
+      stopsWithoutStatus: 0,
+      peakContext: 260,
+      compactions: 0,
+      diff: { files: 1, additions: 10, deletions: 2 },
+    },
+  });
+  expect(value.notes).toBe("");
+  expect(value.rounds).toBe(1);
+  expect(value.findings).toEqual([]);
+  expect(value.round_causes).toEqual([]);
+  expect([value.points_open, value.points_final, value.outcome]).toEqual([8, 5, "merged"]);
+  expect(f.hooks.diffStats).toHaveBeenCalledWith(31, "a".repeat(40), "b".repeat(40));
+  await f.service.grade(31, 5);
+  expect(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8")).toBe(log);
+  saved.segments[1].switchReason = "uncontrolled-text";
+  writeFileSync(file, JSON.stringify(saved));
+  await expect(f.service.grade(31, 5)).rejects.toThrow("Invalid model-log record");
+  f.done();
+});
+
+test("model switch refuses a reason outside the fixed list before contacting the backend", async () => {
+  const f = fixture([...start]);
+  await f.service.command(["start", "31"]);
+  await expect(f.service.command(["model", "31", "sol", "--reason", "anything"])).rejects.toThrow(
+    "Invalid switch reason"
+  );
+  expect(f.record().segments).toHaveLength(1);
+  f.done();
+});
+
 test("worker start sends inline authority, task values and the non-negotiable checklist, not task text", async () => {
   const f = fixture([...start]);
   await f.service.command(["start", "31"]);
@@ -353,12 +475,12 @@ test("conflict turn switches the existing session to the cheapest family and res
   expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
     1,
     31,
-    "[orchestrator] NOTE: model switched to glm (conflict-only resolution)"
+    "[orchestrator] NOTE: model switched to glm (conflict-only resolution); reason: conflict-only"
   );
   expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
     2,
     31,
-    "[orchestrator] NOTE: model switched to sol (resume normal work after conflict)"
+    "[orchestrator] NOTE: model switched to sol (resume normal work after conflict); reason: conflict-only"
   );
   f.done();
 });
@@ -507,6 +629,11 @@ test("resume takes the current PR Model and preserves same-backend context witho
   await f.service.command(["start", "31"]);
   f.meta.model = "sol";
   await f.service.resume(31, "Read the PR");
+  expect(f.hooks.modelComment).toHaveBeenCalledWith(
+    31,
+    "[orchestrator] NOTE: model switched to sol (PR Model changed on resume); reason: owner-hint"
+  );
+  expect(f.record().segments.at(-1).switchReason).toBe("owner-hint");
   expect(f.record().model.family).toBe("sol");
   expect(f.record().id).toBe("ses_fake");
   expect(f.prompts.filter((text) => text.includes("You are a worker"))).toHaveLength(1);
@@ -834,7 +961,7 @@ test("model switch snapshots cumulative baseline and grades each family's delta"
   await f.service.command(["model", "31", "sol", "--owner-approved"]);
   expect(f.hooks.modelComment).toHaveBeenCalledExactlyOnceWith(
     31,
-    "[orchestrator] NOTE: model switched to sol (owner-request)"
+    "[orchestrator] NOTE: model switched to sol (owner-request); reason: orchestrator-judgement"
   );
   f.meta.state = "MERGED";
   await f.service.grade(31, 5);
@@ -1985,7 +2112,7 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
   await f.service.command(["model", "31", "sol", "--owner-approved", "--why", "quota"]);
   expect(f.hooks.modelComment).toHaveBeenCalledExactlyOnceWith(
     31,
-    "[orchestrator] NOTE: model switched to sol (quota)"
+    "[orchestrator] NOTE: model switched to sol (quota); reason: quota"
   );
   expect(f.record().id).toBe("ses_fake");
   expect(f.hooks.setModel).toHaveBeenLastCalledWith(31, "sol");
