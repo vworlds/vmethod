@@ -26,6 +26,8 @@ See [gateway commands](gateway.md#commands) for orchestrator-only `issue create`
 tracked owner questions with `ask <issue> <file>`, and
 [task flow](gateway.md#task-flow-commands) for structured full/partial deliveries
 and `link-task <pr> [--complete|--unlink]` Development-link backfill and plan changes.
+See [conflict resolution](gateway.md#conflict-resolution) for `resolve-conflicts <pr>`,
+automatic watcher dispatch, cheap-model turns and `conflicts.escalatePaths`.
 
 ## Worker worktree configuration
 

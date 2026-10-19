@@ -232,6 +232,7 @@ worker send <pr> <file> [--queue|--now]
 worker status [pr]
 worker log <pr> [n]
 worker stop <pr> [--cleanup]
+worker reopen <pr>
 worker wait <pr> [seconds]
 worker permit <pr> [once|always|reject]
 worker model <pr> <family> [--owner-approved] [--why reason]
@@ -716,6 +717,9 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   `revise estimates: …` for own-repository dependents. Missing native links never
   block merging. If GitHub already closed the issue, follow-up still sets its card
   to Done without another close write or duplicate comment.
+- `resolve-conflicts <pr>` starts or reconciles [bounded conflict resolution](#conflict-resolution).
+  Only the orchestrator or watcher can call the `resolveConflicts({ref})` operation;
+  a fixer never receives merge authority.
 - `release-hold <pr>` removes the exact hold banner and any legacy hold title prefix
   in one body/title edit, posts GO, moves the card to In progress and resumes the
   worker if present. It preserves other prompt text and refuses non-held PRs
@@ -732,11 +736,81 @@ lines once the turn ends, without steering. No recorded/reachable session return
 Without worker control, these commands still post and update the board. Workers
 end their turn after a status comment; they do not poll for review replies.
 
-The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `releaseHold`
+The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `resolveConflicts`, `releaseHold`
 and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own their
 signatures. The gateway wires worker status, stop and resume to the recorded opencode
 or Claude session. Only the merge guard treats missing records as stopped;
 ordinary worker status still reports a missing session as unknown.
+
+### Conflict resolution
+
+Use `resolve-conflicts <pr>` to take the cheapest applicable action. The watcher
+dispatches it automatically for a conflicting head or GitHub's behind-base state,
+then reconciles the persisted operation without launching another fixer.
+
+If the head already contains the fetched live base and is not conflicting, the
+command reports `nothing to resolve for #n` without a comment, board change or
+update-branch call. GitHub's specific update-branch 422 response saying there are
+no new commits on the base branch is also an up-to-date success. Other API or
+gateway errors remain errors reported to the orchestrator, not BLOCKED comments
+or board transitions; only genuine conflicts beyond the limits are escalated.
+
+1. A clean merge preview uses GitHub update-branch with the expected head SHA and
+   waits for CI. No agent is started.
+2. An existing reachable worker gets the fixed line
+   `CONFLICT: merge origin/<base>, resolve keeping both sides' behaviour, push, wait-checks, READY`.
+   The gateway chooses the ungated, priced family with the lowest input-plus-output
+   list rate on the same backend (family name breaks ties). A busy turn queues the
+   switch until idle. Normal review resumption restores the original model only
+   after the conflict turn becomes idle; an ANSWER/REVIEW notification received
+   while it runs is queued, not allowed to switch it back early. Both
+   switches retain usage baselines and post the normal model NOTE.
+3. Otherwise a generic fixer starts in the PR's guarded linked worktree on the
+   cheapest ungated, priced family. Its fixed prompt limits edits to conflicted
+   hunks, requires any installed merge-scope verify hook and CI, forbids merging, and requires
+   `[worker] BLOCKED` with conflicting files when it cannot comply.
+
+The gateway independently checks the two merge parents, every remerge-diff path
+and the full-context textual patch. Changes outside conflict-marker regions,
+nontextual/rename/mode conflicts and unsupported evidence fail closed. Passing this
+syntactic check does not prove semantic equivalence. Agent resolutions and approval
+carry require the exact resolved head to
+be present in a clean worktree; the executable project verify hook runs with
+`--scope merge` for generic fixers and approval carry, without gateway credentials.
+Current-base CI must also be green. An unapproved clean update needs no worktree or hook.
+In this conflict-resolution path only, an absent hook is explicitly skipped and CI
+remains mandatory. An installed failing hook blocks. This does not weaken the
+missing-hook refusal for ordinary `merge-task` with `requireCurrentBase: false`;
+legacy `checks.verify` strings are not substituted in either path.
+The overall operation has a one-hour limit and a two-minute worker-start grace.
+An interrupted dispatch reports an error for inspection rather than being replayed blindly.
+
+Optionally configure `conflicts.escalatePaths` as path globs in `vmethod.yaml`:
+
+```yaml
+conflicts:
+  escalatePaths: ["src/physics/**", "src/network/per-tick/**"]
+```
+
+A resolution touching those paths always escalates for owner review, even when
+the fixer proposes a valid patch. Unset means no additional escalation; vmethod's
+own configuration leaves it unset.
+
+Only approval verified on the pre-conflict head can be carried automatically.
+With every guard green, the gateway pins the resolved head and invokes
+`merge-task --carry-approval` with the certification
+"conflict-only resolution; remerge diff limited to conflicted hunks; verify and CI green".
+Normal merge approval, scope, session, CI and head/base-race gates still apply.
+An unapproved PR stops resolved and waits for review. A worker's BLOCKED or QUESTION
+prevents carry even if a pushed patch looks syntactically valid. The gateway posts
+an orchestrator escalation note rather than impersonating a worker when its own
+independent checks refuse certification.
+
+Watcher terminal events are `RESOLVED #n (step k)`,
+`MERGED #n (conflict-only, approval carried)`, or
+`BLOCKED #n: conflict escalated (<reason>)`. Pending work does not wake the
+orchestrator just to repeat CONFLICT. State and locks live under the configured
+per-user state root, not in the package checkout.
 
 ### Task worktree cleanup
 
@@ -746,13 +820,33 @@ branch. Recovery retries unfinished cleanup; completed steps are not replayed.
 Pack branches are retained. A safety skip reports the path and reason without
 blocking the other merge follow-up steps.
 
+Before removing an eligible tree, a separate journaled `session` step hides the
+stopped opencode session from OpenChamber by setting
+`metadata.openchamber.work.state` to `closed`, with `closedAt` and
+`closedBy: vmethod`. It reads and preserves all other metadata, including links;
+it never deletes the session, title or history. Already-closed sessions are a no-op.
+Claude sessions are skipped because they have no OpenChamber list. A failed update
+reports `session not closed: <reason>` without failing the merge; recovery retries
+the unfinished session step.
+
+OpenCode requires the session's location directory for PATCH. If an old task's
+tree is already gone and the update returns 404, cleanup temporarily creates an
+empty directory at the recorded, validated path and retries. It removes only its
+own empty placeholder afterward, never an existing directory or newly added files.
+
+Use `vmethod worker reopen <pr>` to show an old recorded opencode session again for
+inspection. This sets its work state to `open`, preserves the remaining metadata
+and does not restart the worker or recreate its worktree. Claude is a no-op.
+
 For a task closed without merging, the watcher reports a cleanup candidate. Run
 `vmethod worker stop <pr> --cleanup` to interrupt its recorded session and attempt
-the same guarded cleanup. Stopping alone never removes files.
+the same guarded cleanup and session closure. Stopping alone never removes files
+or hides sessions.
 
 Use orchestrator-only `vmethod worktrees` to list merged/closed task trees and their
 sizes in allocated KiB, with a total of removable space. `vmethod worktrees --prune`
 rechecks the guards, removes eligible trees and reports the total actually freed.
+It also closes their stopped opencode sessions with the same best-effort update.
 Size measurements are best-effort, with a separate two-minute timeout per tree.
 A failed or invalid measurement prints `size unknown` and does not prevent listing
 or guarded pruning of that tree or later trees. Totals show the measured KiB plus

@@ -28,7 +28,12 @@ interface Request {
   status?: number;
   cursor?: { previous?: string; next?: string };
 }
-function fixture(requests: Request[] = [], priced = false, solGate: "owner" | "none" = "owner") {
+function fixture(
+  requests: Request[] = [],
+  priced = false,
+  solGate: "owner" | "none" = "owner",
+  flash = false
+) {
   const root = validProject();
   const directory = join(root, ".worktrees/9-task");
   mkdirSync(join(directory, "node_modules/.bin"), { recursive: true });
@@ -37,6 +42,18 @@ function fixture(requests: Request[] = [], priced = false, solGate: "owner" | "n
   writeFileSync(
     join(root, "models.yaml"),
     stringify([
+      ...(flash
+        ? [
+            {
+              family: "glm-flash",
+              model: "fake/glm-flash",
+              kind: "opencode",
+              gate: "none",
+              tier: "standard",
+              price: { input: 0.048, output: 0.2, cached: 0.006 },
+            },
+          ]
+        : []),
       {
         family: "glm",
         model: "fake/glm",
@@ -276,6 +293,180 @@ test("a busy worker refuses a backend change without starting a second session",
   f.done();
 });
 
+test("conflict turn switches the existing session to the cheapest family and restores it before normal work", async () => {
+  const switchTo = (id: string): Request[] => [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: { model: { providerID: "fake", id } },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus(),
+      ...switchTo("glm"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: {
+          text: "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY",
+          delivery: "queue",
+        },
+      },
+      ...measuredStatus(),
+      ...switchTo("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: "Read the PR for normal review work", delivery: "queue" },
+      },
+    ],
+    true
+  );
+  f.meta.model = "sol";
+  await f.service.command(["start", "31", "--owner-approved"]);
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
+  expect(f.record().model.family).toBe("glm");
+  expect(f.record().conflictModel.family).toBe("sol");
+  await f.service.resume(31, "Read the PR for normal review work");
+  expect(f.record().model.family).toBe("sol");
+  expect(f.record().conflictModel).toBeUndefined();
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    1,
+    31,
+    "[orchestrator] NOTE: model switched to glm (conflict-only resolution)"
+  );
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    2,
+    31,
+    "[orchestrator] NOTE: model switched to sol (resume normal work after conflict)"
+  );
+  f.done();
+});
+
+test("a review notification cannot restore sol during an active cheapest-list-price glm-flash conflict turn", async () => {
+  const switchTo = (id: string): Request[] => [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: { model: { providerID: "fake", id } },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus(),
+      ...switchTo("glm-flash"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: expect.stringContaining("CONFLICT:"), delivery: "queue" },
+      },
+      ...measuredStatus().map((r) =>
+        r.path === "/api/session/active" ? { ...r, data: { ses_fake: {} } } : r
+      ),
+      ...measuredStatus(),
+      ...switchTo("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: "[orchestrator] ANSWER is on your PR", delivery: "queue" },
+      },
+    ],
+    true,
+    "owner",
+    true
+  );
+  f.meta.model = "sol";
+  await f.service.command(["start", "31", "--owner-approved"]);
+  await f.service.resolveConflict(31, "dev", ["conflict.txt"]);
+  expect(await f.service.resume(31, "[orchestrator] ANSWER is on your PR")).toBe("queued for #31");
+  expect(f.record().model.family).toBe("glm-flash");
+  expect(f.record().conflictModel.family).toBe("sol");
+  expect(f.hooks.modelComment).toHaveBeenCalledTimes(1);
+  await f.service.watchStatus(31);
+  expect(f.record().model.family).toBe("sol");
+  expect(f.record().conflictModel).toBeUndefined();
+  expect(f.record().segments).toHaveLength(3);
+  expect(f.record().segments[2].baseline).toBeDefined();
+  f.done();
+});
+
+test("session-less conflict starts a fixed generic fixer even for a non-draft direct task", async () => {
+  const f = fixture(
+    start.map((request) =>
+      request.body
+        ? {
+            ...request,
+            body: {
+              text: expect.stringContaining(
+                "You are a generic conflict fixer, not the task implementer."
+              ),
+              delivery: "steer",
+            },
+          }
+        : request
+    ),
+    true
+  );
+  f.meta.draft = false;
+  f.meta.issue = undefined;
+  f.meta.pointsOpen = undefined;
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(3);
+  expect(f.record().model.family).toBe("glm");
+  expect(f.record().points_open).toBeNull();
+  expect(f.record().issue).toBeNull();
+  expect(f.prompts[0]).toContain(
+    "Produce exactly one merge commit resolving the conflict; make no other commits or edits (no changelog fragments, no formatting fixes); if CI fails for any other reason, post [worker] BLOCKED."
+  );
+  f.done();
+});
+
+test.each(["idle drain", "stop"])(
+  "busy conflict turn queues without steering, then %s",
+  async (next) => {
+    const busy = measuredStatus().map((request) =>
+      request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+    );
+    const after: Request[] =
+      next === "stop"
+        ? [{ path: "/api/session/ses_fake/interrupt", method: "POST" }]
+        : [
+            ...measuredStatus(),
+            {
+              path: "/api/session/ses_fake/model",
+              method: "POST",
+              body: { model: { providerID: "fake", id: "glm" } },
+            },
+            { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+            {
+              path: "/api/session/ses_fake/prompt",
+              method: "POST",
+              body: {
+                text: "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY",
+                delivery: "queue",
+              },
+            },
+          ];
+    const f = fixture([...start, ...busy, ...after], true);
+    f.meta.model = "sol";
+    await f.service.command(["start", "31", "--owner-approved"]);
+    expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
+    expect(f.record().model.family).toBe("sol");
+    expect(f.record().pendingConflict).toMatchObject({ base: "dev", model: { family: "glm" } });
+    if (next === "stop") {
+      await f.service.command(["stop", "31"]);
+    } else {
+      expect((await f.service.watchStatus(31)).active).toBe(true);
+      expect(f.record().model.family).toBe("glm");
+    }
+    expect(f.record().pendingConflict).toBeUndefined();
+    f.done();
+  }
+);
 test("resume takes the current PR Model and preserves same-backend context without onboarding again", async () => {
   const f = fixture(
     [

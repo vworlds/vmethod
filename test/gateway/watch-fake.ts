@@ -65,6 +65,9 @@ export class WatchFake {
   cards: ObjectData[] = [];
   readme = "";
   mergeable: boolean | null = true;
+  baseMoved = false;
+  resolveConflicts?: (pr: number) => Promise<string>;
+  conflictPending?: (pr: number) => boolean;
   gone: ObjectData = { state: "closed", closed_at: "2026-10-17T10:01:00Z", user: user() };
   commits: ObjectData[] = [];
   checks: ObjectData[] = [];
@@ -520,7 +523,13 @@ export class WatchFake {
             route === "/repos/example/project/pulls/31" ||
             (this.enableWrites && /^\/repos\/example\/project\/pulls\/27$/.test(route))
           ) {
-            response = this.pulls.length ? { mergeable: this.mergeable } : this.gone;
+            response = this.pulls.length
+              ? {
+                  mergeable: this.mergeable,
+                  mergeable_state: this.baseMoved ? "behind" : "clean",
+                  base: { sha: "b".repeat(40) },
+                }
+              : this.gone;
           } else if (
             route === "/repos/example/project/pulls/24/commits" ||
             route === "/repos/example/project/pulls/31/commits" ||
@@ -697,6 +706,8 @@ export class WatchFake {
         workerSend: async (pr, text) => {
           this.workerSends.push({ pr, text });
         },
+        resolveConflicts: this.resolveConflicts,
+        conflictPending: this.conflictPending,
         board: {
           set: async (input) => {
             if (this.failSet) {

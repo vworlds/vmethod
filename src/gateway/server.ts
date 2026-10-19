@@ -61,6 +61,8 @@ import { LearningsService } from "./learnings.js";
 import { checkLearningPr } from "./learning-check.js";
 import { backfillCosts } from "./cost-backfill.js";
 import type { Price, PriceTier } from "../cost.js";
+import { ConflictService } from "./conflicts.js";
+import { verifyConflictHead } from "./verify-hook.js";
 
 class GatewayServer {
   private readonly config: Config;
@@ -209,14 +211,20 @@ class GatewayServer {
       const pr = this.localNumber(args[1]);
       const task = await this.worktreeTask(pr);
       const stopped = await this.workers.command(args.slice(0, 2));
-      return `${stopped}\nWorktree cleanup ${(await this.worktrees.cleanup(task)) ? "complete" : "skipped; see safety report"}`;
+      const cleaned = await this.worktrees.cleanup(task);
+      return `${stopped}\nWorktree cleanup ${cleaned ? "complete" : "skipped; see safety report"}`;
     }
     return this.workers.command(args);
   };
 
   private get worktrees(): WorktreeService {
-    return new WorktreeService(this.root, this.config, this.env, this.deps, (pr) =>
-      this.deps.workers ? this.deps.workers.status(pr) : this.workers.mergeStatus(pr)
+    return new WorktreeService(
+      this.root,
+      this.config,
+      this.env,
+      this.deps,
+      (pr) => (this.deps.workers ? this.deps.workers.status(pr) : this.workers.mergeStatus(pr)),
+      (pr) => this.workers.closeSession(pr)
     );
   }
 
@@ -596,6 +604,8 @@ class GatewayServer {
           github: this.github,
           workerStatus: (pr) => this.workers.watchStatus(pr),
           workerSend: (pr, text) => this.workers.resume(pr, text),
+          resolveConflicts: (pr) => this.conflicts.resolve(pr),
+          conflictPending: (pr) => this.conflicts.pending(pr),
           board: { set: (input) => this.board.set(input) },
           digest: this.digest,
         },
@@ -613,6 +623,53 @@ class GatewayServer {
   private get ci(): ChecksService {
     return new ChecksService(this.config, this.github, this.filter, this.deps);
   }
+
+  private get conflicts(): ConflictService {
+    return new ConflictService(this.root, this.config, this.env, this.deps, {
+      snapshot: async (pr) => {
+        await this.flow.conflictTask(String(pr));
+        return this.ci.snapshot(String(pr));
+      },
+      approved: (pr, head) => this.approvalFor(String(pr), head),
+      update: async (pr, head) => {
+        await this.github.rest(
+          `/repos/${String(this.config.repo)}/pulls/${pr}/update-branch`,
+          "PUT",
+          {
+            expected_head_sha: head,
+          },
+          false
+        );
+      },
+      wait: (pr) => this.ci.wait({ ref: String(pr) }),
+      fix: (pr, base, files) => this.workers.resolveConflict(pr, base, files),
+      status: (pr) => this.workers.mergeStatus(pr, true),
+      stop: async (pr) => {
+        await this.workers.command(["stop", String(pr)]);
+      },
+      workerBlocked: async (pr, since) => {
+        const meta = await this.workerMetadata(pr);
+        const latest = meta.comments
+          .filter((comment) => comment.role === "worker" && Date.parse(comment.date) >= since)
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .at(-1);
+        return !!latest && /^\[worker\] (BLOCKED|QUESTION)\b/.test(latest.body);
+      },
+      directory: (pr) => this.workers.conflictDirectory(pr),
+      verify: async (directory, head) => {
+        return verifyConflictHead(directory, head, this.config, this.env, this.deps);
+      },
+      blocked: async (pr, reason, files) => {
+        await this.flow.escalateConflict(String(pr), reason, files);
+      },
+      merge: async (pr, reason, head) => {
+        await this.flow.merge(String(pr), false, reason, head);
+      },
+    });
+  }
+
+  resolveConflicts: Handlers["resolveConflicts"] = async ({ ref }) =>
+    this.conflicts.resolve(this.localNumber(ref));
 
   private get verification(): VerificationService {
     return new VerificationService(
@@ -844,6 +901,7 @@ class GatewayServer {
       workers: this.deps.workers ?? {
         status: (pr, forMerge) => this.workers.mergeStatus(pr, forMerge),
         stop: (pr) => this.workers.command(["stop", String(pr)]),
+        close: (pr) => this.workers.closeSession(pr),
         resume: (pr, prompt) => this.workers.resume(pr, prompt),
       },
     };
@@ -1656,6 +1714,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     reviewTask: server.reviewTask,
     askIssue: server.askIssue,
     mergeTask: server.mergeTask,
+    resolveConflicts: server.resolveConflicts,
     linkTask: server.linkTask,
     releaseHold: server.releaseHold,
     workerStatus: server.workerStatus,
@@ -1697,6 +1756,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     reviewTask: ["orchestrator"],
     askIssue: ["orchestrator"],
     mergeTask: ["orchestrator"],
+    resolveConflicts: ["orchestrator"],
     linkTask: ["orchestrator"],
     releaseHold: ["orchestrator"],
     workerStatus: ["orchestrator"],

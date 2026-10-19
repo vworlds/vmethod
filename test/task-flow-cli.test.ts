@@ -29,6 +29,29 @@ test("owner reply accepts the reply flag before the file", async () => {
   );
 });
 
+test("resolve-conflicts routes only its single PR argument through the orchestrator transport", async () => {
+  const calls: unknown[] = [];
+  const transport: Transport = {
+    call: async (operation, input, ctx) => {
+      calls.push({ operation, input, ctx });
+      return "RESOLVED #27 (step 1)" as never;
+    },
+  };
+  expect(
+    await taskFlowVerb(transport, "resolve-conflicts", ["27"], { VMETHOD_ROLE: "orchestrator" })
+  ).toBe("RESOLVED #27 (step 1)");
+  expect(calls).toEqual([
+    { operation: "resolveConflicts", input: { ref: "27" }, ctx: { role: "orchestrator" } },
+  ]);
+  calls.length = 0;
+  for (const args of [[], ["27", "--force"]]) {
+    await expect(
+      taskFlowVerb(transport, "resolve-conflicts", args, { VMETHOD_ROLE: "orchestrator" })
+    ).rejects.toThrow("Usage: resolve-conflicts");
+  }
+  expect(calls).toEqual([]);
+});
+
 test("task-flow CLI routes typed inputs and rejects malformed options before transport", async () => {
   const calls: unknown[] = [];
   const transport: Transport = {

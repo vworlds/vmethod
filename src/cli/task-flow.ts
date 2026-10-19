@@ -9,6 +9,12 @@ export async function taskFlowVerb(
   env: NodeJS.ProcessEnv
 ): Promise<string> {
   const ctx = context(env);
+  if (verb === "resolve-conflicts") {
+    if (args.length !== 1) {
+      throw new Error("Usage: resolve-conflicts <pr>");
+    }
+    return transport.call("resolveConflicts", { ref: args[0] }, ctx);
+  }
   if (verb === "ask") {
     if (args.length !== 2) {
       throw new Error("Usage: ask <issue> <file>");

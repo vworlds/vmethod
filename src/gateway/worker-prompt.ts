@@ -1,7 +1,7 @@
 /** Render onboarding for a fresh worker context, never task/source text as instructions. */
 export function workerFirstPrompt(task: {
   pr: number;
-  issue: number;
+  issue: number | null;
   repo: string;
   base: string;
   branch: string;
