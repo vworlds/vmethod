@@ -419,6 +419,9 @@ test("session-less conflict starts a fixed generic fixer even for a non-draft di
   expect(f.record().model.family).toBe("glm");
   expect(f.record().points_open).toBeNull();
   expect(f.record().issue).toBeNull();
+  expect(f.prompts[0]).toContain(
+    "Produce exactly one merge commit resolving the conflict; make no other commits or edits (no changelog fragments, no formatting fixes); if CI fails for any other reason, post [worker] BLOCKED."
+  );
   f.done();
 });
 
