@@ -23,8 +23,12 @@ Remove yourself or hand over when done. Every Status or Assignee change also set
 Progress; do not leave stale state or manually patch Progress.
 In review has exactly one assignee, except linked task issues. Owner waits belong
 only on the task PR: linked issues stay In review without an owner assignee or
-owner Progress; follow their Development link. The watcher clears stale owner
-mirrors; see [protocol transitions](protocol.md). Use `board set` only for
+owner Progress; follow their Development link. After a task PR merges, the watcher
+keeps this exception while merge follow-up is pending: an incomplete journal updated
+within ten minutes, or less than ten minutes since the merge. Once that window expires,
+an issue still In review without an assignee is a board violation.
+The watcher clears stale owner mirrors; see [protocol transitions](protocol.md).
+Use `board set` only for
 explicit housekeeping with validated Progress, not as a substitute for the
 [tracked owner-question commands](orchestrator-guide.md).
 

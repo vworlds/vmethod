@@ -62,6 +62,86 @@ test.each(["assignment", "progress", "both"])(
   }
 );
 
+test.each(["missing", "active", "stale"])(
+  "linked issue is exempt after an owner merge only while follow-up is pending (%s journal)",
+  async (journalState) => {
+    const f = setup();
+    f.task();
+    const body = '<!-- vmethod-task {"issues":[6]} -->';
+    f.pulls[0].body = body;
+    f.cards[0].progress = { text: "👤🔍" };
+    object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards.push(f.card(6, "In review"));
+    const loop = f.loop();
+    await f.once(loop);
+    f.advance();
+    f.pulls = [];
+    f.gone = {
+      merged: true,
+      merged_at: f.iso(),
+      user: user(),
+      merged_by: user(0),
+      body,
+    };
+    const violations = (events: WatchEvent[]) =>
+      events.filter((event) => event.kind === "board-violation" && event.line.includes("#6:"));
+    const merged = await f.once(loop);
+    expect(violations(merged)).toEqual([]);
+    expect(merged.some((event) => event.kind === "button-merge")).toBe(true);
+    await f.ack(loop, merged);
+    const journal = join(f.dir, "merge-24.json");
+    if (journalState !== "missing") {
+      writeFileSync(journal, JSON.stringify({ done: [] }));
+      utimesSync(journal, new Date(f.iso()), new Date(f.iso()));
+    }
+    f.advance(599_999);
+    expect(violations(await f.once(loop))).toEqual([]);
+    f.advance(1);
+    if (journalState === "active") {
+      utimesSync(journal, new Date(f.iso()), new Date(f.iso()));
+    }
+    const expired = await f.once(loop);
+    expect(violations(expired)).toHaveLength(journalState === "active" ? 0 : 1);
+    if (journalState === "active") {
+      f.advance(600_000);
+      expect(violations(await f.once(loop))).toHaveLength(1);
+    }
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test.each(["complete", "closed", "untrusted", "missing merge time"])(
+  "linked issue still reports a violation when its gone task is %s",
+  async (scenario) => {
+    const f = setup();
+    f.task();
+    const body = '<!-- vmethod-task {"issues":[6]} -->';
+    f.pulls[0].body = body;
+    f.cards[0].progress = { text: "👤🔍" };
+    object(f.cards[0].content).assignees = { nodes: [{ login: "owner" }] };
+    f.cards.push(f.card(6, "In review"));
+    const loop = f.loop();
+    await f.once(loop);
+    f.advance();
+    f.pulls = [];
+    Object.assign(f.gone, {
+      merged: scenario !== "closed",
+      merged_at: scenario === "missing merge time" ? null : f.iso(),
+      user: scenario === "untrusted" ? { login: "unknown", id: 99999, type: "User" } : user(),
+      merged_by: user(0),
+      body,
+    });
+    if (scenario === "complete") {
+      writeFileSync(join(f.dir, "merge-24.json"), JSON.stringify({ done: ["follow-up"] }));
+    }
+    const events = await f.once(loop);
+    expect(
+      events.filter((event) => event.kind === "board-violation" && event.line.includes("#6:"))
+    ).toHaveLength(1);
+    expect(f.reports).toEqual([]);
+  }
+);
+
 test("a same-session merge waits for a follow-up completed 30 seconds later", async () => {
   const f = setup();
   f.task();
