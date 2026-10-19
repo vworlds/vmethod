@@ -3,6 +3,7 @@ export const verbs = [
   { name: "issue", stub: "scripts/orchestrator/issue.sh" },
   { name: "scope-review", stub: "scripts/orchestrator/scope-review.sh" },
   { name: "worker", stub: "scripts/orchestrator/worker.sh" },
+  { name: "worktrees", stub: "scripts/orchestrator/worktrees.sh" },
   { name: "suggest-model", stub: "scripts/orchestrator/suggest-model.sh" },
   { name: "grade", stub: "scripts/orchestrator/grade.sh" },
   { name: "cost", stub: "scripts/orchestrator/cost.sh" },

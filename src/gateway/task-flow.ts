@@ -27,6 +27,7 @@ import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
 import { runVerifyHook } from "./verify-hook.js";
+import { WorktreeService } from "./worktrees.js";
 
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;
@@ -1041,9 +1042,11 @@ export class TaskFlow {
       }
     }
     this.save(file, journal);
-    const step = async (name: string, action: () => Promise<void>) => {
+    const step = async (name: string, action: () => Promise<void | boolean>) => {
       if (!journal.done.includes(name)) {
-        await action();
+        if ((await action()) === false) {
+          return;
+        }
         journal.done.push(name);
         this.save(file, journal);
       }
@@ -1155,6 +1158,13 @@ export class TaskFlow {
         );
         journal.install = Boolean(changed.trim());
       });
+    }
+    if (!pack) {
+      await step("worktree", async () =>
+        new WorktreeService(this.root, this.config, this.env, this.deps, (pr) =>
+          this.status(String(pr))
+        ).cleanup({ pr: this.number(ref), branch, base, head, state: "MERGED" })
+      );
     }
     // All state/board/reporting is complete before the package may replace itself.
     await step("follow-up", async () => {

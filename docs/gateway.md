@@ -225,7 +225,7 @@ worker adopt --from-legacy
 worker send <pr> <file> [--queue|--now]
 worker status [pr]
 worker log <pr> [n]
-worker stop <pr>
+worker stop <pr> [--cleanup]
 worker wait <pr> [seconds]
 worker permit <pr> [once|always|reject]
 worker model <pr> <family> [--owner-approved] [--why reason]
@@ -778,6 +778,40 @@ Watcher terminal events are `RESOLVED #n (step k)`,
 `BLOCKED #n: conflict escalated (<reason>)`. Pending work does not wake the
 orchestrator just to repeat CONFLICT. State and locks live under the configured
 per-user state root, not in the package checkout.
+
+### Task worktree cleanup
+
+After confirming a merge and stopping its worker, `merge-task` journals a `worktree`
+step that removes the task tree, prunes Git worktree metadata and deletes its local
+branch. Recovery retries unfinished cleanup; completed steps are not replayed.
+Pack branches are retained. A safety skip reports the path and reason without
+blocking the other merge follow-up steps.
+
+For a task closed without merging, the watcher reports a cleanup candidate. Run
+`vmethod worker stop <pr> --cleanup` to interrupt its recorded session and attempt
+the same guarded cleanup. Stopping alone never removes files.
+
+Use orchestrator-only `vmethod worktrees` to list merged/closed task trees and their
+sizes in allocated KiB, with a total of removable space. `vmethod worktrees --prune`
+rechecks the guards, removes eligible trees and reports the total actually freed.
+Size measurements are best-effort, with a separate two-minute timeout per tree.
+A failed or invalid measurement prints `size unknown` and does not prevent listing
+or guarded pruning of that tree or later trees. Totals show the measured KiB plus
+the count of eligible/removed trees with unknown sizes, never treating unknown as zero.
+This uses the existing orchestrator-only `worker` transport operation. It never
+stops sessions implicitly. Open tasks, ambiguous branch reuse and foreign PR heads
+are not cleanup candidates.
+
+Cleanup only touches registered trees under this repository's configured
+`branches.worktreeRoot`, with `branches.worktreePrefix` and an exact task-branch
+match. Main/current checkouts, symlink aliases and other repositories are refused.
+Tracked modifications and untracked non-ignored files are retained; ignored files
+such as `node_modules` and `.tmp/` may be removed. Local commits must be reachable
+from the merged PR head or the local base branch; for an unmerged closed PR, only
+the base proves containment. Otherwise cleanup reports unpushed work and retains
+the tree. A live or unknown session, unavailable commit objects or failed safety
+read also retains data. Inspect the reported reason before retrying; do not bypass
+these checks with a manual forced removal.
 
 Merge follow-up journals live in the per-user state directory. A partial failure
 resumes board, issue, branch and checkout work without merging again. Already-merged

@@ -8,6 +8,7 @@ import { proveConflictMerge } from "./conflict-proof.js";
 import type { CiSnapshot } from "./checks.js";
 import type { Verdict } from "./transport.js";
 import { cleanBaseMerges } from "./clean-base.js";
+import { liveBaseHead } from "./base-head.js";
 
 export const conflictCertification =
   "conflict-only resolution; remerge diff limited to conflicted hunks; verify and CI green";
@@ -107,8 +108,7 @@ export class ConflictService {
       throw new Error("Conflict preview fetch failed");
     }
     if (
-      (await git.run("rev-parse", `refs/remotes/origin/${snapshot.base}`)).trim() !==
-        snapshot.baseSha ||
+      (await liveBaseHead(snapshot.base, { git })) !== snapshot.baseSha ||
       (await git.run("rev-parse", `refs/remotes/origin/${snapshot.branch}`)).trim() !==
         snapshot.head
     ) {

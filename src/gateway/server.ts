@@ -2,6 +2,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
 import { workerWorktree } from "./worker-path.js";
+import { WorktreeService, type WorktreeTask } from "./worktrees.js";
 import { GitHubClient, type Dependencies } from "./client.js";
 import { Digest } from "./digest.js";
 import {
@@ -200,8 +201,77 @@ class GatewayServer {
     if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) {
       throw new Error("Invalid worker arguments");
     }
+    if (args[0] === "worktrees") {
+      if (args.length > 2 || (args[1] && args[1] !== "--prune")) {
+        throw new Error("Usage: vmethod worktrees [--prune]");
+      }
+      return this.worktrees.list((branch) => this.worktreeTaskFor(branch), args[1] === "--prune");
+    }
+    if (args[0] === "stop" && args.length === 3 && args[2] === "--cleanup") {
+      const pr = this.localNumber(args[1]);
+      const task = await this.worktreeTask(pr);
+      const stopped = await this.workers.command(args.slice(0, 2));
+      return `${stopped}\nWorktree cleanup ${(await this.worktrees.cleanup(task)) ? "complete" : "skipped; see safety report"}`;
+    }
     return this.workers.command(args);
   };
+
+  private get worktrees(): WorktreeService {
+    return new WorktreeService(this.root, this.config, this.env, this.deps, (pr) =>
+      this.deps.workers ? this.deps.workers.status(pr) : this.workers.mergeStatus(pr)
+    );
+  }
+
+  private async worktreeTask(pr: number): Promise<WorktreeTask> {
+    const item = await this.flowThread(String(pr), "pr");
+    if (
+      object(item.headRepository).nameWithOwner !== this.config.repo ||
+      !isTaskPrompt(String(item.body))
+    ) {
+      throw new Error("Cleanup requires a same-repository task PR");
+    }
+    return {
+      pr,
+      branch: String(item.headRefName),
+      base: String(item.baseRefName),
+      head: String(item.headRefOid),
+      state: String(item.state),
+    };
+  }
+
+  private async worktreeTaskFor(branch: string): Promise<WorktreeTask | undefined> {
+    const tasks: number[] = [];
+    for (let page = 1; ; page++) {
+      const data = await this.github.rest(
+        `/repos/${String(this.config.repo)}/pulls?state=all&head=${encodeURIComponent(`${String(this.config.repo).split("/")[0]}:${branch}`)}&per_page=100&page=${page}`
+      );
+      if (!Array.isArray(data)) {
+        throw new Error("Missing worktree PR listing");
+      }
+      for (const value of data) {
+        const item = object(value);
+        // Do not read the bodies/threads of unaccepted authors or foreign heads.
+        if (
+          object(object(item.head).repo).full_name !== this.config.repo ||
+          object(item.head).ref !== branch
+        ) {
+          continue;
+        }
+        // An open or unaccepted PR on this same branch makes old closed mappings unsafe.
+        if (!this.filter.identity(restActor(item.user)) || item.state === "open") {
+          return undefined;
+        }
+        if (isTaskPrompt(String(item.body)) && Number.isSafeInteger(item.number)) {
+          tasks.push(Number(item.number));
+        }
+      }
+      if (data.length < 100) {
+        break;
+      }
+    }
+    // Ambiguous branch reuse is never a deletion candidate.
+    return tasks.length === 1 ? this.worktreeTask(tasks[0]) : undefined;
+  }
   grade: Handlers["grade"] = async ({ ref, points }) =>
     this.workers.grade(this.localNumber(ref), points);
   costBackfill: Handlers["costBackfill"] = async ({ dryRun, prs }) => {

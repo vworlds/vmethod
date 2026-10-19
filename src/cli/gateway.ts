@@ -78,6 +78,11 @@ export async function gatewayVerb(
       return transport.call("scopeReview", { ref: args[0], file: args[1] }, ctx);
     case "worker":
       return transport.call("worker", { args }, ctx);
+    case "worktrees":
+      if (args.length > 1 || (args[0] && args[0] !== "--prune")) {
+        throw new Error("Usage: vmethod worktrees [--prune]");
+      }
+      return transport.call("worker", { args: ["worktrees", ...args] }, ctx);
     case "suggest-model":
       if (args.length !== 1) {
         throw new Error("Usage: suggest-model <issue>");

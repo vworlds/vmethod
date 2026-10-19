@@ -1405,6 +1405,9 @@ test("CLOSED clears Progress; owner button merges are pending-safe and paced unt
   f.pulls = [];
   const closed = await f.tick(loop);
   expect(closed.map((e) => e.kind)).toEqual(["closed"]);
+  expect(closed[0].line).toContain(
+    "task worktree is a cleanup candidate: run worker stop 24 --cleanup"
+  );
   expect(object(f.cards[0].progress).text).toBeNull();
   await f.ack(loop, closed);
   // A separately opened task can subsequently be button-merged.

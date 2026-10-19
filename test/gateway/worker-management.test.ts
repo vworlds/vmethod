@@ -8,6 +8,7 @@ import recordedFields from "../fixtures/github/board-fields.json" with { type: "
 import learningCapture from "../fixtures/github/learnings-recorded.json" with { type: "json" };
 import legacyRecords from "../fixtures/legacy-workers/records.json" with { type: "json" };
 import sessionCapture from "../fixtures/usage/opencode-session.json" with { type: "json" };
+import recordedClosedPulls from "../fixtures/github/diagnostic-pulls-closed.json" with { type: "json" };
 import type { Dependencies } from "../../src/gateway/client.js";
 import { object } from "../../src/gateway/people.js";
 import { validProject } from "../helpers.js";
@@ -375,6 +376,96 @@ test("send reads the PR card's blocked Progress and refuses before contacting th
     f.transport.call("worker", { args: ["send", "31", file, "--now"] }, f.ctx)
   ).rejects.toThrow("answer on the PR: review 31 answer|changes <file>");
   expect(f.requests.filter((request) => request.includes("opencode.invalid"))).toEqual(before);
+  f.done();
+});
+
+test.each(["closed", "foreign", "unknown-author", "open", "ambiguous"])(
+  "worktrees CLI maps only same-repository closed tasks and preserves live sessions: %s",
+  async (scenario) => {
+    const f = fixture("auto-");
+    f.pr.state = "CLOSED";
+    f.pr.labels = { nodes: [], pageInfo: { hasNextPage: false } };
+    const fetch = f.deps.fetch;
+    let listings = 0;
+    f.deps.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/repos/example/project/pulls") {
+        expect(url.searchParams.get("head")).toBe("example:9-task");
+        expect(url.searchParams.get("state")).toBe("all");
+        listings++;
+        // Recorded REST pull-list shape (diagnostic-PROVENANCE.md), sanitized to this task.
+        const pull = {
+          ...structuredClone(recordedClosedPulls[0]),
+          number: 31,
+          state: scenario === "open" ? "open" : "closed",
+          user: { login: "worker", id: scenario === "unknown-author" ? 999 : 102, type: "User" },
+          head: {
+            ...recordedClosedPulls[0].head,
+            ref: "9-task",
+            repo: {
+              ...recordedClosedPulls[0].head.repo,
+              full_name: scenario === "foreign" ? "example/foreign" : "example/project",
+            },
+          },
+          body: f.pr.body,
+        };
+        return Response.json(scenario === "ambiguous" ? [pull, { ...pull, number: 32 }] : [pull]);
+      }
+      return fetch(input, init);
+    };
+    f.deps.workers = { status: async () => "live", resume: async () => {} };
+    f.deps.exec = async (file, args) => {
+      if (file === "git" && args.join(" ") === "worktree list --porcelain -z") {
+        return `worktree ${f.directory}\0HEAD ${f.pr.headRefOid}\0branch refs/heads/9-task\0\0`;
+      }
+      if (file === "du" && args.join(" ") === `-sk -- ${f.directory}`) {
+        return `512\t${f.directory}\n`;
+      }
+      throw new Error(`Unexpected cleanup command: ${file} ${args.join(" ")}`);
+    };
+    const result = await gatewayVerb(f.transport, "worktrees", ["--prune"], {
+      VMETHOD_ROLE: "orchestrator",
+    });
+    if (scenario === "closed") {
+      expect(result).toContain(`${f.directory}: 512 KiB; skipped: worker session live or unknown`);
+    } else {
+      expect(result).toBe("Total freed: 0 KiB");
+    }
+    expect(result).toContain("Total freed: 0 KiB");
+    expect(listings).toBe(1);
+    f.done();
+  }
+);
+
+test("worker stop --cleanup interrupts first and refuses an unconfirmed stop", async () => {
+  const f = fixture("auto-");
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  f.pr.state = "CLOSED";
+  f.pr.labels = { nodes: [], pageInfo: { hasNextPage: false } };
+  let interrupted = false;
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (new URL(String(input)).pathname.endsWith("/interrupt")) {
+      expect(init?.method).toBe("POST");
+      interrupted = true;
+      return Response.json({ data: {} });
+    }
+    return fetch(input, init);
+  };
+  f.deps.workers = {
+    status: async () => {
+      expect(interrupted).toBe(true);
+      return "unknown";
+    },
+    resume: async () => {},
+  };
+  expect(await f.transport.call("worker", { args: ["stop", "31", "--cleanup"] }, f.ctx)).toContain(
+    "Worktree cleanup skipped"
+  );
+  expect(interrupted).toBe(true);
+  expect(f.deps.report).toHaveBeenCalledWith(
+    expect.stringContaining("worker session live or unknown")
+  );
   f.done();
 });
 
