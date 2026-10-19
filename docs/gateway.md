@@ -727,6 +727,13 @@ Use `resolve-conflicts <pr>` to take the cheapest applicable action. The watcher
 dispatches it automatically for a conflicting head or GitHub's behind-base state,
 then reconciles the persisted operation without launching another fixer.
 
+If the head already contains the fetched live base and is not conflicting, the
+command reports `nothing to resolve for #n` without a comment, board change or
+update-branch call. GitHub's specific update-branch 422 response saying there are
+no new commits on the base branch is also an up-to-date success. Other API or
+gateway errors remain errors reported to the orchestrator, not BLOCKED comments
+or board transitions; only genuine conflicts beyond the limits are escalated.
+
 1. A clean merge preview uses GitHub update-branch with the expected head SHA and
    waits for CI. No agent is started.
 2. An existing reachable worker gets the fixed line
@@ -753,7 +760,7 @@ remains mandatory. An installed failing hook blocks. This does not weaken the
 missing-hook refusal for ordinary `merge-task` with `requireCurrentBase: false`;
 legacy `checks.verify` strings are not substituted in either path.
 The overall operation has a one-hour limit and a two-minute worker-start grace.
-An interrupted dispatch is escalated rather than replayed blindly.
+An interrupted dispatch reports an error for inspection rather than being replayed blindly.
 
 Optionally configure `conflicts.escalatePaths` as path globs in `vmethod.yaml`:
 

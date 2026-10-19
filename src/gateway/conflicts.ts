@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
 import { join, matchesGlob } from "node:path";
 import type { Config } from "../config.js";
-import type { Dependencies } from "./client.js";
+import { GitHubHttpError, type Dependencies } from "./client.js";
 import { stateRoot } from "./digest.js";
 import { GitTransport } from "./git.js";
 import { proveConflictMerge } from "./conflict-proof.js";
@@ -58,7 +58,9 @@ export class ConflictService {
     );
   }
 
-  /** Start once per conflicting head, or reconcile a previously dispatched resolution. */
+  /** Start once per conflicting head, or reconcile a previously dispatched resolution.
+   * Current heads are no-ops; unexpected errors propagate without conflict escalation.
+   */
   async resolve(pr: number): Promise<string> {
     if (!Number.isSafeInteger(pr) || pr < 1) {
       throw new Error("Expected a positive PR number");
@@ -82,22 +84,6 @@ export class ConflictService {
   private async run(pr: number): Promise<string> {
     const snapshot = await this.hooks.snapshot(pr);
     const old = this.read(pr);
-    if (
-      old &&
-      (this.pending(pr) || old.resolvedHead === snapshot.head || old.head === snapshot.head)
-    ) {
-      if (old.phase === "starting") {
-        return this.block(
-          pr,
-          old,
-          "previous dispatch was interrupted; inspect worker/update state"
-        );
-      }
-      if (old.phase !== "waiting") {
-        return this.event(pr, old);
-      }
-      return this.safeFinish(pr, old, snapshot);
-    }
     const git = new GitTransport(this.config, this.env, this.deps, this.root);
     if (
       !(await git.transfer("fetch", [
@@ -114,6 +100,27 @@ export class ConflictService {
     ) {
       throw new Error("Head or base moved during conflict preview; run again");
     }
+    const active = old && ["starting", "waiting"].includes(old.phase);
+    if (
+      !snapshot.conflict &&
+      (!active || (old.head === snapshot.head && old.files.length === 0)) &&
+      (await git.run("merge-base", snapshot.baseSha, snapshot.head)).trim() === snapshot.baseSha
+    ) {
+      if (active) {
+        old.phase = "resolved";
+        old.resolvedHead = snapshot.head;
+        this.save(pr, old);
+      }
+      return `nothing to resolve for #${pr}`;
+    }
+    if (old && (active || old.resolvedHead === snapshot.head || old.head === snapshot.head)) {
+      if (old.phase === "starting") {
+        throw new Error(
+          `Conflict #${pr}: previous dispatch was interrupted; inspect worker/update state`
+        );
+      }
+      return old.phase === "waiting" ? this.finish(pr, old, snapshot) : this.event(pr, old);
+    }
     const files = await git.mergeConflicts(snapshot.head, snapshot.baseSha);
     const record: Resolution = {
       head: snapshot.head,
@@ -126,42 +133,38 @@ export class ConflictService {
       started: this.deps.now(),
     };
     this.save(pr, record);
-    try {
-      if (!files.length) {
+    if (!files.length) {
+      try {
         await this.hooks.update(pr, snapshot.head);
-        record.phase = "waiting";
+      } catch (error) {
+        if (
+          !(error instanceof GitHubHttpError) ||
+          error.status !== 422 ||
+          !/\bthere are no new commits on the base branch\b/i.test(error.message)
+        ) {
+          throw error;
+        }
+        record.phase = "resolved";
+        record.resolvedHead = snapshot.head;
         this.save(pr, record);
-        const verdict = await this.hooks.wait(pr);
-        if (verdict.code === 1 || verdict.code === 3) {
-          return this.block(pr, record, verdict.code === 1 ? "CI red" : "base conflicts again");
-        }
-        if (verdict.code === 2) {
-          return `PENDING #${pr}: waiting for CI`;
-        }
-        return this.safeFinish(pr, record, await this.hooks.snapshot(pr));
+        return `nothing to resolve for #${pr}`;
       }
-      record.step = await this.hooks.fix(pr, snapshot.base, files);
-      record.dispatched = true;
       record.phase = "waiting";
       this.save(pr, record);
-      return `PENDING #${pr}: conflict fixer dispatched (step ${record.step})`;
-    } catch (error) {
-      this.deps.report(
-        `conflict #${pr} failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-      return this.block(pr, record, "conflict dispatch failed; see gateway diagnostics");
+      const verdict = await this.hooks.wait(pr);
+      if (verdict.code === 1 || verdict.code === 3) {
+        return this.block(pr, record, verdict.code === 1 ? "CI red" : "base conflicts again");
+      }
+      if (verdict.code === 2) {
+        return `PENDING #${pr}: waiting for CI`;
+      }
+      return this.finish(pr, record, await this.hooks.snapshot(pr));
     }
-  }
-
-  private async safeFinish(pr: number, record: Resolution, snapshot: CiSnapshot): Promise<string> {
-    try {
-      return await this.finish(pr, record, snapshot);
-    } catch {
-      this.deps.report(
-        `Conflict #${pr}: verification/merge operation failed; inspect hook logs and gateway diagnostics before retrying`
-      );
-      return this.block(pr, record, "conflict verification or merge could not be certified");
-    }
+    record.step = await this.hooks.fix(pr, snapshot.base, files);
+    record.dispatched = true;
+    record.phase = "waiting";
+    this.save(pr, record);
+    return `PENDING #${pr}: conflict fixer dispatched (step ${record.step})`;
   }
 
   private async finish(pr: number, record: Resolution, snapshot: CiSnapshot): Promise<string> {
@@ -273,6 +276,9 @@ export class ConflictService {
   }
 
   private async block(pr: number, record: Resolution, reason: string): Promise<string> {
+    if (!record.files.length) {
+      throw new Error(`Conflict resolution #${pr}: ${reason}`);
+    }
     record.phase = "blocked";
     record.reason = reason;
     this.save(pr, record);
