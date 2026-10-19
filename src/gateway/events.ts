@@ -13,8 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
 import manifest from "../../package.json" with { type: "json" };
 import { WatchDelivery } from "./watch-delivery.js";
 import type { Config } from "../config.js";
@@ -439,15 +438,23 @@ export class EventLoop {
         new WatchDelivery(this.dir, this.host.deps.now).append(result.events);
       }
       if (input.watchStart && !this.marked(`guide-seen-${VERSION}`)) {
-        const here = dirname(fileURLToPath(import.meta.url));
-        const guide = [
-          join(here, "../docs/orchestrator-guide.md"),
-          join(here, "../../docs/orchestrator-guide.md"),
-        ].find(existsSync);
-        if (!guide) {
-          throw new Error("Cannot locate orchestrator-guide.md");
+        const projectRoot = resolve(this.host.env.VMETHOD_ROOT || this.host.root);
+        const packageGuide = join(
+          projectRoot,
+          "node_modules/@vworlds/vmethod/docs/orchestrator-guide.md"
+        );
+        const selfGuide = join(projectRoot, "docs/orchestrator-guide.md");
+        const guide = [packageGuide, selfGuide].find(existsSync);
+        let selfHosted = false;
+        try {
+          selfHosted =
+            object(JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8"))).name ===
+            "@vworlds/vmethod";
+        } catch {
+          // A consumer root may not have a readable package manifest.
         }
-        const notice = `vmethod ${VERSION} in use: read ${guide} (changes: https://github.com/vworlds/vmethod/releases/tag/v${VERSION})`;
+        const canonical = selfHosted ? selfGuide : packageGuide;
+        const notice = `vmethod ${VERSION} in use: read ${guide ?? `${canonical} (not found locally)`} (changes: https://github.com/vworlds/vmethod/releases/tag/v${VERSION})`;
         return { ...result, notice };
       }
       return result;

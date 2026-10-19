@@ -98,18 +98,35 @@ test.each(["READY FOR REVIEW (round 1)", "QUESTION", "BLOCKED"])(
 test("a version notice is per state directory and version marker, not per process", async () => {
   const f = new WatchFake();
   try {
+    const guide = join(f.root, "node_modules/@vworlds/vmethod/docs/orchestrator-guide.md");
+    mkdirSync(join(f.root, "node_modules/@vworlds/vmethod/docs"), { recursive: true });
+    writeFileSync(guide, "guide");
     mkdirSync(f.dir, { recursive: true });
     writeFileSync(join(f.dir, "guide-seen-0.0.0-old"), "");
     let loop = f.loop();
     const first = await loop.nextEvents({ timeoutSeconds: 0, watchStart: true });
-    expect(first.notice).toMatch(
-      /^vmethod 0.0.0-dev in use: read .*orchestrator-guide.md \(changes: /
-    );
+    expect(first.notice).toContain(`read ${guide}`);
     await loop.nextEvents({ timeoutSeconds: 0, guideSeen: true });
     expect(readFileSync(join(f.dir, "guide-seen-0.0.0-dev"), "utf8")).toBe("");
     loop.close();
     loop = f.loop();
     expect((await loop.nextEvents({ timeoutSeconds: 0, watchStart: true })).notice).toBeUndefined();
+  } finally {
+    f.done();
+  }
+});
+
+test("a missing guide is informational and can still be acknowledged", async () => {
+  const f = new WatchFake();
+  try {
+    mkdirSync(f.dir, { recursive: true });
+    const loop = f.loop();
+    const result = await loop.nextEvents({ timeoutSeconds: 0, watchStart: true });
+    expect(result.notice).toContain(
+      "node_modules/@vworlds/vmethod/docs/orchestrator-guide.md (not found locally)"
+    );
+    await loop.nextEvents({ timeoutSeconds: 0, guideSeen: true });
+    expect(readFileSync(join(f.dir, "guide-seen-0.0.0-dev"), "utf8")).toBe("");
   } finally {
     f.done();
   }
