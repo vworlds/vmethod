@@ -18,6 +18,7 @@ import learningCapture from "../fixtures/github/learnings-recorded.json" with { 
 import legacyRecords from "../fixtures/legacy-workers/records.json" with { type: "json" };
 import sessionCapture from "../fixtures/usage/opencode-session.json" with { type: "json" };
 import recordedClosedPulls from "../fixtures/github/diagnostic-pulls-closed.json" with { type: "json" };
+import recordedCompare from "../fixtures/github/diagnostic-compare.json" with { type: "json" };
 import type { Dependencies } from "../../src/gateway/client.js";
 import { object } from "../../src/gateway/people.js";
 import { validProject } from "../helpers.js";
@@ -751,7 +752,9 @@ test("model switch posts its note through the gateway and changes only Model, no
   f.mutations.length = 0;
   f.setProgress("🤖🚫");
   await f.transport.call("worker", { args: ["model", "31", "sol", "--why", "quota"] }, f.ctx);
-  expect(f.modelPosts).toEqual([{ body: "[orchestrator] NOTE: model switched to sol (quota)" }]);
+  expect(f.modelPosts).toEqual([
+    { body: "[orchestrator] NOTE: model switched to sol (quota); reason: quota" },
+  ]);
   expect(f.mutations).toHaveLength(1);
   expect(f.mutations[0]).toEqual({
     m0: {
@@ -932,7 +935,9 @@ test("gateway grades a delivery with Estimate on the linked issue and Cost only 
     pr: 31,
     points_open: 8,
     points_final: 20,
-    segments: [{ family: "glm", why: "start" }],
+    segments: [
+      { family: "glm", why: "start", metrics: { diff: { files: 0, additions: 0, deletions: 0 } } },
+    ],
     usd: null,
   });
   expect(f.mutations[2]).toMatchObject({
@@ -943,6 +948,54 @@ test("gateway grades a delivery with Estimate on the linked issue and Cost only 
   ]);
   f.done();
 });
+
+test.each([false, true])(
+  "grade reads changed boundary diff stats and preserves unknown at GitHub's file cap (capped=%s)",
+  async (capped) => {
+    const f = fixture();
+    await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+    const base = String(f.pr.headRefOid),
+      head = "b".repeat(40);
+    const files = capped
+      ? Array.from({ length: 300 }, (_, i) => ({
+          ...learningCapture.files[0],
+          filename: `file-${i}`,
+        }))
+      : learningCapture.files;
+    const compareRequests: string[] = [];
+    const fetch = f.deps.fetch;
+    f.deps.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (
+        url.origin === "https://api.github.com" &&
+        url.pathname === `/repos/example/project/compare/${base}...${head}` &&
+        init?.method === "GET"
+      ) {
+        compareRequests.push(url.pathname);
+        // Combine captured compare and changed-file projections; the file statistic fields
+        // are shared by GitHub's compare and pull-file responses.
+        return Response.json({ ...recordedCompare, files });
+      }
+      return fetch(input, init);
+    };
+    f.pr.headRefOid = head;
+    f.pr.state = "MERGED";
+    f.pr.merged = true;
+    await f.transport.call("grade", { ref: "31", points: 20 }, f.ctx);
+    const log = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+    expect(log.segments[0].metrics.diff).toEqual(
+      capped
+        ? null
+        : {
+            files: files.length,
+            additions: files.reduce((n, f) => n + f.additions, 0),
+            deletions: files.reduce((n, f) => n + f.deletions, 0),
+          }
+    );
+    expect(compareRequests).toHaveLength(1);
+    f.done();
+  }
+);
 
 test("partial task headers still identify the issue for worker dispatch", async () => {
   const f = fixture();

@@ -199,6 +199,9 @@ class GatewayServer {
         if (![base, head].every((sha) => /^[a-f0-9]{40}$/i.test(sha))) {
           throw new Error("Invalid diff boundary SHA");
         }
+        if (base === head) {
+          return { files: 0, additions: 0, deletions: 0 };
+        }
         const result = object(
           await this.github.rest(`/repos/${String(this.config.repo)}/compare/${base}...${head}`)
         );
