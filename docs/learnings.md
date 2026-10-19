@@ -152,6 +152,13 @@ Each result is linked by repository, PR and the delivery record's SHA-256 digest
 `learnings/models/<owner>-<repo>/notes-<pr>-v1.jsonl`. Files are atomically published
 and never edited. Existing version-1 annotations are skipped; an empty rerun reports
 `0 to annotate`. An interrupted batch retains completed PRs and resumes the rest.
+Invalid model responses (JSON, schema or citation failures) get one retry in a fresh
+session. Transport/provider failures do not receive an additional application-level
+retry. A failed PR is reported as `#<pr>: <error>`; the batch continues and finishes
+with `N annotated, M failed (#a, #b)`, exiting non-zero when any PR failed. Published
+annotations are retained; a rerun skips those successes and retries the failed PRs.
+Successful non-empty runs report `N annotated, 0 failed`. Aggregation failures name
+the offending family or by-domain view when identifiable.
 `--force` adds `notes-<pr>-v1-2.jsonl` (then `-3`, etc.); a future prompt version uses
 a new `vN` stem. Delivery JSONL and annotation JSONL remain separate formats.
 

@@ -14,7 +14,7 @@ import { build } from "esbuild";
 import { beforeAll, expect, test } from "vitest";
 import { fixture, validProject } from "./helpers.js";
 import { actor, item, people } from "./gateway/helpers.js";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import recorded from "./fixtures/github/learnings-recorded.json" with { type: "json" };
 import { stub } from "../src/registry.js";
 
@@ -51,6 +51,56 @@ function cliFixture(timeout = 3000) {
     });
   return { root, cli, run };
 }
+
+test("annotation batch failures reach the real CLI with a summary and non-zero exit", () => {
+  const f = cliFixture(10000);
+  writeFileSync(join(f.root, "people.yaml"), stringify(people));
+  const configPath = join(f.root, "vmethod.yaml");
+  writeFileSync(
+    configPath,
+    stringify({ ...parse(readFileSync(configPath, "utf8")), learningsPrivacy: "public" })
+  );
+  mkdirSync(join(f.root, ".vmethod"));
+  const record = {
+    date: "2026-10-19",
+    repo: "example/project",
+    task: "test",
+    kind: "tooling",
+    segments: [{ family: "glm", model: "fake/glm", rounds: [1], why: "start" }],
+    points_open: 3,
+    points_final: 3,
+    rounds: 1,
+    round_causes: [],
+    outcome: "merged",
+    prompt_defects: [],
+    stalls: [],
+    findings: [],
+    notes: "",
+  };
+  writeFileSync(
+    join(f.root, ".vmethod/model-log.jsonl"),
+    [31, 32].map((pr) => JSON.stringify({ ...record, pr })).join("\n") + "\n"
+  );
+  const preload = join(f.root, "annotation-failure.mjs");
+  writeFileSync(
+    preload,
+    `globalThis.fetch = async (url,init) => {
+    if (String(url) !== 'https://api.github.com/graphql') throw new Error('Unexpected URL: '+url);
+    const body = JSON.parse(init.body);
+    if (body.query.includes('GatewayIdentity')) return Response.json({data:{viewer:${JSON.stringify(actor(2))}}});
+    return Response.json({errors:[{message:'fixture bundle unavailable'}]});
+  };`
+  );
+  const result = f.run(["learnings", "annotate"], ["--import", preload], {
+    VMETHOD_ROLE: "orchestrator",
+    EXAMPLE_GITHUB_TOKEN: "fake-token",
+    XDG_STATE_HOME: join(f.root, "state"),
+  });
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("0 annotated, 2 failed (#31, #32)");
+  expect(result.stderr).toContain("#31:");
+  expect(result.stderr).toContain("#32:");
+});
 
 test("generated stub uses cached worktree context through the CLI; explicit task PR wins", () => {
   const f = cliFixture();

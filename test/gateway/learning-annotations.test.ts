@@ -187,7 +187,7 @@ test.each(["json", ""])(
   async (language) => {
     const f = fixture();
     f.replies[0] = ` \n\t\`\`\`${language}\r\n${JSON.stringify(generated())}\r\n\`\`\` \n\t`;
-    expect(await f.service.command({ action: "annotate" })).toBe("1 annotated");
+    expect(await f.service.command({ action: "annotate" })).toBe("1 annotated, 0 failed");
     expect(
       annotation(JSON.parse(readFileSync(join(f.directory, "notes-31-v1.jsonl"), "utf8")))
         .impressions
@@ -248,6 +248,9 @@ for (const action of ["annotate", "aggregate"] as const) {
               domains: [{ domain: "tooling", claims: [claim("Evidence covers tooling.")] }],
             };
       f.replies[0] = wrap(JSON.stringify(response));
+      if (action === "annotate") {
+        f.replies.push(f.replies[0]);
+      }
       await expect(f.service.command({ action })).rejects.toThrow();
       expect(existsSync(join(f.directory, "notes-31-v1.jsonl"))).toBe(false);
       expect(readFileSync(familyPage, "utf8")).toBe("Previous reviewed advice.\n");
@@ -259,7 +262,7 @@ for (const action of ["annotate", "aggregate"] as const) {
 
 test("annotate bundles filtered evidence, links the immutable record, skips and force adds a new version file", async () => {
   const f = fixture();
-  expect(await f.service.command({ action: "annotate" })).toBe("1 annotated");
+  expect(await f.service.command({ action: "annotate" })).toBe("1 annotated, 0 failed");
   const file = join(f.directory, "notes-31-v1.jsonl");
   const original = readFileSync(file, "utf8");
   expect(annotation(JSON.parse(original))).toMatchObject({
@@ -277,25 +280,98 @@ test("annotate bundles filtered evidence, links the immutable record, skips and 
   expect(await f.service.command({ action: "annotate" })).toBe("0 to annotate");
   expect(f.prompts).toHaveLength(1);
   f.replies.push(generated());
-  expect(await f.service.command({ action: "annotate", force: true })).toBe("1 annotated");
+  expect(await f.service.command({ action: "annotate", force: true })).toBe(
+    "1 annotated, 0 failed"
+  );
   expect(readFileSync(file, "utf8")).toBe(original);
   expect(existsSync(join(f.directory, "notes-31-v1-2.jsonl"))).toBe(true);
   f.done();
 });
 
-test("an interruption retains prior PRs; rerun resumes, missing or invented citations never write", async () => {
-  const f = fixture([31, 32]);
-  f.replies[1] = { ...generated(32), findings: [{ text: "unsupported", sources: [] }] };
-  await expect(f.service.command({ action: "annotate" })).rejects.toThrow("citation");
-  expect(readdirSync(f.directory)).toEqual(["notes-31-v1.jsonl"]);
-  f.replies.push({
-    ...generated(32),
-    domain: { text: "tooling", sources: ["https://evil.invalid"] },
-  });
-  await expect(f.service.command({ action: "annotate" })).rejects.toThrow("citation");
+test("batch continues after two invalid responses, reports the failed PR and resumes only it", async () => {
+  const f = fixture([31, 32, 33]);
+  f.replies.splice(
+    0,
+    f.replies.length,
+    generated(31),
+    { ...generated(32), findings: [{ text: "unsupported", sources: [] }] },
+    { ...generated(32), domain: { text: "tooling", sources: ["https://evil.invalid"] } },
+    generated(33)
+  );
+  const call = async () => f.service.command({ action: "annotate" });
+  const transport = { call } as unknown as Parameters<typeof learningsVerb>[0];
+  await expect(
+    learningsVerb(transport, ["annotate"], { VMETHOD_ROLE: "orchestrator" })
+  ).rejects.toThrow("2 annotated, 1 failed (#32)");
+  expect(readdirSync(f.directory)).toEqual(["notes-31-v1.jsonl", "notes-33-v1.jsonl"]);
+  expect(f.deps.report).toHaveBeenCalledWith(expect.stringMatching(/^#32: .*citation/));
   f.replies.push(generated(32));
-  expect(await f.service.command({ action: "annotate" })).toBe("1 annotated");
-  expect(f.prompts).toHaveLength(4);
+  expect(await f.service.command({ action: "annotate" })).toBe("1 annotated, 0 failed");
+  expect(f.prompts).toHaveLength(5);
+  f.done();
+});
+
+test.each(["JSON", "schema", "citation"])(
+  "invalid %s response retries once in a fresh session and succeeds",
+  async (kind) => {
+    const f = fixture();
+    const invalid =
+      kind === "JSON"
+        ? "{bad JSON}"
+        : kind === "schema"
+          ? { ...generated(), impressions: [] }
+          : { ...generated(), findings: [{ text: "unsupported", sources: [] }] };
+    f.replies.splice(0, 1, invalid, generated());
+    const fetch = f.deps.fetch;
+    let sessions = 0;
+    const interrupted: string[] = [];
+    f.deps.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/session" && init?.method === "POST") {
+        const response = await fetch(input, init);
+        const body = (await response.json()) as { data: { id: string } };
+        body.data.id = `ses_attempt${++sessions}`;
+        return Response.json(body);
+      }
+      if (url.pathname.endsWith("/interrupt")) {
+        interrupted.push(url.pathname);
+      }
+      url.pathname = url.pathname.replace(/ses_attempt\d+/, "ses_recorded");
+      return fetch(url, init);
+    };
+    expect(await f.service.command({ action: "annotate" })).toBe("1 annotated, 0 failed");
+    expect(sessions).toBe(2);
+    expect(interrupted).toEqual([
+      "/api/session/ses_attempt1/interrupt",
+      "/api/session/ses_attempt2/interrupt",
+    ]);
+    expect(readdirSync(f.directory)).toEqual(["notes-31-v1.jsonl"]);
+    f.done();
+  }
+);
+
+test("transport failure is not retried and does not prevent the next PR from publishing", async () => {
+  const f = fixture([31, 32]);
+  const fetch = f.deps.fetch;
+  let starts = 0;
+  f.deps.fetch = async (input, init) => {
+    if (
+      new URL(String(input)).pathname === "/api/session" &&
+      init?.method === "POST" &&
+      ++starts === 1
+    ) {
+      f.replies.shift();
+      throw new Error("fixture transport failure");
+    }
+    return fetch(input, init);
+  };
+  await expect(f.service.command({ action: "annotate" })).rejects.toThrow(
+    "1 annotated, 1 failed (#31)"
+  );
+  expect(starts).toBe(2);
+  expect(f.prompts).toHaveLength(1);
+  expect(readdirSync(f.directory)).toEqual(["notes-32-v1.jsonl"]);
+  expect(f.deps.report).toHaveBeenCalledWith(expect.stringMatching(/^#31: /));
   f.done();
 });
 
@@ -336,8 +412,14 @@ test.each(["quota", "timeout"])(
       return fetch(input, init);
     };
     await expect(f.service.command({ action: "annotate" })).rejects.toThrow(
-      failure === "quota" ? "Learning model failed: quota" : "timed out"
+      "0 annotated, 1 failed (#31)"
     );
+    expect(f.deps.report).toHaveBeenCalledWith(
+      expect.stringContaining(
+        failure === "quota" ? "#31: Learning model failed: quota" : "#31: Learning model timed out"
+      )
+    );
+    expect(f.prompts).toHaveLength(1);
     expect(readdirSync(f.directory)).toEqual([]);
     expect(interrupts).toEqual(["/api/session/ses_recorded/interrupt"]);
     f.done();
@@ -368,7 +450,9 @@ test("aggregate validates all views before replacing any family page and require
     families: [{ family: "glm-flash", claims: [claim("Useful for tooling.")] }],
     domains: [{ domain: "tooling", claims: [{ text: "unsupported", sources: [] }] }],
   });
-  await expect(f.service.command({ action: "aggregate" })).rejects.toThrow("citation");
+  await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(
+    "by-domain: tooling, claim 1: Every annotation claim requires a supported citation"
+  );
   expect(readFileSync(file, "utf8")).toBe("original\n");
   f.replies.push({
     families: [{ family: "glm-flash", claims: [claim("Useful for tooling.")] }],
@@ -382,6 +466,36 @@ test("aggregate validates all views before replacing any family page and require
   expect(f.prompts.at(-1)).toContain("recordDigest");
   f.done();
 }, 30000);
+
+test.each([
+  [
+    "family claim",
+    {
+      families: [{ family: "glm-flash", claims: [{ text: "unsupported", sources: [] }] }],
+      domains: [{ domain: "tooling", claims: [claim("Evidence.")] }],
+    },
+    "glm-flash model learnings, claim 1",
+  ],
+  [
+    "missing family",
+    { families: [], domains: [{ domain: "tooling", claims: [claim("Evidence.")] }] },
+    "omitted model families: glm-flash",
+  ],
+  [
+    "invalid domain",
+    {
+      families: [{ family: "glm-flash", claims: [claim("Evidence.")] }],
+      domains: [{ domain: "INVALID", claims: [claim("Evidence.")] }],
+    },
+    "by-domain entry 1 (INVALID)",
+  ],
+] as const)("aggregate identifies the offending %s", async (_name, response, message) => {
+  const f = fixture();
+  f.replies[0] = response;
+  await expect(f.service.command({ action: "aggregate" })).rejects.toThrow(message);
+  expect(existsSync(join(f.root, "learnings/models/glm-flash.md"))).toBe(false);
+  f.done();
+});
 
 test("report input discovery does not mistake annotation JSONL for a delivery", async () => {
   const f = fixture();
