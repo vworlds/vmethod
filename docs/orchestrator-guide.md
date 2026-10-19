@@ -48,7 +48,7 @@ counts as their approval; see [Security](security.md#authority-and-filtering).
 
 ## Scope review
 
-Before opening task PRs, fold every settled discussion conclusion into the issue
+Before opening any task PRs, fold every settled discussion conclusion into the issue
 body. An owner Approved move without reviewed scope means agreement with the
 conclusions, not permission to launch. On SCOPE, move the issue to In progress,
 read its current body and rewrite the final specification:
