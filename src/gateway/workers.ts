@@ -27,22 +27,25 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { loadYaml, type Config } from "../config.js";
 import {
   classifyTurn,
   OpencodeClient,
+  OpencodeError,
   type Dependencies,
   type WorkerSessionStatus,
 } from "./client.js";
 import { processes, type ProcessIdentity } from "./claude.js";
 import { object, untrusted } from "./people.js";
 import { workerWorktree, workerWorktreePrefix } from "./worker-path.js";
+import { workerFirstPrompt } from "./worker-prompt.js";
 
 interface Model {
   family: string;
@@ -91,6 +94,7 @@ interface Session {
 export interface TaskMetadata {
   pr: number;
   issue?: number;
+  base: string;
   branch: string;
   title: string;
   body: string;
@@ -250,7 +254,8 @@ export class WorkerService {
   private async status(
     record: Session,
     comments = true,
-    deadline?: number
+    deadline?: number,
+    drainWake = true
   ): Promise<WorkerSessionStatus> {
     const directory = workerWorktree(this.root, this.config, { directory: record.directory });
     if (resolve(directory) !== resolve(record.directory)) {
@@ -387,6 +392,7 @@ export class WorkerService {
       this.save(record);
     }
     if (
+      drainWake &&
       record.pendingConflict &&
       !status.active &&
       !["permission-wait", "session unknown"].includes(status.reason)
@@ -399,10 +405,17 @@ export class WorkerService {
       return { ...status, reason: "running", active: true };
     }
     if (
+      drainWake &&
       record.pendingWake?.length &&
       !status.active &&
       !["permission-wait", "session unknown"].includes(status.reason)
     ) {
+      if (record.pendingWake.some((text) => !text.startsWith("[orchestrator] CHECK-IN:"))) {
+        await this.restoreConflictModel(record, status);
+      }
+      if (await this.resumeModel(record, status)) {
+        return { ...status, reason: "running", active: true };
+      }
       await this.prompt(record, record.pendingWake.join("\n"), "queue");
       delete record.pendingWake;
       this.save(record);
@@ -437,6 +450,71 @@ export class WorkerService {
   private async setOpenCodeTitle(record: Session): Promise<void> {
     await this.client().request("PATCH", `${this.idPath(record)}`, {
       title: this.sessionTitle(record.pr),
+    });
+  }
+  private async setWorkState(record: Session, state: "open" | "closed"): Promise<void> {
+    try {
+      await this.updateWorkState(record, state);
+    } catch (error) {
+      if (
+        !(error instanceof OpencodeError) ||
+        error.status !== 404 ||
+        existsSync(record.directory)
+      ) {
+        throw error;
+      }
+      const directory = workerWorktree(this.root, this.config, { directory: record.directory });
+      if (resolve(directory) !== resolve(record.directory)) {
+        throw new Error("session directory mismatch", { cause: error });
+      }
+      if (realpathSync(dirname(directory)) !== resolve(dirname(directory))) {
+        throw new Error("session directory parent is a symlink alias", { cause: error });
+      }
+      // OpenCode resolves PATCH through the session's location directory. Old
+      // tasks may have lost their tree already; never remove a pre-existing path.
+      mkdirSync(directory);
+      try {
+        await this.updateWorkState(record, state);
+      } finally {
+        // Refuse to remove anything if another process populated the placeholder.
+        rmdirSync(directory);
+      }
+    }
+  }
+  private async updateWorkState(record: Session, state: "open" | "closed"): Promise<void> {
+    const response = object(await this.client().request("GET", this.idPath(record)));
+    const session = object(response.data);
+    if (session.id !== record.id) {
+      throw new Error("session response missing or mismatched");
+    }
+    const metadata = object(session.metadata);
+    const openchamber = object(metadata.openchamber);
+    const work = object(openchamber.work);
+    for (const value of [session.metadata, metadata.openchamber, openchamber.work]) {
+      if (
+        value !== undefined &&
+        (value === null || typeof value !== "object" || Array.isArray(value))
+      ) {
+        throw new Error("invalid session metadata; refusing lossy update");
+      }
+    }
+    if (work.state === state) {
+      return;
+    }
+    await this.client().request("PATCH", this.idPath(record), {
+      metadata: {
+        ...metadata,
+        openchamber: {
+          ...openchamber,
+          work: {
+            ...work,
+            state,
+            ...(state === "closed"
+              ? { closedAt: new Date(this.deps.now()).toISOString(), closedBy: "vmethod" }
+              : {}),
+          },
+        },
+      },
     });
   }
   private claudeLog(record: Session): string[] {
@@ -510,6 +588,8 @@ export class WorkerService {
    * entry; headless Claude records are reported with an explicit relaunch route.
    * Only --from-legacy may snapshot a missing opening Estimate from the linked
    * issue, recording "legacy snapshot at adoption" in the persisted segment.
+   * `reopen <pr>` restores only OpenChamber list visibility, without restarting
+   * the worker or recreating a removed worktree; Claude sessions are skipped.
    */
   async command(args: string[]): Promise<string> {
     const [verb, ref, ...rest] = args;
@@ -565,7 +645,18 @@ export class WorkerService {
     }
     const pr = Number(ref);
     if (
-      !["start", "adopt", "send", "status", "log", "stop", "wait", "permit", "model"].includes(verb)
+      ![
+        "start",
+        "adopt",
+        "send",
+        "status",
+        "log",
+        "stop",
+        "wait",
+        "permit",
+        "model",
+        "reopen",
+      ].includes(verb)
     ) {
       throw new Error("Unknown worker command");
     }
@@ -593,6 +684,16 @@ export class WorkerService {
         throw new Error(`No session recorded for PR #${pr}`);
       }
       const path = this.idPath(record);
+      if (verb === "reopen") {
+        if (rest.length) {
+          throw new Error("Usage: worker reopen <pr>");
+        }
+        if (record.model.kind === "claude") {
+          return "Claude session skipped (no OpenChamber list)";
+        }
+        await this.setWorkState(record, "open");
+        return `Reopened ${record.id}`;
+      }
       if (verb === "stop") {
         if (rest.length) {
           throw new Error("Usage: worker stop <pr>");
@@ -616,9 +717,6 @@ export class WorkerService {
           }
         }
         const model = this.resolve(selected, approved);
-        if (model.kind !== record.model.kind) {
-          throw new Error("Cannot switch backend and retain context");
-        }
         if (model.family === record.model.family && model.model === record.model.model) {
           if (record.model.kind === "opencode") {
             await this.setOpenCodeTitle(record);
@@ -626,11 +724,13 @@ export class WorkerService {
           await this.hooks.setModel(pr, model.family);
           return `Model unchanged for ${record.id}; PR Model synchronized`;
         }
-        if (record.model.kind === "claude" && (await this.status(record, false)).active) {
-          throw new Error("Stop the Claude turn before switching model");
-        }
-        const boundary = await this.status(record, false);
-        await this.switchModel(record, model, why, boundary);
+        const meta = await this.hooks.metadata(pr);
+        await this.changeModel(record, model, meta, why);
+        await this.hooks.setModel(pr, model.family);
+        await this.hooks.modelComment(
+          pr,
+          `[orchestrator] NOTE: model switched to ${model.family} (${why.replace(/\s+/g, " ").trim()})`
+        );
         return `Switched ${record.id} to ${model.family}`;
       }
       if (verb === "send") {
@@ -668,7 +768,11 @@ export class WorkerService {
             throw new Error("Session running: use --queue or --now; prompt not sent");
           }
         }
-        await this.prompt(record, text, rest[1] === "--queue" ? "queue" : "steer");
+        if (await this.resumeModel(record, undefined, meta)) {
+          record.pendingWake = [...(record.pendingWake ?? []), text];
+        } else {
+          await this.prompt(record, text, rest[1] === "--queue" ? "queue" : "steer");
+        }
         const round = this.round(meta);
         const segment = record.segments.at(-1)!;
         if (!segment.rounds.includes(round)) {
@@ -729,6 +833,118 @@ export class WorkerService {
     const [providerID, ...id] = model.model.split("/");
     return { providerID, id: id.join("/") };
   }
+  private async changeModel(
+    record: Session,
+    model: Model,
+    meta: TaskMetadata,
+    why: string,
+    boundaryStatus?: WorkerSessionStatus
+  ) {
+    const backendChanged = model.kind !== record.model.kind;
+    const boundary = boundaryStatus ?? (await this.status(record, false, undefined, false));
+    if (
+      (boundary.active || boundary.reason === "permission-wait") &&
+      (backendChanged || record.model.kind === "claude")
+    ) {
+      throw new Error("Stop the worker turn before switching backend or Claude model");
+    }
+    if (!boundary.usage) {
+      throw new Error("Cannot switch model without provider usage baseline");
+    }
+    if (backendChanged && model.kind === "claude") {
+      await this.hooks.workerIdentity();
+    }
+    if (model.kind === "opencode") {
+      if (backendChanged) {
+        const response = object(
+          object(
+            await this.client().request("POST", "/api/session", {
+              location: { directory: record.directory },
+              model: this.apiModel(model),
+              title: this.sessionTitle(record.pr),
+            })
+          ).data
+        );
+        if (typeof response.id !== "string" || !/^[\w-]+$/.test(response.id)) {
+          throw new Error("Server returned no valid session id");
+        }
+        record.id = response.id;
+      } else {
+        await this.client().request("POST", `${this.idPath(record)}/model`, {
+          model: this.apiModel(model),
+        });
+        await this.setOpenCodeTitle(record);
+      }
+    } else if (backendChanged) {
+      record.id = randomUUID();
+    }
+    record.model = model;
+    record.segments.push({
+      family: model.family,
+      model: model.model,
+      rounds: [this.round(meta)],
+      why,
+      at: new Date(this.deps.now()).toISOString(),
+      ...(!backendChanged
+        ? { baseline: boundary.usage }
+        : model.kind === "claude"
+          ? {
+              baseline: claudeUsage(
+                this.claudeLog(record).map((line) => {
+                  try {
+                    return JSON.parse(line);
+                  } catch {
+                    return {};
+                  }
+                })
+              ),
+            }
+          : {}),
+    });
+    if (backendChanged) {
+      delete record.process;
+      delete record.costHistoryLoaded;
+    }
+    this.save(record);
+    if (backendChanged) {
+      await this.prompt(record, this.firstPrompt(record, meta), "steer", false);
+    }
+  }
+  private async resumeModel(
+    record: Session,
+    status?: WorkerSessionStatus,
+    metadata?: TaskMetadata
+  ): Promise<boolean> {
+    const meta = metadata ?? (await this.hooks.metadata(record.pr));
+    const model = this.resolve(meta.model ?? "", true);
+    if (record.model.family !== model.family || record.model.model !== model.model) {
+      this.resolve(meta.model ?? "", false);
+      const backendChanged = record.model.kind !== model.kind;
+      await this.changeModel(record, model, meta, "PR Model changed on resume", status);
+      return backendChanged;
+    }
+    return false;
+  }
+  private firstPrompt(record: Session, meta: TaskMetadata): string {
+    const packagePath = join(record.directory, "package.json");
+    const selfHosting =
+      existsSync(packagePath) &&
+      object(JSON.parse(readFileSync(packagePath, "utf8"))).name === "@vworlds/vmethod";
+    return workerFirstPrompt({
+      pr: record.pr,
+      issue: record.issue,
+      repo: record.repo,
+      base: meta.base,
+      branch: meta.branch,
+      directory: record.directory,
+      family: record.model.family,
+      model: record.model.model,
+      guide: join(
+        record.directory,
+        selfHosting ? "docs/worker-guide.md" : "node_modules/@vworlds/vmethod/docs/worker-guide.md"
+      ),
+    });
+  }
   /** Only forMerge treats no recorded session as stopped; unknown recorded sessions still block. */
   async mergeStatus(pr: number, forMerge = false): Promise<"live" | "stopped" | "unknown"> {
     return this.locked(pr, async () => {
@@ -743,6 +959,29 @@ export class WorkerService {
           ? "live"
           : "stopped";
     });
+  }
+  /** Hide a stopped opencode session without deleting history; failures remain retryable. */
+  async closeSession(pr: number): Promise<boolean> {
+    try {
+      return await this.locked(pr, async () => {
+        const record = this.read(pr);
+        if (!record) {
+          throw new Error("session unknown");
+        }
+        if (record.model.kind === "claude") {
+          return true;
+        }
+        const status = await this.status(record, false);
+        if (status.active || ["session unknown", "permission-wait"].includes(status.reason)) {
+          throw new Error("worker session live or unknown; stop it first");
+        }
+        await this.setWorkState(record, "closed");
+        return true;
+      });
+    } catch (error) {
+      this.deps.report(`#${pr} session not closed: ${this.redact((error as Error).message)}`);
+      return false;
+    }
   }
   /** Collect activity/usage and this PR's segment cost, without GitHub reads. */
   async watchStatus(pr: number): Promise<WorkerSessionStatus> {
@@ -762,9 +1001,6 @@ export class WorkerService {
   }
   /** Wake without steering; persisted busy-session messages drain on the next idle status poll. */
   async resume(pr: number, text: string): Promise<string> {
-    if (!text.startsWith("[orchestrator] CHECK-IN:")) {
-      await this.restoreConflictModel(pr);
-    }
     return this.locked(pr, async () => {
       const record = this.read(pr);
       if (!record) {
@@ -775,6 +1011,14 @@ export class WorkerService {
         return `no worker session for #${pr}; nothing sent`;
       }
       if (status.active || status.reason === "permission-wait") {
+        record.pendingWake = [...(record.pendingWake ?? []), text];
+        this.save(record);
+        return `queued for #${pr}`;
+      }
+      if (!text.startsWith("[orchestrator] CHECK-IN:")) {
+        await this.restoreConflictModel(record, status);
+      }
+      if (await this.resumeModel(record, status)) {
         record.pendingWake = [...(record.pendingWake ?? []), text];
         this.save(record);
         return `queued for #${pr}`;
@@ -829,23 +1073,18 @@ export class WorkerService {
     return this.hooks.prepare(pr);
   }
   /** Restore the saved family before normal review work resumes, retaining cost/audit notes. */
-  async restoreConflictModel(pr: number): Promise<void> {
-    const record = this.read(pr);
-    if (!record?.conflictModel) {
+  private async restoreConflictModel(record: Session, status: WorkerSessionStatus): Promise<void> {
+    if (!record.conflictModel) {
       return;
     }
-    const model = record.conflictModel;
-    await this.command([
-      "model",
-      String(pr),
-      model.model,
-      "--owner-approved",
-      "--why",
+    await this.switchModel(
+      record,
+      record.conflictModel,
       "resume normal work after conflict",
-    ]);
-    const current = this.read(pr)!;
-    delete current.conflictModel;
-    this.save(current);
+      status
+    );
+    delete record.conflictModel;
+    this.save(record);
   }
   private conflictLine(base: string): string {
     return `CONFLICT: merge origin/${base}, resolve keeping both sides' behaviour, push, wait-checks, READY`;
@@ -859,26 +1098,8 @@ export class WorkerService {
     if (model.family === record.model.family && model.model === record.model.model) {
       return;
     }
-    if (!boundary.usage) {
-      throw new Error("Cannot switch model without provider usage baseline");
-    }
     const meta = await this.hooks.metadata(record.pr);
-    if (model.kind === "opencode") {
-      await this.client().request("POST", `${this.idPath(record)}/model`, {
-        model: this.apiModel(model),
-      });
-      await this.setOpenCodeTitle(record);
-    }
-    record.model = model;
-    record.segments.push({
-      family: model.family,
-      model: model.model,
-      rounds: [this.round(meta)],
-      why,
-      at: new Date(this.deps.now()).toISOString(),
-      baseline: boundary.usage,
-    });
-    this.save(record);
+    await this.changeModel(record, model, meta, why, boundary);
     await this.hooks.setModel(record.pr, model.family);
     await this.hooks.modelComment(
       record.pr,
@@ -942,15 +1163,22 @@ export class WorkerService {
         : `${String(apiModel.providerID)}/${String(apiModel.id ?? apiModel.modelID)}`;
     const configured = this.models.find((m) => m.kind === "opencode" && m.model === modelId);
     const other = this.models.find((m) => m.kind === "opencode" && m.family === "other");
-    const model =
+    const sessionModel =
       configured ??
       (other && /^[^/\s]+\/[^\s]+$/.test(modelId) && !modelId.includes("undefined")
         ? { ...other, model: modelId }
         : undefined);
-    if (!model) {
+    if (!sessionModel) {
       throw new Error("Cannot verify existing session model against models.yaml");
     }
-    this.save({
+    const model = this.resolve(meta.model ?? "", true);
+    if (model.kind !== "opencode") {
+      throw new Error("Adopt requires the PR Model to use opencode");
+    }
+    if (model.model !== sessionModel.model) {
+      throw new Error("Session model differs from PR Model; synchronize the card before adoption");
+    }
+    const record: Session = {
       version: 1,
       repo: String(this.config.repo),
       pr,
@@ -968,19 +1196,11 @@ export class WorkerService {
           at: new Date(this.deps.now()).toISOString(),
         },
       ],
-    });
+    };
+    this.save(record);
     await this.hooks.setModel(pr, model.family);
-    await this.setOpenCodeTitle({
-      version: 1,
-      repo: String(this.config.repo),
-      pr,
-      issue: meta.issue,
-      directory,
-      id,
-      model,
-      points_open: points,
-      segments: [],
-    });
+    await this.setOpenCodeTitle(record);
+    await this.prompt(record, this.firstPrompt(record, meta), "queue");
     return `Adopted ${id} for #${pr} on ${model.family}${legacySnapshot ? ` (legacy snapshot at adoption: ${points})` : ""}`;
   }
   private async adoptLegacy(): Promise<string> {
@@ -1179,16 +1399,7 @@ export class WorkerService {
       ],
     };
     this.save(record);
-    const amendment = meta.comments
-      .filter((c) => c.role === "orchestrator" && c.body.startsWith("[orchestrator]"))
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .at(-1);
-    const prompt =
-      conflictPrompt ??
-      (unknown
-        ? `The PR description is your prompt: https://github.com/${String(this.config.repo)}/pull/${pr}\n\n${amendment?.body ?? "No orchestrator amendment."}`
-        : meta.body);
-    await this.prompt(record, prompt, "steer", false);
+    await this.prompt(record, conflictPrompt ?? this.firstPrompt(record, meta), "steer", false);
     if (model.kind === "opencode") {
       const firstTurn = object(
         object(await this.client().request("GET", this.idPath(record))).data

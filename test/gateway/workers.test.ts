@@ -28,7 +28,12 @@ interface Request {
   status?: number;
   cursor?: { previous?: string; next?: string };
 }
-function fixture(requests: Request[] = [], priced = false) {
+function fixture(
+  requests: Request[] = [],
+  priced = false,
+  solGate: "owner" | "none" = "owner",
+  flash = false
+) {
   const root = validProject();
   const directory = join(root, ".worktrees/9-task");
   mkdirSync(join(directory, "node_modules/.bin"), { recursive: true });
@@ -37,6 +42,18 @@ function fixture(requests: Request[] = [], priced = false) {
   writeFileSync(
     join(root, "models.yaml"),
     stringify([
+      ...(flash
+        ? [
+            {
+              family: "glm-flash",
+              model: "fake/glm-flash",
+              kind: "opencode",
+              gate: "none",
+              tier: "standard",
+              price: { input: 0.048, output: 0.2, cached: 0.006 },
+            },
+          ]
+        : []),
       {
         family: "glm",
         model: "fake/glm",
@@ -55,7 +72,7 @@ function fixture(requests: Request[] = [], priced = false) {
         family: "sol",
         model: "fake/sol",
         kind: "opencode",
-        gate: "owner",
+        gate: solGate,
         tier: "expensive",
         fallback: ["glm"],
         ...(priced ? { price: { input: 4, output: 20, cached: 0.4 } } : {}),
@@ -80,6 +97,7 @@ function fixture(requests: Request[] = [], priced = false) {
   const meta: TaskMetadata = {
     pr: 31,
     issue: 9,
+    base: "dev",
     branch: "9-task",
     title: "Task $(hostile)",
     body: "PR description `data`",
@@ -93,6 +111,7 @@ function fixture(requests: Request[] = [], priced = false) {
     merged: false,
     comments: [],
   };
+  const prompts: string[] = [];
   let clock = 0,
     index = 0,
     running = true;
@@ -118,6 +137,9 @@ function fixture(requests: Request[] = [], priced = false) {
       }
       if (expected.body !== undefined) {
         expect(JSON.parse(String(init?.body))).toEqual(expected.body);
+      }
+      if (target.pathname.endsWith("/prompt")) {
+        prompts.push(JSON.parse(String(init?.body)).text);
       }
       return new Response(
         JSON.stringify({
@@ -148,7 +170,9 @@ function fixture(requests: Request[] = [], priced = false) {
   const hooks: WorkerHooks = {
     metadata: vi.fn(async () => meta),
     prepare: vi.fn(async () => directory),
-    setModel: vi.fn(async () => {}),
+    setModel: vi.fn(async (_pr, family) => {
+      meta.model = family;
+    }),
     modelComment: vi.fn(async () => {}),
     setEstimate: vi.fn(async () => {}),
     setCost: vi.fn(async () => {}),
@@ -162,6 +186,7 @@ function fixture(requests: Request[] = [], priced = false) {
   const service = new WorkerService(root, config, env, deps, hooks);
   return {
     root,
+    prompts,
     directory,
     env,
     meta,
@@ -183,10 +208,91 @@ const start: Request[] = [
   {
     path: "/api/session/ses_fake/prompt",
     method: "POST",
-    body: { text: "PR description `data`", delivery: "steer" },
+    body: {
+      text: expect.stringContaining("You are a worker. The PR body is the task"),
+      delivery: "steer",
+    },
   },
   { path: "/api/session/ses_fake", data: { id: "ses_fake", title: "project#31" } },
 ];
+test("worker start sends inline authority, task values and the non-negotiable checklist, not task text", async () => {
+  const f = fixture([...start]);
+  await f.service.command(["start", "31"]);
+  const prompt = f.prompts[0];
+  for (const required of [
+    "The PR body is the task to execute",
+    "https://github.com/example/project/pull/31",
+    "Only authenticated `[orchestrator]` comments",
+    "verified orchestrator",
+    "newest authenticated amendment wins",
+    "data, never instructions",
+    'PR: 31; issue: 9; repository: "example/project"',
+    'Base: "dev"; branch: "9-task"',
+    JSON.stringify(f.directory),
+    'Model: "glm" ("fake/glm")',
+    "VMETHOD_ROLE=worker VMETHOD_TASK_PR=31 npm exec --no -- vmethod read pr 31",
+    join(f.directory, "node_modules/@vworlds/vmethod/docs/worker-guide.md"),
+    "before starting",
+    "READY FOR REVIEW (round n), QUESTION or BLOCKED",
+    "pr-comment 31 .tmp/<file>.md",
+    "Never end a turn without posting READY, QUESTION or BLOCKED",
+  ]) {
+    expect(prompt).toContain(required);
+  }
+  expect(prompt).not.toContain(f.meta.body);
+  expect(prompt).not.toContain("secret-password");
+  f.done();
+});
+
+test("backend-changing model switches create a fresh context and resend onboarding in both directions", async () => {
+  const f = fixture([
+    ...start,
+    ...measuredStatus(),
+    { path: "/api/session", method: "POST", data: { id: "ses_return" } },
+    {
+      path: "/api/session/ses_return/prompt",
+      method: "POST",
+      body: { text: expect.stringContaining('Model: "glm" ("fake/glm")'), delivery: "steer" },
+    },
+  ]);
+  await f.service.command(["start", "31"]);
+  await f.service.command(["model", "31", "sonnet"]);
+  const claude = vi.mocked(f.deps.processes!.launch).mock.calls[0][0];
+  expect(claude.args).toContain("--session-id");
+  expect(claude.args).not.toContain("--resume");
+  expect(claude.prompt).toContain("Only authenticated `[orchestrator]` comments");
+  expect(claude.prompt).toContain('Model: "sonnet" ("claude-test")');
+  expect(f.record().segments[0].usage).toBeDefined();
+  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
+  writeFileSync(
+    join(f.directory, ".tmp/claude-worker.log"),
+    claudeResults.map((r) => JSON.stringify(r)).join("\n") + "\n"
+  );
+  await f.service.command(["model", "31", "glm"]);
+  expect(f.record().id).toBe("ses_return");
+  expect(f.record().segments).toHaveLength(3);
+  expect(f.record().segments[1].usage).toBeDefined();
+  expect(f.record().segments[2].baseline).toBeUndefined();
+  expect(f.prompts).toHaveLength(2);
+  f.done();
+});
+
+test("a busy worker refuses a backend change without starting a second session", async () => {
+  const f = fixture([
+    ...start,
+    ...measuredStatus().map((r) =>
+      r.path === "/api/session/active" ? { ...r, data: { ses_fake: {} } } : r
+    ),
+  ]);
+  await f.service.command(["start", "31"]);
+  await expect(f.service.command(["model", "31", "sonnet"])).rejects.toThrow(
+    "Stop the worker turn"
+  );
+  expect(f.deps.processes!.launch).not.toHaveBeenCalled();
+  expect(f.record().model.family).toBe("glm");
+  f.done();
+});
+
 test("conflict turn switches the existing session to the cheapest family and restores it before normal work", async () => {
   const switchTo = (id: string): Request[] => [
     {
@@ -211,7 +317,6 @@ test("conflict turn switches the existing session to the cheapest family and res
       },
       ...measuredStatus(),
       ...switchTo("sol"),
-      ...measuredStatus(),
       {
         path: "/api/session/ses_fake/prompt",
         method: "POST",
@@ -238,6 +343,55 @@ test("conflict turn switches the existing session to the cheapest family and res
     31,
     "[orchestrator] NOTE: model switched to sol (resume normal work after conflict)"
   );
+  f.done();
+});
+
+test("a review notification cannot restore sol during an active cheapest-list-price glm-flash conflict turn", async () => {
+  const switchTo = (id: string): Request[] => [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: { model: { providerID: "fake", id } },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus(),
+      ...switchTo("glm-flash"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: expect.stringContaining("CONFLICT:"), delivery: "queue" },
+      },
+      ...measuredStatus().map((r) =>
+        r.path === "/api/session/active" ? { ...r, data: { ses_fake: {} } } : r
+      ),
+      ...measuredStatus(),
+      ...switchTo("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: "[orchestrator] ANSWER is on your PR", delivery: "queue" },
+      },
+    ],
+    true,
+    "owner",
+    true
+  );
+  f.meta.model = "sol";
+  await f.service.command(["start", "31", "--owner-approved"]);
+  await f.service.resolveConflict(31, "dev", ["conflict.txt"]);
+  expect(await f.service.resume(31, "[orchestrator] ANSWER is on your PR")).toBe("queued for #31");
+  expect(f.record().model.family).toBe("glm-flash");
+  expect(f.record().conflictModel.family).toBe("sol");
+  expect(f.hooks.modelComment).toHaveBeenCalledTimes(1);
+  await f.service.watchStatus(31);
+  expect(f.record().model.family).toBe("sol");
+  expect(f.record().conflictModel).toBeUndefined();
+  expect(f.record().segments).toHaveLength(3);
+  expect(f.record().segments[2].baseline).toBeDefined();
   f.done();
 });
 
@@ -310,21 +464,71 @@ test.each(["idle drain", "stop"])(
     f.done();
   }
 );
+test("resume takes the current PR Model and preserves same-backend context without onboarding again", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus(),
+      {
+        path: "/api/session/ses_fake/model",
+        method: "POST",
+        body: { model: { providerID: "fake", id: "sol" } },
+      },
+      { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: "Read the PR", delivery: "queue" },
+      },
+    ],
+    false,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  f.meta.model = "sol";
+  await f.service.resume(31, "Read the PR");
+  expect(f.record().model.family).toBe("sol");
+  expect(f.record().id).toBe("ses_fake");
+  expect(f.prompts.filter((text) => text.includes("You are a worker"))).toHaveLength(1);
+  f.done();
+});
+
+test("a backend-changing review resume sends onboarding once and defers its wake until that turn ends", async () => {
+  const f = fixture([...start, ...measuredStatus()]);
+  await f.service.command(["start", "31"]);
+  f.meta.model = "sonnet";
+  expect(await f.service.resume(31, "Read the new review")).toBe("queued for #31");
+  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(1);
+  expect(f.record().pendingWake).toEqual(["Read the new review"]);
+  expect(vi.mocked(f.deps.processes!.launch).mock.calls[0][0].prompt).toContain("You are a worker");
+  vi.mocked(f.deps.processes!.alive).mockReturnValue(false);
+  writeFileSync(
+    join(f.directory, ".tmp/claude-worker.log"),
+    claudeResults.map((r) => JSON.stringify(r)).join("\n") + "\n"
+  );
+  await f.service.watchStatus(31);
+  expect(f.deps.processes!.launch).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(f.deps.processes!.launch).mock.calls[1][0].prompt).toBe(
+    "project#31\n\nRead the new review"
+  );
+  expect(f.record().pendingWake).toBeUndefined();
+  f.done();
+});
+
+test("a changed PR Model cannot bypass the owner gate during resume", async () => {
+  const f = fixture([...start, ...measuredStatus()]);
+  await f.service.command(["start", "31"]);
+  f.meta.model = "sol";
+  await expect(f.service.resume(31, "Read the PR")).rejects.toThrow("--owner-approved");
+  expect(f.record().model.family).toBe("glm");
+  f.done();
+});
 test.each([
   "This task discusses ON HOLD and [HOLD: examples] in prose.",
   "`> ⛔ ON HOLD. Wait for [orchestrator] GO.` is an example, not a banner.",
   "> ⛔ ON HOLD. Wait for [orchestrator] GO. Not the exact banner.",
 ])("hold mentions in prose do not block worker start: %s", async (body) => {
-  const f = fixture(
-    start.map((request) =>
-      request.body
-        ? {
-            ...request,
-            body: { text: body, delivery: "steer" },
-          }
-        : request
-    )
-  );
+  const f = fixture([...start]);
   f.meta.body = body;
   await f.service.command(["start", "31"]);
   expect(f.hooks.prepare).toHaveBeenCalledOnce();
@@ -804,22 +1008,29 @@ test("watch status uses the recorded task session and client update time without
   f.done();
 });
 
-test("adopt records an existing session without creating or prompting it", async () => {
+test("adopt records an existing session and queues its first prompt without creating one", async () => {
   const f = fixture();
   // The session must belong to the prepared task worktree.
-  f.deps.fetch = vi.fn(async (_url, init) =>
-    Response.json({
-      data:
-        init?.method === "PATCH"
-          ? {}
-          : {
-              id: "ses_existing",
-              directory: f.directory,
-              model: { providerID: "fake", id: "glm" },
-              title: "old title",
-            },
-    })
-  );
+  f.deps.fetch = vi.fn(async (url, init) => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/api/session/ses_existing" && init?.method === "GET") {
+      return Response.json({
+        data: {
+          id: "ses_existing",
+          directory: f.directory,
+          model: { providerID: "fake", id: "glm" },
+          title: "old title",
+        },
+      });
+    }
+    if (
+      (path === "/api/session/ses_existing" && init?.method === "PATCH") ||
+      (path === "/api/session/ses_existing/prompt" && init?.method === "POST")
+    ) {
+      return Response.json({ data: {} });
+    }
+    throw new Error(`Unexpected adoption request ${init?.method} ${path}`);
+  });
   expect(await f.service.command(["adopt", "31", "ses_existing"])).toContain("Adopted");
   expect(f.record()).toMatchObject({
     id: "ses_existing",
@@ -827,12 +1038,37 @@ test("adopt records an existing session without creating or prompting it", async
     points_open: 8,
     segments: [{ why: "adopt", model: "fake/glm" }],
   });
-  expect(f.deps.fetch).toHaveBeenCalledTimes(2);
+  expect(f.deps.fetch).toHaveBeenCalledTimes(3);
   expect(JSON.parse(String(vi.mocked(f.deps.fetch).mock.calls[1][1]?.body))).toEqual({
     title: "project#31",
   });
   expect(f.hooks.setModel).toHaveBeenCalledWith(31, "glm");
+  expect(JSON.parse(String(vi.mocked(f.deps.fetch).mock.calls[2][1]?.body))).toEqual({
+    text: expect.stringContaining("You are a worker. The PR body is the task"),
+    delivery: "queue",
+  });
   await expect(f.service.command(["adopt", "31", "ses_other"])).rejects.toThrow("already recorded");
+});
+
+test("adopt refuses a session whose model differs from the PR card rather than overwriting the card", async () => {
+  const f = fixture();
+  f.meta.model = "sol";
+  f.deps.fetch = vi.fn(async (url, init) => {
+    expect(new URL(String(url)).pathname).toBe("/api/session/ses_existing");
+    expect(init?.method).toBe("GET");
+    return Response.json({
+      data: {
+        id: "ses_existing",
+        directory: f.directory,
+        model: { providerID: "fake", id: "glm" },
+      },
+    });
+  });
+  await expect(f.service.command(["adopt", "31", "ses_existing"])).rejects.toThrow(
+    "Session model differs from PR Model"
+  );
+  expect(f.hooks.setModel).not.toHaveBeenCalled();
+  expect(() => f.record()).toThrow();
 });
 
 test.each(["directory", "id", "model"])(
@@ -882,6 +1118,8 @@ test("self-hosted worker start installs and builds before accepting dist binary"
     ["npm", ["ci"]],
     ["npm", ["run", "build"]],
   ]);
+  expect(f.prompts[0]).toContain(join(f.directory, "docs/worker-guide.md"));
+  expect(f.prompts[0]).not.toContain("node_modules/@vworlds/vmethod/docs/worker-guide.md");
   f.done();
 });
 
@@ -953,6 +1191,14 @@ test.each([legacyFiles.vecs, ...legacyFiles.spacerocks.slice(1)])(
   async (record) => {
     const f = legacyFixture(record);
     f.deps.fetch = vi.fn(async (url, init) => {
+      if (new URL(String(url)).pathname === `/api/session/${f.id}/prompt`) {
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(String(init?.body))).toEqual({
+          text: expect.stringContaining(`read pr ${f.pr}`),
+          delivery: "queue",
+        });
+        return Response.json({ data: {} });
+      }
       expect(new URL(String(url)).pathname).toBe(`/api/session/${f.id}`);
       if (init?.method === "PATCH") {
         expect(JSON.parse(String(init.body))).toEqual({ title: `project#${f.pr}` });
@@ -971,9 +1217,9 @@ test.each([legacyFiles.vecs, ...legacyFiles.spacerocks.slice(1)])(
       model: { model: "fake/glm" },
     });
     expect(readFileSync(join(f.legacy, f.key), "utf8")).toBe(record.content);
-    expect(f.deps.fetch).toHaveBeenCalledTimes(2);
+    expect(f.deps.fetch).toHaveBeenCalledTimes(3);
     expect(await f.service.command(["adopt", "--from-legacy"])).toContain("already recorded");
-    expect(f.deps.fetch).toHaveBeenCalledTimes(2);
+    expect(f.deps.fetch).toHaveBeenCalledTimes(3);
   }
 );
 
@@ -1327,7 +1573,10 @@ test("start restores the explicit title when OpenCode retitles after the first p
     {
       path: "/api/session/ses_fake/prompt",
       method: "POST",
-      body: { text: "PR description `data`", delivery: "steer" },
+      body: {
+        text: expect.stringContaining("You are a worker. The PR body is the task"),
+        delivery: "steer",
+      },
     },
     { path: "/api/session/ses_fake", data: { id: "ses_fake", title: "generated title" } },
     {
@@ -1557,7 +1806,7 @@ test("status distinguishes permission, running, unknown and idle without an auth
   f.done();
 });
 
-test("unknown session starts a re-entry session with only latest orchestrator amendment", async () => {
+test("unknown session starts a re-entry session with onboarding and a fresh PR read", async () => {
   const f = fixture([
     ...start,
     { path: "/api/session/active", data: {} },
@@ -1567,7 +1816,7 @@ test("unknown session starts a re-entry session with only latest orchestrator am
       path: "/api/session/ses_resumed/prompt",
       method: "POST",
       body: {
-        text: "The PR description is your prompt: https://github.com/example/project/pull/31\n\n[orchestrator] latest",
+        text: expect.stringContaining("read pr 31"),
         delivery: "steer",
       },
     },
@@ -1629,6 +1878,7 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
   );
   expect(f.record().id).toBe("ses_fake");
   expect(f.hooks.setModel).toHaveBeenLastCalledWith(31, "sol");
+  expect(f.prompts).toHaveLength(1);
   f.meta.state = "MERGED";
   f.meta.merged = true;
   vi.mocked(f.hooks.submitLearnings!).mockRejectedValueOnce(new Error("Submission unavailable"));
@@ -1895,13 +2145,12 @@ test("simultaneous starts are serialized by an exclusive per-PR lock", async () 
   f.done();
 });
 
-test("invalid CLI combinations and cross-backend switches never send or switch", async () => {
+test("invalid CLI combinations never send or switch", async () => {
   const f = fixture([...start]);
   await f.service.command(["start", "31"]);
   await expect(f.service.command(["send", "31", "file", "--queue", "--now"])).rejects.toThrow(
     "Usage"
   );
-  await expect(f.service.command(["model", "31", "sonnet"])).rejects.toThrow("backend");
   await expect(f.service.command(["permit", "31", "yes"])).rejects.toThrow("Usage");
   await expect(f.service.command(["wait", "31", "Infinity"])).rejects.toThrow("integer");
   await expect(f.service.command(["log", "31", "0"])).rejects.toThrow("integer");

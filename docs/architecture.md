@@ -314,7 +314,7 @@ engineering docs. Generic docs never name project files or commands. They refer 
   code, owns tooling and docs), workers (one task PR each, own worktree), side and track sessions,
   collaborators.
 - **Lifecycle:** idea → issue developed until agreed → owner moves it to Approved → `open-task`
-  writes the draft task PR, whose body is the worker's prompt → worker → review rounds → owner
+  writes the task-only draft PR; worker start sends onboarding and the pinned guide path → worker → review rounds → owner
   approval → `merge-task`. Shortcuts: `--direct` (the owner's "go" in chat) and `--unapproved`
   (opened before Approved, with the reason stated on the issue, e.g. a bug with a reproducer). Also tracks, packs, and Blocked-by relations.
 - **Board:** Status Backlog → Ready → In progress → In review → Approved → Done. Assignee = whose

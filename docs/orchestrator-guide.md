@@ -93,17 +93,20 @@ approval or other launch/merge gates.
 
 ## Write a task prompt
 
-Use the [task template](../templates/task-pr.md). The draft PR description must
-stand alone: context, agreed specification, current base, already-on-branch work,
-reusable helpers, exact deliverables, applicable local rules/guards, exclusions,
-observable acceptance cases, verification and required evidence. Identify existing
-debt without teaching it as a pattern. Check names, units, lifecycle and boundaries
-against the guides the prompt asks the worker to follow; resolve contradictions
-before launch. Never delegate an unsettled owner decision as worker discretion.
+Use the [task template](../templates/task-pr.md). The draft PR description holds
+only the task: title, issue/approval basis, verbatim agreed specification, optional
+hold banner, machine markers and opening vmethod version. Put task-specific
+deliverables, boundaries, exclusions and observable acceptance cases in the agreed
+issue specification. Identify existing debt without teaching it as a pattern;
+resolve contradictions before launch. Never delegate an unsettled owner decision
+as worker discretion. Execution instructions belong in the pinned
+[worker guide](worker-guide.md), not repeated PR boilerplate.
 
 Use `open-task` (vmethod 1.0, #8) and `start-worker` (vmethod 1.0, #9).
-Record the model in the prompt and board, respect holds and gates, and give one
-worker its own worktree. Inspect
+Set the PR card's Model field, respect holds and gates, and give one worker its own
+worktree. `worker start` generates the first prompt with inline authority rules,
+task values and the guide path; adoption, backend changes and replacement sessions
+receive it again, but ordinary same-backend switches and review wakes do not. Inspect
 status shortly after launch for permission or turn failures. Keep prompts and logs
 in worktree-local `.tmp/`. Do not launch a replacement session in an occupied tree.
 
@@ -211,8 +214,10 @@ consider `workerUser` and actual OS access. Never bypass permissions. Owner-gate
 families require explicit authorization, including when selected by full id.
 
 On quota or model failure, inspect status/logs, switch the existing session through
-the worker wrapper and continue with its context. Respect backend-switch limits;
-do not silently replace the session or give visual work to a text-only fallback.
+the worker wrapper and continue with its context on the same backend. A backend
+change requires an idle worker and starts a fresh context with onboarding; it keeps
+the recorded usage history. Do not silently replace the session or give visual
+work to a text-only fallback.
 Track the actual family on the PR after a successful switch.
 
 Use `grade` (vmethod 1.0, #9) after every closed delivery, merged or not. Update the
