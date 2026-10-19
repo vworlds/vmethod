@@ -104,6 +104,7 @@ export function privateLearning(record: ModelRecord, includeText = false): Model
  * Server-only learning reads and fork writes; credentials never cross the typed operation seam.
  * Submissions append immutable files to one open project PR without workflow scope. Central and open
  * submissions, not local receipts, determine which delivery PRs are already shared or pending.
+ * Confirmed ref updates poll for PR head propagation; exhausted stale reads report a successful push.
  */
 export class LearningsService {
   constructor(
@@ -398,13 +399,24 @@ export class LearningsService {
       if (sha(object(updated.object).sha) !== head) {
         throw new Error("Learning branch update moved; retry");
       }
-      const after = object(await github.rest(endpoint));
-      if (after.state !== "open" || object(after.head).sha !== head) {
-        throw new Error("Pending learning PR moved; retry");
+      let caughtUp = false;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const after = object(await github.rest(endpoint));
+        const afterHead = object(after.head).sha;
+        if (after.state !== "open" || (afterHead !== target.head && afterHead !== head)) {
+          throw new Error("Pending learning PR moved; retry");
+        }
+        if (afterHead === head) {
+          caughtUp = true;
+          break;
+        }
+        if (attempt < 9) {
+          await this.deps.sleep(1000);
+        }
       }
       const url = `https://github.com/${central}/pull/${target.number}`;
       this.saveReceipt(state, { ...receipt, url });
-      return `Submitted ${fresh.length} records: ${url}\nLearning label pending central validation`;
+      return `Submitted ${fresh.length} records: ${url}\n${caughtUp ? "" : "Learning branch pushed; PR head not yet updated\n"}Learning label pending central validation`;
     }
     const forkRef = object(await github.rest(`/repos/${forkName}/git/ref/heads/${base}`));
     const forkParent = sha(object(forkRef.object).sha);

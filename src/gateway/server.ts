@@ -56,7 +56,7 @@ import { reference } from "./refs.js";
 import { LearningsService } from "./learnings.js";
 import { checkLearningPr } from "./learning-check.js";
 import { backfillCosts } from "./cost-backfill.js";
-import type { Price } from "../cost.js";
+import type { Price, PriceTier } from "../cost.js";
 
 class GatewayServer {
   private readonly config: Config;
@@ -213,6 +213,7 @@ class GatewayServer {
       family: string;
       model: string;
       price?: Price;
+      tiers?: PriceTier[];
     }[];
     return backfillCosts(
       {

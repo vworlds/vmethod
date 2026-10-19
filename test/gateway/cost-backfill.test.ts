@@ -44,9 +44,8 @@ test("prices recorded worker sessions using the recorded OpenCode session shape"
   };
   const result = await backfillCosts(deps);
   const rerun = await backfillCosts(deps);
-  expect(result).toContain("#41: $");
-  expect(result).not.toContain("≥");
-  expect(rerun).toContain("#41: $");
+  expect(result).toContain("#41: ≥ $");
+  expect(rerun).toContain("#41: ≥ $");
   expect(setCost).toHaveBeenCalledOnce();
   expect(setCost.mock.calls[0][0]).toBe(41);
 });
@@ -67,6 +66,51 @@ test("parses repeated PR selectors and keeps the command orchestrator-scoped", a
     input: { dryRun: true, prs: [41, 42] },
     context: { role: "orchestrator" },
   });
+});
+
+test("backfill prices a 300k request at its tier and a 30k request at base, not cumulative size", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vmethod-cost-"));
+  roots.push(root);
+  const workers = join(root, "state/vmethod/test/workers");
+  mkdirSync(workers, { recursive: true });
+  writeFileSync(
+    join(workers, "41.json"),
+    JSON.stringify({ pr: 41, repo: "vworlds/vmethod", id: "ses_tier" })
+  );
+  const tokens = (input: number) => ({
+    input,
+    output: 1000,
+    reasoning: 0,
+    cache: { read: 0, write: 0 },
+  });
+  const model = { providerID: "codexbal", id: "gpt-6-luna" };
+  const setCost = vi.fn(async () => undefined);
+  const result = await backfillCosts({
+    root,
+    config: { repo: "vworlds/vmethod", stateName: "test" },
+    env: { XDG_STATE_HOME: join(root, "state") },
+    models: [
+      {
+        family: "luna",
+        model: "codexbal/gpt-6-luna",
+        price: { input: 0.1, output: 0.5, cached: 0.01 },
+        tiers: [{ minPrompt: 272000, input: 0.2, output: 0.75, cached: 0.02 }],
+      },
+    ],
+    readSession: async () => ({
+      session: { model, tokens: { ...tokens(330000), output: 2000 } },
+      messages: [300000, 30000].map((input, i) => ({
+        type: "assistant",
+        id: `m${i}`,
+        model,
+        tokens: tokens(input),
+      })),
+    }),
+    setCost,
+  });
+  expect(result).toContain("#41: $0.06");
+  expect(result).not.toContain("≥");
+  expect(setCost).toHaveBeenCalledWith(41, "$0.06");
 });
 
 test("dry-run reports unknown sessions without writing", async () => {
@@ -231,7 +275,7 @@ test("reconciles the first 200 messages against cumulative session totals", asyn
     }),
     setCost: async () => undefined,
   });
-  expect(result).toContain("#45: $250.00");
+  expect(result).toContain("#45: ≥ $250.00");
   expect(result).toContain("partial message history; remainder priced at sol");
   const log = JSON.parse(readFileSync(join(root, ".vmethod/model-log.jsonl"), "utf8"));
   expect(log.usd).toBe(250);
@@ -291,14 +335,14 @@ test("fills missing model-log usd with backfill provenance", async () => {
     inspectCard: async () => ({ cost: null, archived: true }),
     setCost,
   });
-  expect(report).toContain("#44: archived; $2.00 recorded in the model log only");
+  expect(report).toContain("#44: archived; ≥ $2.00 recorded in the model log only");
   expect(setCost).not.toHaveBeenCalled();
   const log = JSON.parse(readFileSync(join(root, ".vmethod/model-log.jsonl"), "utf8"));
   expect(log).toMatchObject({
     usd: 2,
-    costSource: "backfill",
+    costSource: "backfill-partial",
     costBasis: "api-list",
-    costCoverage: "complete",
+    costCoverage: "partial",
   });
 });
 
@@ -338,8 +382,8 @@ test("keeps both archived PR costs when backfilling multiple model-log records",
     setCost: async () => undefined,
   });
 
-  expect(report).toContain("#51: archived; $");
-  expect(report).toContain("#52: archived; $");
+  expect(report).toContain("#51: archived; ≥ $");
+  expect(report).toContain("#52: archived; ≥ $");
   const records = readFileSync(join(root, ".vmethod/model-log.jsonl"), "utf8")
     .trim()
     .split("\n")

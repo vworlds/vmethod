@@ -6,6 +6,7 @@ import configSchema from "../schema/vmethod.schema.json" with { type: "json" };
 import peopleSchema from "../schema/people.schema.json" with { type: "json" };
 import modelsSchema from "../schema/models.schema.json" with { type: "json" };
 import baseline from "../board/migrations/0001-baseline.json" with { type: "json" };
+import type { Price, PriceTier } from "./cost.js";
 
 type Schema = Record<string, unknown>;
 export type Config = Record<string, unknown>;
@@ -133,7 +134,14 @@ export function validateYaml(
     );
   }
   if (kind === "models") {
-    const models = value as { family: string; model: string; kind: string; fallback?: string[] }[];
+    const models = value as {
+      family: string;
+      model: string;
+      kind: string;
+      fallback?: string[];
+      price?: Price;
+      tiers?: PriceTier[];
+    }[];
     const families = new Set<string>();
     const identifiers = new Set<string>();
     for (const [index, model] of models.entries()) {
@@ -146,6 +154,16 @@ export function validateYaml(
       }
       families.add(model.family);
       identifiers.add(`${model.kind}/${model.model}`);
+      const thresholds = new Set<number>();
+      for (const tier of model.tiers ?? []) {
+        if (thresholds.has(tier.minPrompt)) {
+          throw new Error(`${file}:${line}: duplicate minPrompt threshold`);
+        }
+        thresholds.add(tier.minPrompt);
+        if ((["input", "output", "cached"] as const).some((key) => tier[key] < model.price![key])) {
+          throw new Error(`${file}:${line}: tier rates must not be below base prices`);
+        }
+      }
       for (const fallback of model.fallback ?? []) {
         if (!models.some((entry) => entry.family === fallback)) {
           throw new Error(`${file}:${line}: unknown fallback family ${fallback}`);

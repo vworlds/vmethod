@@ -23,6 +23,7 @@ import { approvalCarryFiles } from "./carry-approval.js";
 import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
 import { setTurn, turnAssignees } from "./turn.js";
+import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
 import { runVerifyHook } from "./verify-hook.js";
 
 interface Host {
@@ -330,7 +331,7 @@ export class TaskFlow {
           /<Measurable acceptance cases,[\s\S]*?unresolved blockers\.>/,
           "All specification acceptance cases pass, with green CI and no unresolved blockers."
         ) +
-      `\n\n${input.hold ? "> ⛔ ON HOLD. Wait for [orchestrator] GO.\n\n" : ""}## Task specification\n\n${spec}\n` +
+      `\n\n${input.hold ? `${holdBanner}\n\n` : ""}## Task specification\n\n${spec}\n` +
       (handoff
         ? "\nAt each defined breakpoint post `[worker] HANDOFF` with what is done, uncommitted files and remaining mechanical steps, then end your turn.\n"
         : "") +
@@ -645,11 +646,25 @@ export class TaskFlow {
     const status = (await this.deps.workers?.status(this.number(ref), forMerge)) ?? "unknown";
     return ["live", "stopped", "unknown"].includes(status) ? status : "unknown";
   }
+  /** Release an open held task, preserving prompt edits and refusing repeated releases. */
   async release(ref: string): Promise<string> {
     const item = await this.pr(ref);
     if (item.state !== "OPEN") {
       throw new Error("PR is not open");
     }
+    const body = String(item.body ?? ""),
+      title = String(item.title);
+    if (!taskHeld(title, body)) {
+      throw new Error("Task PR is not on hold");
+    }
+    const updated = withoutHold(title, body);
+    await checkMarkdown(this.root, updated.body);
+    // Re-read after validation: never replace a prompt edited while preparing release.
+    const current = await this.pr(ref);
+    if (current.body !== body || current.title !== title || current.state !== "OPEN") {
+      throw new Error("Task PR changed while preparing release; read it and retry");
+    }
+    await this.host.github.rest(this.path(ref, "pulls"), "PATCH", updated, false);
     const comments = await this.host.comments(String(item.id));
     if (!comments.some((c) => /^\[orchestrator\] GO(?:\s|$)/.test(String(c.body)))) {
       await this.post(ref, "[orchestrator] GO\n\nThe hold is lifted; work may begin.");

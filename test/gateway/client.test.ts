@@ -6,6 +6,7 @@ import { fakeServer, fixtureServer } from "./helpers.js";
 import recordedOpencode from "../fixtures/opencode/watch-status.json" with { type: "json" };
 import recordedCostSession from "../fixtures/usage/opencode-session.json" with { type: "json" };
 import recordedCostMessage from "../fixtures/usage/opencode-message.json" with { type: "json" };
+import recordedMessageCursor from "../fixtures/usage/opencode-message-cursor.json" with { type: "json" };
 
 test("cost lookup unwraps the recorded session and assistant-message envelopes", async () => {
   const requests: string[] = [];
@@ -63,10 +64,17 @@ test("cost lookup follows message cursor pages", async () => {
       if (url.searchParams.get("cursor") === "older") {
         return Response.json({ data: [{ type: "assistant", id: "older" }], cursor: {} });
       }
-      return Response.json({
-        data: [{ type: "assistant", id: "newer" }],
-        cursor: { previous: "older" },
-      });
+      if (
+        url.pathname === "/api/session/ses_recorded/message" &&
+        url.searchParams.get("limit") === "200" &&
+        !url.searchParams.has("cursor")
+      ) {
+        return Response.json({
+          data: [{ type: "assistant", id: "newer" }],
+          cursor: recordedMessageCursor,
+        });
+      }
+      throw new Error(`Unexpected request: ${url.pathname}${url.search}`);
     }
   );
   const result = await client.costSession("ses_recorded");

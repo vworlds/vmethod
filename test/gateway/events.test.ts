@@ -436,20 +436,47 @@ test("existing worker poll writes Cost to the PR, deduplicates and clears unknow
   expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
     { itemId: taskPr.id, field: "Cost", value: "$1.26" },
   ]);
+  f.staleWorker = { reason: "running", active: true, prCost: { pr: 24, usd: 1.259 } };
   for (let i = 0; i < 6; i++) {
     await f.once(loop);
   }
   expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(1);
+  f.staleWorker = { reason: "running", active: true, prCost: { pr: 24, usd: 1.266 } };
+  for (let i = 0; i < 6; i++) {
+    await f.once(loop);
+  }
+  expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
+    { itemId: taskPr.id, field: "Cost", value: "$1.26" },
+    { itemId: taskPr.id, field: "Cost", value: "$1.27" },
+  ]);
   f.staleWorker = { reason: "running", active: true, prCost: { pr: 24, usd: null } };
   for (let i = 0; i < 6; i++) {
     await f.once(loop);
   }
-  expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(2);
+  expect(f.writes.filter((write) => write.field === "Cost")).toHaveLength(3);
   expect(f.writes.filter((write) => write.field === "Cost").at(-1)).toEqual({
     itemId: taskPr.id,
     field: "Cost",
     value: null,
   });
+  expect(f.reports).toEqual([]);
+});
+
+test("worker poll preserves lower-bound Cost text on the task PR", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  const taskPr = f.card(24, "In progress", "PullRequest");
+  f.cards.push(taskPr);
+  f.staleWorker = {
+    reason: "running",
+    active: true,
+    prCost: { pr: 24, usd: 1.256, lowerBound: true },
+  };
+  await f.once(f.loop());
+  expect(f.writes.filter((write) => write.field === "Cost")).toEqual([
+    { itemId: taskPr.id, field: "Cost", value: "≥ $1.26" },
+  ]);
   expect(f.reports).toEqual([]);
 });
 
@@ -1177,6 +1204,88 @@ test("REST conflicts are once per head SHA and red CI is Progress only", async (
   expect(wakes.filter((e) => e.kind === "conflict")).toHaveLength(1);
   expect(object(f.cards[0].progress).text).toContain("🔴");
 });
+
+test.each([{ issues: [] }, { issues: [6] }])(
+  "worker-less relation task merge is reported regardless of branch pattern: %j",
+  async ({ issues }) => {
+    const f = setup();
+    f.task();
+    f.pulls[0].body = `<!-- vmethod-task ${JSON.stringify({ issues })} -->`;
+    object(f.pulls[0].head).ref = "maintenance/direct-task";
+    const loop = f.loop();
+    await f.tick(loop);
+    expect(existsSync(join(f.dir, "open-24"))).toBe(true);
+    f.advance();
+    f.pulls = [];
+    f.gone = { merged: true, user: user(0), merged_by: { login: "owner", id: 101 } };
+    const events = await f.tick(loop);
+    expect(events.filter((event) => event.kind === "button-merge")).toHaveLength(1);
+    expect(events.find((event) => event.kind === "button-merge")?.line).toContain(
+      "PR #24 MERGED by owner"
+    );
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test("merge notice identifies held task references without requiring worker sessions", async () => {
+  const f = setup();
+  f.task();
+  const merged = { ...f.pulls[0], body: '<!-- vmethod-task {"issues":[]} -->' };
+  f.pulls = [
+    merged,
+    {
+      ...merged,
+      number: 31,
+      title: "[HOLD: waiting for #24] feat: follow-up",
+      head: { ...object(f.pulls[0].head), ref: "direct/follow-up" },
+    },
+  ];
+  f.issues.push({ number: 31, pull_request: {}, labels: [] });
+  f.cards.push(f.card(31, "In progress", "PullRequest"));
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (
+      new URL(String(input)).pathname === "/repos/example/project/pulls/24" &&
+      !f.pulls.some((pr) => pr.number === 24)
+    ) {
+      return Response.json({ merged: true, user: user(0), merged_by: { login: "owner", id: 101 } });
+    }
+    return fetch(input, init);
+  };
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  f.pulls = f.pulls.filter((pr) => pr.number !== 24);
+  const events = await f.tick(loop);
+  expect(events.find((event) => event.kind === "button-merge")?.line).toContain(
+    "held task references: #31"
+  );
+  expect(f.reports).toEqual([]);
+});
+
+test.each(["untrusted", "out of scope", "malformed relation"])(
+  "relation tracking preserves %s boundary",
+  async (boundary) => {
+    const f = setup();
+    f.task();
+    f.pulls[0].body = '<!-- vmethod-task {"issues":[]} -->';
+    object(f.pulls[0].head).ref = "maintenance/direct-task";
+    if (boundary === "untrusted") {
+      f.pulls[0].user = { login: "outsider", id: 99999, type: "User" };
+    }
+    if (boundary === "malformed relation") {
+      f.pulls[0].body = '<!-- vmethod-task {"issues":"bad"} -->';
+    }
+    const loop = f.loop(boundary === "out of scope" ? { only: [6] } : {});
+    await f.tick(loop);
+    expect(existsSync(join(f.dir, "open-24"))).toBe(false);
+    f.advance();
+    f.pulls = [];
+    f.gone = { merged: true, user: user(0), merged_by: { login: "owner", id: 101 } };
+    expect((await f.tick(loop)).some((event) => event.kind === "button-merge")).toBe(false);
+    expect(f.reports).toEqual([]);
+  }
+);
 
 test("CLOSED clears Progress; owner button merges are pending-safe and paced until follow-up completes", async () => {
   const f = setup();

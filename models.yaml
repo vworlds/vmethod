@@ -6,6 +6,7 @@
   tier: standard
   model: codexbal/gpt-6.1-sol
   price: { input: 2.0, output: 10.0, cached: 0.1 } # openrouter openai/gpt-6.1-sol
+  tiers: [{ minPrompt: 272000, input: 4.0, output: 15.0, cached: 0.2 }]
   kind: opencode
   gate: none
   fallback: [luna, glm]
@@ -13,6 +14,7 @@
   tier: standard
   model: codexbal/gpt-6-luna
   price: { input: 0.1, output: 0.5, cached: 0.01 } # openrouter openai/gpt-6-luna
+  tiers: [{ minPrompt: 272000, input: 0.2, output: 0.75, cached: 0.02 }]
   kind: opencode
   gate: none
   fallback: [sol, glm]
@@ -20,6 +22,7 @@
   tier: expensive
   model: codexbal/gpt-6-astra
   price: { input: 10.0, output: 50.0, cached: 1.0 } # openrouter openai/gpt-6-astra
+  tiers: [{ minPrompt: 272000, input: 20.0, output: 75.0, cached: 2.0 }]
   kind: opencode
   gate: owner
   fallback: [sol]

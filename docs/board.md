@@ -65,7 +65,8 @@ opening Estimate. Clearing an issue Estimate remains distinct from assigning zer
 
 ## Cost
 
-`Cost` is per PR: text in `$0.00` format at configured API prices, not subscription
+`Cost` is per PR: text in `$0.00` format (or `≥ $0.00` for totals-only/partial
+history) at configured API prices, not subscription
 charges. The existing worker poll updates the task PR's card from that PR's own
 segments; `grade` sets its final Cost. There is no rollup across PRs, even when they
 deliver the same issue. Unknown usage or missing prices clear the field rather than

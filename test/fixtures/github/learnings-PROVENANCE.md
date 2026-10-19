@@ -57,6 +57,10 @@ ref envelope, retargeting the SHA and branch. Trees inherit the open PR's files,
 commits receive distinct SHAs, and staged files become visible only on ref creation
 or update. Tests assert the current parent, inherited tree and `force: false`;
 head movement and a lost successful update response are explicit scenario data.
+PR head propagation lag reuses the recorded pull envelope with the pre-update SHA
+for a bounded number of detail reads after a successful ref update. A distinct
+post-update SHA models a concurrent writer; injected sleep records polling delays
+without wall-clock waits.
 Worker-management gateway tests reuse these envelopes to model an already-shared
 grade: their central seed contains the grade's record and their open PR list is
 empty. This exercises production auto-submission wiring without duplicating the

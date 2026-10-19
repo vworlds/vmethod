@@ -19,6 +19,8 @@ import { taskFlowVerb } from "../../src/cli/task-flow.js";
 import type { Operations, Transport } from "../../src/gateway/transport.js";
 import { WorkerService } from "../../src/gateway/workers.js";
 
+const holdBanner = "> ⛔ ON HOLD. Wait for [orchestrator] GO.";
+
 const baseSha = "b".repeat(40),
   mergedSha = "c".repeat(40);
 
@@ -413,6 +415,9 @@ function fixture() {
       } else if (method === "PATCH" && path === "/repos/example/project/pulls/27") {
         expect(typeof payload.body).toBe("string");
         body = String(payload.body);
+        if (typeof payload.title === "string") {
+          title = payload.title;
+        }
         data = { number: 27, node_id: "pr" };
       } else if (
         method === "POST" &&
@@ -764,6 +769,7 @@ test("review reports queued delivery and uses the next review round", async () =
 
 test.each([false, true])("release without session/control still posts GO (%s)", async (control) => {
   const f = fixture();
+  f.set({ body: `${holdBanner}\n\n<!-- vmethod-task {"issues":[8]} -->` });
   if (control) {
     f.deps.workers!.resume = async () => "no worker session for #27; nothing sent";
   } else {
@@ -2082,7 +2088,7 @@ test("unchanged lockfile avoids install; release-hold posts GO, clears hold and 
   f.set({ changed: false });
   await f.flow().merge("27");
   expect(f.events.some((event) => event.startsWith("sh "))).toBe(false);
-  f.set({ state: "OPEN" });
+  f.set({ state: "OPEN", body: `${holdBanner}\n\n<!-- vmethod-task {"issues":[8]} -->` });
   await f.flow().release("27");
   expect(f.writes.some((w) => String(w.body.body).startsWith("[orchestrator] GO"))).toBe(true);
   expect(f.events.at(-1)).toBe("worker-resume");
@@ -2092,6 +2098,148 @@ test("unchanged lockfile avoids install; release-hold posts GO, clears hold and 
       prompt: "[orchestrator] GO is on your PR; read it with vmethod read pr 27 and act.",
     },
   ]);
+  f.done();
+});
+
+test("open held task, release, and worker start; second release has no side effects", async () => {
+  const f = fixture();
+  await f.flow().open({ issue: "8", hold: true });
+  const held = await f.host.thread("27", "pr");
+  expect(String(held.body)).toContain(holdBanner);
+  const directory = join(f.root, ".worktrees/8-task");
+  mkdirSync(join(directory, "node_modules/.bin"), { recursive: true });
+  writeFileSync(join(directory, "node_modules/.bin/vmethod"), "fake", { mode: 0o755 });
+  const requests: string[] = [];
+  const service = new WorkerService(
+    f.root,
+    f.config,
+    {
+      ...f.env,
+      OPENCODE_BASE_URL: "https://opencode.invalid",
+      OPENCODE_SERVER_USERNAME: "worker",
+      OPENCODE_SERVER_PASSWORD: "password",
+    },
+    {
+      ...f.deps,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        expect(url.origin).toBe("https://opencode.invalid");
+        requests.push(url.pathname);
+        if (url.pathname === "/api/session/ses_hold" && init?.method === "GET") {
+          return Response.json({ data: { id: "ses_hold", title: "project#27" } });
+        }
+        expect(init?.method).toBe("POST");
+        if (url.pathname === "/api/session") {
+          return Response.json({ data: { id: "ses_hold" } });
+        }
+        if (url.pathname === "/api/session/ses_hold/prompt") {
+          expect(JSON.parse(String(init?.body)).text).not.toContain(holdBanner);
+          return Response.json({ data: {} });
+        }
+        throw new Error(`Unexpected worker request ${url.pathname}`);
+      },
+    },
+    {
+      metadata: async () => {
+        const pr = await f.host.thread("27", "pr");
+        return {
+          pr: 27,
+          issue: 8,
+          branch: "8-task",
+          title: String(pr.title),
+          body: String(pr.body),
+          state: String(pr.state),
+          draft: Boolean(pr.isDraft),
+          blocked: false,
+          pointsOpen: 13,
+          model: "glm",
+          kind: "tooling",
+          merged: false,
+          comments: [],
+        };
+      },
+      prepare: async () => directory,
+      setModel: async () => {},
+      modelComment: async () => {},
+      setEstimate: async () => {},
+      setCost: async () => {},
+      gradeComment: async () => {},
+      submitLearnings: async () => "unused",
+      workerIdentity: async () => {
+        throw new Error("Unexpected Claude identity");
+      },
+      issue: async () => {
+        throw new Error("Unexpected issue read");
+      },
+    }
+  );
+  await expect(service.command(["start", "27"])).rejects.toThrow("on hold");
+  expect(requests).toEqual([]);
+  await f.flow().release("27");
+  const released = await f.host.thread("27", "pr");
+  expect(released.body).toBe(String(held.body).replace(`${holdBanner}\n`, ""));
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ field: "Status", value: "In progress" })
+  );
+  const before = { writes: f.writes.length, touched: f.touched.length, resumes: f.resumes.length };
+  await expect(f.flow().release("27")).rejects.toThrow("not on hold");
+  expect({ writes: f.writes.length, touched: f.touched.length, resumes: f.resumes.length }).toEqual(
+    before
+  );
+  await service.command(["start", "27"]);
+  expect(requests).toEqual([
+    "/api/session",
+    "/api/session/ses_hold/prompt",
+    "/api/session/ses_hold",
+  ]);
+  f.done();
+});
+
+test("release removes paired title/banner markers but preserves all other prompt text", async () => {
+  const f = fixture();
+  const prompt = `# Task\n\n${holdBanner}\n\nProse about ON HOLD and [HOLD: examples].\n\n<!-- vmethod-task {"issues":[8]} -->`;
+  f.set({ title: "[HOLD: waiting for #7] feat: task", body: prompt });
+  await f.flow().release("27");
+  const edits = f.writes.filter((w) => w.path.endsWith("/pulls/27"));
+  expect(edits).toEqual([
+    {
+      path: "/repos/example/project/pulls/27",
+      body: {
+        title: "feat: task",
+        body: prompt.replace(`${holdBanner}\n`, ""),
+      },
+    },
+  ]);
+  f.done();
+});
+
+test("release refuses a concurrent prompt edit rather than overwriting it", async () => {
+  const f = fixture();
+  f.set({ body: `${holdBanner}\n\nOriginal prompt` });
+  const thread = f.host.thread;
+  let reads = 0;
+  f.host.thread = async (ref, kind) => {
+    if (++reads === 2) {
+      f.set({ body: `${holdBanner}\n\nNew orchestrator amendment` });
+    }
+    return thread(ref, kind);
+  };
+  await expect(f.flow().release("27")).rejects.toThrow("changed");
+  expect(f.writes).toEqual([]);
+  expect(f.resumes).toEqual([]);
+  f.done();
+});
+
+test("release refuses prose-only holds and never posts GO after an edit failure", async () => {
+  const f = fixture();
+  f.set({ body: "This prompt discusses ON HOLD and [HOLD: examples]." });
+  await expect(f.flow().release("27")).rejects.toThrow("not on hold");
+  expect(f.writes).toEqual([]);
+  f.set({ body: `${holdBanner}\n\nPrompt`, fail: "/pulls/27" });
+  await expect(f.flow().release("27")).rejects.toThrow("GitHub network request failed");
+  expect(f.writes.some((w) => w.path.endsWith("/comments"))).toBe(false);
+  expect(f.touched).toEqual([]);
+  expect(f.resumes).toEqual([]);
   f.done();
 });
 

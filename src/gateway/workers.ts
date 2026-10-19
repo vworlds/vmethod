@@ -1,15 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { estimateScale } from "../board/estimate.js";
 import { parseProgress } from "../board/progress.js";
+import { taskHeld } from "./task-hold.js";
 import {
   addTokens,
   boardCost,
   claudeUsage,
-  dollars,
+  claudeRequests,
+  requestCost,
   sumUsd,
   usageDelta,
   zeroTokens,
   type Price,
+  type PriceTier,
+  type RequestCosts,
   type Usage,
 } from "../cost.js";
 import { modelRecord } from "../learnings.js";
@@ -48,6 +52,7 @@ interface Model {
   tier: "expensive" | "standard" | "cheap";
   fallback?: string[];
   price?: Price;
+  tiers?: PriceTier[];
 }
 
 interface Segment {
@@ -59,6 +64,8 @@ interface Segment {
   baseline?: Usage;
   usage?: Usage;
   usd?: number | null;
+  lowerBound?: boolean;
+  requests?: RequestCosts;
 }
 interface Session {
   version: 1;
@@ -75,6 +82,8 @@ interface Session {
   logOffset?: number;
   finalized?: boolean;
   gradePosted?: boolean;
+  /** Only trust cached ids as history boundaries after a full older-history scan. */
+  costHistoryLoaded?: boolean;
   pendingWake?: string[];
 }
 export interface TaskMetadata {
@@ -277,7 +286,14 @@ export class WorkerService {
               : { reason: "session unknown", active: false };
       }
     } else {
-      status = await this.client().status(directory, record.id, deadline);
+      status = await this.client().status(
+        directory,
+        record.id,
+        deadline,
+        record.costHistoryLoaded
+          ? record.segments.flatMap((segment) => Object.keys(segment.requests ?? {}))
+          : []
+      );
     }
     if (status.reason === "idle" && comments) {
       const meta = await this.hooks.metadata(record.pr);
@@ -295,15 +311,15 @@ export class WorkerService {
       status.error = this.redact(status.error);
     }
     if (record.model.kind === "claude") {
-      status.usage = claudeUsage(
-        this.claudeLog(record).map((line) => {
-          try {
-            return JSON.parse(line);
-          } catch {
-            return {};
-          }
-        })
-      );
+      const events = this.claudeLog(record).map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return {};
+        }
+      });
+      status.usage = claudeUsage(events);
+      status.requests = claudeRequests(events);
     }
     if (status.usage && !record.finalized) {
       const segment = record.segments.at(-1)!;
@@ -311,10 +327,25 @@ export class WorkerService {
         status.usage,
         segment.baseline ?? { tokens: zeroTokens(), reportedUsd: 0 }
       );
-      segment.usd = dollars(
-        segment.usage.tokens,
-        this.models.find((m) => m.family === segment.family)?.price
+      const priorIds = new Set(
+        record.segments.slice(0, -1).flatMap((s) => Object.keys(s.requests ?? {}))
       );
+      const model = this.models.find((m) => m.family === segment.family);
+      const cost = requestCost(
+        segment.usage.tokens,
+        (status.requests ?? []).filter((request) => !priorIds.has(request.id)),
+        (request) =>
+          request.model
+            ? (this.models.find((m) => m.model === request.model) ?? {})
+            : (model ?? {}),
+        model?.price,
+        (segment.requests ??= {})
+      );
+      segment.usd = cost.usd;
+      segment.lowerBound = cost.lowerBound;
+      if (record.model.kind === "opencode" && status.requests) {
+        record.costHistoryLoaded = true;
+      }
       this.save(record);
     }
     if (
@@ -348,7 +379,7 @@ export class WorkerService {
       record.model.kind === "opencode" && status.title !== this.sessionTitle(record.pr)
         ? ` | TITLE MISMATCH expected ${JSON.stringify(this.sessionTitle(record.pr))}`
         : "";
-    return `#${record.pr} ${record.id} ${status.reason}${details}${titleMismatch} | tokens ${tokenText} | USD ${usd === null ? "unknown" : `$${usd.toFixed(6)}`}${status.error ? ` ${untrusted(status.error)}` : ""}${advice}`;
+    return `#${record.pr} ${record.id} ${status.reason}${details}${titleMismatch} | tokens ${tokenText} | USD ${usd === null ? "unknown" : `${record.segments.some((segment) => segment.lowerBound) ? "≥ " : ""}$${usd.toFixed(6)}`}${status.error ? ` ${untrusted(status.error)}` : ""}${advice}`;
   }
   private sessionTitle(pr: number): string {
     return `${String(this.config.repo).split("/").at(-1)}#${pr}`;
@@ -691,7 +722,11 @@ export class WorkerService {
         return { reason: "session unknown", active: false };
       }
       const status = await this.status(record, false);
-      status.prCost = { pr, usd: sumUsd(record.segments.map((segment) => segment.usd)) };
+      status.prCost = {
+        pr,
+        usd: sumUsd(record.segments.map((segment) => segment.usd)),
+        ...(record.segments.some((segment) => segment.lowerBound) ? { lowerBound: true } : {}),
+      };
       return status;
     });
   }
@@ -908,7 +943,7 @@ export class WorkerService {
     if (!meta.issue) {
       throw new Error("Task PR has no linked issue");
     }
-    if (meta.blocked || /ON HOLD|\[HOLD:/i.test(meta.title + "\n" + meta.body)) {
+    if (meta.blocked || taskHeld(meta.title, meta.body)) {
       throw new Error("Task issue is blocked or on hold");
     }
     const model = this.resolve(selected ?? meta.model ?? "", approved);
@@ -1064,6 +1099,9 @@ export class WorkerService {
           ...(usage?.reportedUsd === undefined ? {} : { reportedUsd: usage.reportedUsd }),
         })),
         usd: sumUsd(session.segments.map((segment) => segment.usd)),
+        ...(session.segments.some((segment) => segment.lowerBound)
+          ? { costCoverage: "partial" }
+          : {}),
         points_open: session.points_open,
         points_final: points,
         rounds: this.round(meta),
@@ -1096,8 +1134,8 @@ export class WorkerService {
       }
       session.finalized = true;
       this.save(session);
-      await this.hooks.setCost?.(pr, boardCost(record.usd));
-      const summary = `Graded PR #${pr}: issue #${meta.issue} Estimate ${points}; USD ${record.usd === null ? "unknown" : `$${record.usd.toFixed(6)}`}`;
+      await this.hooks.setCost?.(pr, boardCost(record.usd, record.costCoverage === "partial"));
+      const summary = `Graded PR #${pr}: issue #${meta.issue} Estimate ${points}; USD ${record.usd === null ? "unknown" : `${record.costCoverage === "partial" ? "≥ " : ""}$${record.usd.toFixed(6)}`}`;
       if (!session.gradePosted) {
         await this.hooks.gradeComment?.(meta.issue, `[orchestrator] GRADE\n\n${summary}`);
         session.gradePosted = true;

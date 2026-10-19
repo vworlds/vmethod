@@ -6,6 +6,7 @@
     "type": "object",
     "additionalProperties": false,
     "required": ["family", "model", "kind", "gate", "tier"],
+    "dependencies": { "tiers": ["price"] },
     "properties": {
       "family": { "type": "string" },
       "model": { "type": "string", "minLength": 1 },
@@ -17,6 +18,21 @@
           "input": { "type": "number", "minimum": 0 },
           "output": { "type": "number", "minimum": 0 },
           "cached": { "type": "number", "minimum": 0 }
+        }
+      },
+      "tiers": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["minPrompt", "input", "output", "cached"],
+          "properties": {
+            "minPrompt": { "type": "integer", "minimum": 1 },
+            "input": { "type": "number", "minimum": 0 },
+            "output": { "type": "number", "minimum": 0 },
+            "cached": { "type": "number", "minimum": 0 }
+          }
         }
       },
       "kind": { "enum": ["opencode", "claude"] },

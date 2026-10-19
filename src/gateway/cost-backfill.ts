@@ -9,14 +9,13 @@ import {
 } from "node:fs";
 import { join, relative, sep } from "node:path";
 import {
-  addTokens,
   boardCost,
-  dollars,
   opencodeUsage,
+  opencodeRequests,
+  requestCost,
   sumUsd,
-  zeroTokens,
   type Price,
-  type Tokens,
+  type PriceTier,
 } from "../cost.js";
 import type { Config } from "../config.js";
 import { modelRecords } from "../learnings.js";
@@ -32,7 +31,7 @@ export interface CostBackfillDependencies {
   root: string;
   config: Config;
   env: NodeJS.ProcessEnv;
-  models: { family: string; model: string; price?: Price }[];
+  models: { family: string; model: string; price?: Price; tiers?: PriceTier[] }[];
   readSession(id: string): Promise<unknown | undefined>;
   inspectCard?(pr: number): Promise<{ cost?: string | null; archived?: boolean }>;
   setCost(pr: number, value: string): Promise<void>;
@@ -70,6 +69,7 @@ export async function backfillCosts(
   const lines: string[] = [];
   let known = 0;
   let total = 0;
+  let totalLowerBound = false;
   let connectionReported = false;
   for (const pr of prs) {
     const state = stateRecords.get(pr);
@@ -88,10 +88,11 @@ export async function backfillCosts(
         card?.archived === true ||
         (!options.dryRun && (await writeCost(deps, pr, value, card?.cost)));
       lines.push(
-        `#${pr}: ${archived ? `archived; ${value} recorded in the model log only` : value} (${partial ? "legacy record, last session only" : "model log"})${options.dryRun ? " [dry run]" : ""}`
+        `#${pr}: ${archived ? `archived; ${value} recorded in the model log only` : value} (${partial ? "model log, partial coverage" : "model log"})${options.dryRun ? " [dry run]" : ""}`
       );
       known++;
       total += logged.usd;
+      totalLowerBound ||= partial;
       continue;
     }
     if (!ids.length) {
@@ -99,6 +100,7 @@ export async function backfillCosts(
       continue;
     }
     const prices: (number | null)[] = [];
+    let lowerBound = Boolean(legacyId);
     const labels: string[] = [];
     for (const id of ids) {
       if (!id.startsWith("ses_") || object(state?.model).kind === "claude") {
@@ -143,90 +145,59 @@ export async function backfillCosts(
         continue;
       }
       const messages = Array.isArray(envelope.messages) ? envelope.messages : [];
-      const assistants = messages
-        .filter((message) => object(message).type === "assistant")
-        .map((message) => {
-          const part = object(message);
-          const model = object(part.model);
-          const key = `${String(model.providerID ?? "")}/${String(model.id ?? "")}`;
-          const family = deps.models.find((item) => item.model === key);
-          const usage = opencodeUsage(part);
-          return {
-            family,
-            modelId: model.providerID && model.id ? key : "",
-            usage,
-          };
-        });
-      const hasPerMessageData = assistants.some((item) => item.modelId);
-      let usd: number | null;
-      let familyLabel: string;
-      if (hasPerMessageData) {
-        const pricedMessages: { usd: number; tokens: Tokens; family: string }[] = [];
-        let unpricedModel: string | undefined;
-        for (const message of assistants) {
-          if (!message.modelId || !message.usage) {
-            continue;
-          }
-          if (!message.family || !message.family.price) {
-            unpricedModel = message.family?.family ?? message.modelId;
-            break;
-          }
-          pricedMessages.push({
-            usd: dollars(message.usage.tokens, message.family.price)!,
-            tokens: message.usage.tokens,
-            family: message.family.family,
-          });
-        }
-        if (unpricedModel) {
-          prices.push(null);
-          labels.push(`no price for ${unpricedModel}`);
-          continue;
-        }
-        const measured = pricedMessages.reduce(
-          (sum, item) => addTokens(sum, item.tokens),
-          zeroTokens()
-        );
-        const remainder = tokenRemainder(cumulative.tokens, measured);
-        if (!remainder) {
-          prices.push(null);
-          labels.push("message usage exceeds cumulative session totals");
-          continue;
-        }
-        const incompleteMessages = assistants.some((item) => !item.modelId || !item.usage);
-        const hasRemainder = Object.values(remainder).some((count) => count > 0);
-        let remainderUsd = 0;
-        if (hasRemainder) {
-          if (!sessionFamily?.price) {
-            prices.push(null);
-            labels.push(
-              `no price for ${(sessionFamily?.family ?? sessionModelId) || "session model"}`
-            );
-            continue;
-          }
-          remainderUsd = dollars(remainder, sessionFamily.price)!;
-        }
-        usd = pricedMessages.reduce((sum, item) => sum + item.usd, remainderUsd);
-        const families = [...new Set(pricedMessages.map((item) => item.family))];
-        familyLabel = families.join("+");
-        if (hasRemainder || incompleteMessages) {
-          familyLabel = `partial message history; remainder priced at ${sessionFamily?.family ?? "unknown"}`;
-        }
-      } else {
-        usd = sessionFamily?.price ? dollars(cumulative.tokens, sessionFamily.price) : null;
-        familyLabel = sessionFamily ? sessionFamily.family : "";
-        const stateSegments = object(state).segments;
-        const stateFamilies = Array.isArray(stateSegments)
-          ? stateSegments.map((segment: unknown) => object(segment).family).filter(Boolean)
-          : [];
-        if (new Set(stateFamilies).size > 1) {
-          familyLabel = `mixed models, priced at ${sessionFamily?.family ?? "unknown"}`;
-        }
+      const requests = opencodeRequests(messages).filter((request) => request.model);
+      const unpriced = requests.find(
+        (request) => !deps.models.find((model) => model.model === request.model)?.price
+      );
+      if (unpriced) {
+        prices.push(null);
+        labels.push(`no price for ${unpriced.model}`);
+        continue;
       }
+      let cost: ReturnType<typeof requestCost>;
+      try {
+        cost = requestCost(
+          cumulative.tokens,
+          requests,
+          (request) => deps.models.find((model) => model.model === request.model) ?? {},
+          sessionFamily?.price
+        );
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes("Provider usage decreased")) {
+          throw error;
+        }
+        prices.push(null);
+        labels.push("message usage exceeds cumulative session totals");
+        continue;
+      }
+      const usd = cost.usd;
       if (usd === null) {
         prices.push(null);
         labels.push(`no price for ${(sessionFamily?.family ?? sessionModelId) || "session model"}`);
         continue;
       }
+      let familyLabel =
+        [
+          ...new Set(
+            requests.map(
+              (request) => deps.models.find((model) => model.model === request.model)!.family
+            )
+          ),
+        ].join("+") ||
+        sessionFamily?.family ||
+        "";
+      if (cost.lowerBound && requests.length) {
+        familyLabel = `partial message history; remainder priced at ${sessionFamily?.family ?? "unknown"}`;
+      } else if (!requests.length) {
+        const stateSegments = object(state).segments;
+        const families = Array.isArray(stateSegments)
+          ? stateSegments.map((segment) => object(segment).family).filter(Boolean)
+          : [];
+        if (new Set(families).size > 1) {
+          familyLabel = `mixed models, priced at ${sessionFamily?.family ?? "unknown"}`;
+        }
+      }
+      lowerBound ||= cost.lowerBound;
       prices.push(usd);
       labels.push(`${familyLabel || "unknown model"}, session ${id}`);
     }
@@ -235,7 +206,7 @@ export async function backfillCosts(
       lines.push(`#${pr}: unknown (${labels.join("; ")})`);
       continue;
     }
-    const value = `${legacyId ? "≥ " : ""}${boardCost(usd)!}`;
+    const value = boardCost(usd, lowerBound)!;
     const logRecordNeedsBackfill = logged !== undefined && logged.usd == null;
     const logWritten =
       !options.dryRun &&
@@ -245,8 +216,8 @@ export async function backfillCosts(
         deps.config.repo,
         pr,
         usd,
-        legacyId ? "partial" : "complete",
-        legacyId ? "backfill-partial" : "backfill"
+        lowerBound ? "partial" : "complete",
+        lowerBound ? "backfill-partial" : "backfill"
       );
     const card = await deps.inspectCard?.(pr);
     const archived =
@@ -264,8 +235,11 @@ export async function backfillCosts(
     );
     known++;
     total += usd;
+    totalLowerBound ||= lowerBound;
   }
-  lines.push(`Total: ${known} priced PR(s), ${boardCost(total)}; ${prs.length - known} unknown`);
+  lines.push(
+    `Total: ${known} priced PR(s), ${boardCost(total, totalLowerBound)}; ${prs.length - known} unknown`
+  );
   return lines.join("\n");
 }
 
@@ -302,15 +276,6 @@ function sessionIds(record?: Record<string, unknown>): string[] {
           )
         : [record.sessionId ?? record.id];
   return [...new Set(ids.filter((id): id is string => typeof id === "string" && id.length > 0))];
-}
-
-function tokenRemainder(total: Tokens, measured: Tokens): Tokens | null {
-  const remainder = {
-    input: total.input - measured.input,
-    output: total.output - measured.output,
-    cached: total.cached - measured.cached,
-  };
-  return Object.values(remainder).some((count) => count < 0) ? null : remainder;
 }
 
 function readLegacyRecords(deps: CostBackfillDependencies, stateRoot: string): Map<number, string> {

@@ -120,6 +120,8 @@ function setup(
     pendingMoved?: boolean;
     moveBeforeUpdate?: boolean;
     failUpdate?: boolean;
+    headLagReads?: number;
+    moveAfterUpdate?: boolean;
     multiplePending?: boolean;
   } = {}
 ) {
@@ -145,6 +147,10 @@ function setup(
   let merged = false;
   let closed = false;
   let detailReads = 0;
+  let oldHead: string | undefined;
+  let headLagReads = options.headLagReads ?? 0;
+  let postUpdateReads = 0;
+  const sleeps: number[] = [];
   const centralFiles = new Map([
     [modelPath, options.shared ?? ""],
     ...Object.entries(options.chunks ?? {}),
@@ -286,6 +292,7 @@ function setup(
         status = 201;
       } else if (path === `${fork}/git/refs/heads/${branch}` && method === "PATCH") {
         expect(body).toEqual({ sha: createdHead, force: false });
+        oldHead = currentHead;
         currentHead = createdHead;
         files.clear();
         for (const [path, content] of stagedFiles) {
@@ -370,6 +377,15 @@ function setup(
       ) {
         detailReads++;
         const detail = pr(path.endsWith("/901") ? 901 : 900);
+        if (oldHead !== undefined) {
+          postUpdateReads++;
+          if (options.moveAfterUpdate) {
+            detail.head.sha = forkParent;
+          } else if (headLagReads > 0) {
+            headLagReads--;
+            detail.head.sha = oldHead;
+          }
+        }
         data =
           (options.pendingMoved && detailReads > 1) || (options.moveBeforeUpdate && detailReads > 2)
             ? { ...detail, head: { ...detail.head, sha: forkParent } }
@@ -394,7 +410,9 @@ function setup(
       throw new Error("Unexpected subprocess");
     },
     now: () => 0,
-    sleep: async () => {},
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
     report: (message) => reports.push(message),
   };
   function pr(number = 900) {
@@ -433,6 +451,8 @@ function setup(
     requests,
     unexpected,
     reports,
+    sleeps,
+    postUpdateReads: () => postUpdateReads,
     cursor: join(root, "state/vmethod/test/learnings.json"),
     merge() {
       merged = true;
@@ -696,6 +716,50 @@ test("open PR increments keep one PR and preserve every immutable submission fil
   const writes = f.writes.length;
   expect(await f.service.command({ action: "submit" })).toContain("Pending:");
   expect(f.writes).toHaveLength(writes);
+}, 15000);
+
+test.each([1, 9])(
+  "rolling PR catches up after %s stale head reads",
+  async (headLagReads) => {
+    const f = setup({ headLagReads });
+    await f.service.command({ action: "submit" });
+    f.append(record({ pr: 309 }));
+    expect(await f.service.command({ action: "submit" })).toContain("Submitted 1 records");
+    expect(f.postUpdateReads()).toBe(headLagReads + 1);
+    expect(f.sleeps).toEqual(Array(headLagReads).fill(1000));
+    expect(JSON.parse(readFileSync(f.cursor, "utf8")).submitted).toEqual([309]);
+    expect(modelRecords([...f.files.values()].join("\n")).map((record) => record.pr)).toEqual([
+      308, 309,
+    ]);
+  },
+  15000
+);
+
+test("rolling PR reports a confirmed push when its head never catches up", async () => {
+  const f = setup({ headLagReads: 10 });
+  await f.service.command({ action: "submit" });
+  f.append(record({ pr: 309 }));
+  const result = await f.service.command({ action: "submit" });
+  expect(result).toContain("Submitted 1 records: https://github.com/vworlds/vmethod/pull/900");
+  expect(result).toContain("pushed; PR head not yet updated");
+  expect(f.postUpdateReads()).toBe(10);
+  expect(f.sleeps).toEqual(Array(9).fill(1000));
+  expect(JSON.parse(readFileSync(f.cursor, "utf8")).submitted).toEqual([309]);
+  const writes = f.writes.length;
+  expect(await f.service.command({ action: "submit" })).toContain("No new learnings to submit");
+  expect(f.writes).toHaveLength(writes);
+}, 15000);
+
+test("rolling PR still rejects a different head after the ref update", async () => {
+  const f = setup({ moveAfterUpdate: true });
+  await f.service.command({ action: "submit" });
+  f.append(record({ pr: 309 }));
+  await expect(f.service.command({ action: "submit" })).rejects.toThrow(
+    "Pending learning PR moved; retry"
+  );
+  expect(f.postUpdateReads()).toBe(1);
+  expect(f.sleeps).toEqual([]);
+  expect(JSON.parse(readFileSync(f.cursor, "utf8")).submitted).toEqual([308]);
 }, 15000);
 
 test("grades stage locally, batch into one PR, and start fresh after merge without duplicates", async () => {
