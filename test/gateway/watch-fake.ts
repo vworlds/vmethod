@@ -68,6 +68,7 @@ export class WatchFake {
   baseMoved = false;
   resolveConflicts?: (pr: number) => Promise<string>;
   conflictPending?: (pr: number) => boolean;
+  conflictFixing?: (pr: number) => boolean;
   gone: ObjectData = { state: "closed", closed_at: "2026-10-17T10:01:00Z", user: user() };
   commits: ObjectData[] = [];
   checks: ObjectData[] = [];
@@ -785,6 +786,7 @@ export class WatchFake {
         },
         resolveConflicts: this.resolveConflicts,
         conflictPending: this.conflictPending,
+        conflictFixing: this.conflictFixing,
         board: {
           set: async (input) => {
             if (this.failSet) {

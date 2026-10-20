@@ -23,7 +23,7 @@ import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
 import { liveBaseHead } from "./base-head.js";
 import { approvalCarryFiles } from "./carry-approval.js";
-import type { OpenTaskInput, ReviewInput } from "./task-flow-types.js";
+import type { ConflictPrior, OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
@@ -39,7 +39,7 @@ interface Host {
   candidates(ref: string): Promise<string[]>;
   issueApproved(item: ObjectData): Promise<boolean | "unknown">;
   github: GitHubClient;
-  board: () => Pick<BoardService, "ensure" | "set" | "capDone" | "snapshot" | "cards">;
+  board: () => Pick<BoardService, "ensure" | "item" | "set" | "capDone" | "snapshot" | "cards">;
   people: Person[];
 }
 interface Journal {
@@ -154,12 +154,15 @@ export class TaskFlow {
       await board.set({ itemId: id, field: "Model", value: model });
     }
   }
-  private async turn(ref: string, role: "owner" | "orchestrator" | null): Promise<void> {
+  private async assigned(ref: string): Promise<string[]> {
     const current = object(await this.host.github.rest(this.path(ref)));
     if (!Array.isArray(current.assignees)) {
       throw new Error("Missing assignees");
     }
-    const assigned = current.assignees.map((p) => String(object(p).login));
+    return current.assignees.map((person) => String(object(person).login));
+  }
+  private async turn(ref: string, role: "owner" | "orchestrator" | "worker" | null): Promise<void> {
+    const assigned = await this.assigned(ref);
     await setTurn(
       this.host.github,
       this.repo,
@@ -167,6 +170,46 @@ export class TaskFlow {
       assigned,
       turnAssignees(this.host.people, this.repo, assigned, role)
     );
+  }
+  /** Capture the card turn a conflict dispatch will interrupt; store it in the resolution record. */
+  async cardPrior(ref: string): Promise<ConflictPrior> {
+    const item = await this.pr(ref);
+    const assignees = await this.assigned(ref);
+    if (object(this.config.board).enabled === false) {
+      return { status: null, progress: null, assignees };
+    }
+    const board = this.host.board();
+    const card = await board.item(await board.ensure(String(item.id)));
+    const text = (value: unknown): string | null =>
+      typeof value === "string" && value.trim() ? value : null;
+    return {
+      status: text(card.values.Status),
+      progress: text(card.values.Progress),
+      assignees,
+    };
+  }
+  /** Show the dispatched fixer: 💥 Progress and the assigned worker holding the turn. */
+  async cardConflict(ref: string): Promise<void> {
+    const item = await this.pr(ref);
+    await this.card(
+      item,
+      undefined,
+      renderProgress({ state: "conflict", round: null, red: false })
+    );
+    await this.turn(ref, "worker");
+  }
+  /** Return the card to its stored pre-dispatch state once the resolution resolves. */
+  async cardRestore(ref: string, prior: ConflictPrior): Promise<void> {
+    const item = await this.pr(ref);
+    if (object(this.config.board).enabled !== false) {
+      if (prior.status) {
+        await this.card(item, prior.status, prior.progress ?? null);
+      } else {
+        await this.card(item, undefined, prior.progress ?? null);
+      }
+    }
+    const assigned = await this.assigned(ref);
+    await setTurn(this.host.github, this.repo, this.number(ref), assigned, prior.assignees);
   }
   private async ready(item: ObjectData, draft: boolean): Promise<void> {
     if (item.isDraft === draft) {
@@ -686,6 +729,10 @@ export class TaskFlow {
       const owner = input.outcome === "owner" || input.outcome === "ask";
       await this.turn(String(number), null);
       await this.card(issue, owner ? "In review" : "In progress", null);
+    }
+    // The owner now holds the turn; nothing queued for the stopped worker may wake it.
+    if (input.outcome === "owner") {
+      await this.deps.workers?.clearWake?.(this.number(input.ref));
     }
     const wake =
       input.outcome === "changes" || input.outcome === "answer"

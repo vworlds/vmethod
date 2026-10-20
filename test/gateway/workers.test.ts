@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -469,9 +470,6 @@ test("conflict turn switches the existing session to the cheapest family and res
   expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
   expect(f.record().model.family).toBe("glm");
   expect(f.record().conflictModel.family).toBe("sol");
-  await f.service.resume(31, "Read the PR for normal review work");
-  expect(f.record().model.family).toBe("sol");
-  expect(f.record().conflictModel).toBeUndefined();
   expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
     1,
     31,
@@ -479,6 +477,14 @@ test("conflict turn switches the existing session to the cheapest family and res
   );
   expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
     2,
+    31,
+    "[orchestrator] NOTE: resolving a conflict with dev (step 2, glm)"
+  );
+  await f.service.resume(31, "Read the PR for normal review work");
+  expect(f.record().model.family).toBe("sol");
+  expect(f.record().conflictModel).toBeUndefined();
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    3,
     31,
     "[orchestrator] NOTE: model switched to sol (resume normal work after conflict); reason: conflict-only"
   );
@@ -525,7 +531,16 @@ test("a review notification cannot restore sol during an active cheapest-list-pr
   expect(await f.service.resume(31, "[orchestrator] ANSWER is on your PR")).toBe("queued for #31");
   expect(f.record().model.family).toBe("glm-flash");
   expect(f.record().conflictModel.family).toBe("sol");
-  expect(f.hooks.modelComment).toHaveBeenCalledTimes(1);
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    1,
+    31,
+    "[orchestrator] NOTE: model switched to glm-flash (conflict-only resolution); reason: conflict-only"
+  );
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    2,
+    31,
+    "[orchestrator] NOTE: resolving a conflict with dev (step 2, glm-flash)"
+  );
   await f.service.watchStatus(31);
   expect(f.record().model.family).toBe("sol");
   expect(f.record().conflictModel).toBeUndefined();
@@ -561,6 +576,41 @@ test("session-less conflict starts a fixed generic fixer even for a non-draft di
   expect(f.prompts[0]).toContain(
     "Produce exactly one merge commit resolving the conflict; make no other commits or edits (no changelog fragments, no formatting fixes); if CI fails for any other reason, post [worker] BLOCKED."
   );
+  expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
+    1,
+    31,
+    "[orchestrator] NOTE: resolving a conflict with dev (step 3, glm)"
+  );
+  f.done();
+});
+
+test("a failed dispatch note never blocks the dispatch", async () => {
+  const f = fixture(
+    start.map((request) =>
+      request.body
+        ? {
+            ...request,
+            body: {
+              text: expect.stringContaining("You are a generic conflict fixer"),
+              delivery: "steer",
+            },
+          }
+        : request
+    ),
+    true
+  );
+  f.meta.draft = false;
+  f.meta.issue = undefined;
+  f.meta.pointsOpen = undefined;
+  f.hooks.modelComment = vi.fn(async () => {
+    throw new Error("github down");
+  });
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(3);
+  expect(f.record().model.family).toBe("glm");
+  expect(f.deps.report).toHaveBeenCalledWith(
+    expect.stringContaining("dispatch note could not be posted")
+  );
+  expect(f.prompts[0]).toContain("CONFLICT: merge origin/dev");
   f.done();
 });
 
@@ -606,6 +656,237 @@ test.each(["idle drain", "stop"])(
     f.done();
   }
 );
+
+const staleTimes = ["2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z", "2026-01-01T00:03:00Z"];
+function staleComments(): TaskMetadata["comments"] {
+  return [
+    { body: "[orchestrator] ANSWER\n\nthe answer text", role: "orchestrator", date: staleTimes[0] },
+    { body: "[worker] READY FOR REVIEW (round 1)", role: "worker", date: staleTimes[1] },
+    {
+      body: "[orchestrator] REVIEW round 2\n\nthe review text",
+      role: "orchestrator",
+      date: staleTimes[2],
+    },
+  ];
+}
+
+test("an idle drain drops wakes older than the latest reply, while a conflict wake is delivered", async () => {
+  const answerWake =
+    "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
+  const reviewWake =
+    "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 and act.";
+  const conflictLine =
+    "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+  const switchTo = (id: string): Request[] => [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: { model: { providerID: "fake", id } },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+  const busy = measuredStatus().map((request) =>
+    request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+  );
+  const f = fixture(
+    [
+      ...start,
+      ...busy,
+      ...busy,
+      ...busy,
+      ...measuredStatus(),
+      ...switchTo("glm"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: conflictLine, delivery: "queue" },
+      },
+      ...measuredStatus(),
+      ...switchTo("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: reviewWake, delivery: "queue" },
+      },
+    ],
+    true
+  );
+  f.meta.model = "sol";
+  f.meta.comments = staleComments();
+  await f.service.command(["start", "31", "--owner-approved"]);
+  expect(await f.service.resume(31, answerWake)).toBe("queued for #31");
+  expect(await f.service.resume(31, reviewWake)).toBe("queued for #31");
+  expect(f.record().pendingWake).toEqual([answerWake, reviewWake]);
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
+  expect(f.record().pendingConflict).toMatchObject({ base: "dev", model: { family: "glm" } });
+  // First idle poll: the conflict fixer wake wins the turn and is delivered after the reply.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(conflictLine);
+  expect(f.record().pendingWake).toEqual([answerWake, reviewWake]);
+  expect(f.deps.report).not.toHaveBeenCalledWith("stale wake dropped for #31");
+  // Second idle poll: the conflict turn is done; the stale ANSWER is dropped and the
+  // wake newer than the READY reply is still delivered.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(reviewWake);
+  expect(f.prompts).not.toContain(answerWake);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.record().model.family).toBe("sol");
+  expect(f.deps.report).toHaveBeenCalledWith("stale wake dropped for #31");
+  f.done();
+});
+
+test("a CHECK-IN wake without a triggering comment survives a newer protocol reply", async () => {
+  const checkIn = "[orchestrator] CHECK-IN: your turn ended without a status comment on the PR.";
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus().map((request) =>
+        request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+      ),
+      ...measuredStatus(),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: checkIn, delivery: "queue" },
+      },
+    ],
+    true
+  );
+  f.meta.comments = staleComments();
+  await f.service.command(["start", "31"]);
+  expect(await f.service.resume(31, checkIn)).toBe("queued for #31");
+  expect(f.record().pendingWake).toEqual([checkIn]);
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(checkIn);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.deps.report).not.toHaveBeenCalledWith("stale wake dropped for #31");
+  f.done();
+});
+
+test("fixer replies do not make queued wakes stale: the queued ANSWER is delivered", async () => {
+  const answerWake =
+    "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
+  const reviewWake =
+    "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 and act.";
+  const conflictLine =
+    "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+  const times = [
+    "2026-01-01T00:00:00Z",
+    "2026-01-01T00:01:00Z",
+    "2026-01-01T00:02:00Z",
+    "2026-01-01T00:03:00Z",
+    "2026-01-01T00:04:00Z",
+  ];
+  const switchTo = (id: string): Request[] => [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: { model: { providerID: "fake", id } },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+  const busy = measuredStatus().map((request) =>
+    request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+  );
+  const f = fixture(
+    [
+      ...start,
+      ...busy,
+      ...busy,
+      ...measuredStatus(),
+      ...switchTo("glm"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: conflictLine, delivery: "queue" },
+      },
+      ...measuredStatus(),
+      ...switchTo("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: answerWake, delivery: "queue" },
+      },
+      ...busy,
+      ...measuredStatus(),
+    ],
+    true
+  );
+  f.meta.model = "sol";
+  f.meta.comments = [
+    { body: "[orchestrator] ANSWER\n\nthe answer text", role: "orchestrator", date: times[0] },
+  ];
+  // Gateway notes land on the thread when posted, so the fake mirrors them into metadata.
+  let posted = 0;
+  f.hooks.modelComment = vi.fn(async (_pr: number, body: string) => {
+    f.meta.comments.push({
+      body,
+      role: "orchestrator",
+      date: posted++ === 0 ? times[1] : "2026-01-01T00:01:30Z",
+    });
+  });
+  await f.service.command(["start", "31", "--owner-approved"]);
+  expect(await f.service.resume(31, answerWake)).toBe("queued for #31");
+  expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
+  expect(
+    f.meta.comments.some((comment) =>
+      comment.body.startsWith("[orchestrator] NOTE: resolving a conflict")
+    )
+  ).toBe(true);
+  // The dispatched fixer's turn runs, completes and posts its own protocol reply.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(conflictLine);
+  f.meta.comments.push({
+    body: "[worker] READY FOR REVIEW (round 1)",
+    role: "worker",
+    date: times[2],
+  });
+  expect(f.record().pendingWake).toEqual([answerWake]);
+  // At the idle drain the unanswered ANSWER survives the fixer's READY.
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(answerWake);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.deps.report).not.toHaveBeenCalledWith("stale wake dropped for #31");
+  // Once the orchestrator turns again, a later task reply still drops its wake.
+  f.meta.comments.push({
+    body: "[orchestrator] REVIEW round 2\n\nthe review text",
+    role: "orchestrator",
+    date: times[3],
+  });
+  expect(await f.service.resume(31, reviewWake)).toBe("queued for #31");
+  f.meta.comments.push({
+    body: "[worker] READY FOR REVIEW (round 2)",
+    role: "worker",
+    date: times[4],
+  });
+  await f.service.watchStatus(31);
+  expect(f.prompts.at(-1)).toBe(answerWake);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(f.deps.report).toHaveBeenCalledWith("stale wake dropped for #31");
+  f.done();
+});
+
+test("clearWake drops the queued record wake and any persisted wake file", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...measuredStatus().map((request) =>
+        request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+      ),
+    ],
+    true
+  );
+  await f.service.command(["start", "31"]);
+  expect(await f.service.resume(31, "Read the new review")).toBe("queued for #31");
+  expect(f.record().pendingWake).toEqual(["Read the new review"]);
+  const wakeFile = join(f.root, "state/vmethod/example-state/workers/31.wake");
+  writeFileSync(wakeFile, "persisted wake\n", { mode: 0o600 });
+  await f.service.clearWake(31);
+  expect(f.record().pendingWake).toBeUndefined();
+  expect(existsSync(wakeFile)).toBe(false);
+  await f.service.clearWake(31);
+  f.done();
+});
 test("resume takes the current PR Model and preserves same-backend context without onboarding again", async () => {
   const f = fixture(
     [

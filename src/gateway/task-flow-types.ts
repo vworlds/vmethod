@@ -23,6 +23,16 @@ export interface ReviewInput {
   replyTo?: string;
 }
 
+/** The card turn a conflict fixer dispatch interrupts; stored with the resolution record. */
+export interface ConflictPrior {
+  /** Board Status column before the dispatch, or null without a board. */
+  status: string | null;
+  /** Raw board Progress text before the dispatch, or null when the field is empty. */
+  progress: string | null;
+  /** PR assignees before the dispatch, exactly as read from the thread. */
+  assignees: string[];
+}
+
 /** Decode only vmethod's structured relation, never prose or GitHub closing links. */
 export function taskRelation(body: string): { issues: number[]; part: boolean } | undefined {
   const header = /^# Task: [^\r\n]* \((part of )?issue #([1-9]\d*)\)[\t ]*(?:\r?\n|$)/.exec(body);

@@ -7,6 +7,7 @@ import { GitTransport } from "./git.js";
 import { proveConflictMerge } from "./conflict-proof.js";
 import type { CiSnapshot } from "./checks.js";
 import type { Verdict } from "./transport.js";
+import type { ConflictPrior } from "./task-flow-types.js";
 import { cleanBaseMerges } from "./clean-base.js";
 import { liveBaseHead } from "./base-head.js";
 
@@ -26,6 +27,10 @@ interface Resolution {
   started: number;
   dispatched?: boolean;
   verifyNoticeReported?: boolean;
+  /** Card turn (Status, Progress, assignees) captured before a step-2/3 dispatch. */
+  prior?: ConflictPrior;
+  /** Set once the stored prior card was restored after RESOLVED. */
+  restored?: boolean;
 }
 
 export interface ConflictHooks {
@@ -42,6 +47,12 @@ export interface ConflictHooks {
   verify(directory: string, head: string, reportNotice: () => boolean): Promise<boolean>;
   blocked(pr: number, reason: string, files: string[]): Promise<void>;
   merge(pr: number, reason: string, head: string): Promise<void>;
+  /** Capture the card turn a step-2/3 dispatch will interrupt; stored in the record. */
+  cardPrior(pr: number): Promise<ConflictPrior>;
+  /** Show the dispatched fixer: 💥 Progress and the worker holding the turn. */
+  cardConflict(pr: number): Promise<void>;
+  /** Return the card to the stored prior once the resolution resolves. */
+  cardRestore(pr: number, prior: ConflictPrior): Promise<void>;
 }
 
 /** Durable, bounded conflict workflow. Agents propose; only server-side evidence can carry approval. */
@@ -84,6 +95,12 @@ export class ConflictService {
     return !!record && ["starting", "waiting"].includes(record.phase);
   }
 
+  /** True while a dispatched step-2/3 fixer episode owns the card. */
+  fixing(pr: number): boolean {
+    const record = this.read(pr);
+    return !!record && record.dispatched === true && ["starting", "waiting"].includes(record.phase);
+  }
+
   private async run(pr: number): Promise<string> {
     const snapshot = await this.hooks.snapshot(pr);
     const old = this.read(pr);
@@ -122,7 +139,11 @@ export class ConflictService {
           `Conflict #${pr}: previous dispatch was interrupted; inspect worker/update state`
         );
       }
-      return old.phase === "waiting" ? this.finish(pr, old, snapshot) : this.event(pr, old);
+      if (old.phase === "waiting") {
+        return this.finish(pr, old, snapshot);
+      }
+      await this.restore(pr, old);
+      return this.event(pr, old);
     }
     const files = (await git.mergePreview(snapshot.head, snapshot.baseSha)).conflicts;
     const record: Resolution = {
@@ -135,6 +156,10 @@ export class ConflictService {
       phase: "starting",
       started: this.deps.now(),
     };
+    if (files.length) {
+      // Capture before any dispatch so an interrupted run never loses the turn to restore.
+      record.prior = await this.hooks.cardPrior(pr);
+    }
     this.save(pr, record);
     if (!files.length) {
       try {
@@ -164,6 +189,13 @@ export class ConflictService {
       return this.finish(pr, record, await this.hooks.snapshot(pr));
     }
     record.step = await this.hooks.fix(pr, snapshot.base, files);
+    try {
+      await this.hooks.cardConflict(pr);
+    } catch (error) {
+      this.deps.report(
+        `Conflict #${pr}: card could not show the fixer turn: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
     record.dispatched = true;
     record.phase = "waiting";
     this.save(pr, record);
@@ -286,6 +318,9 @@ export class ConflictService {
       }
     }
     this.save(pr, record);
+    if (record.phase === "resolved") {
+      await this.restore(pr, record);
+    }
     return this.event(pr, record);
   }
 
@@ -307,6 +342,23 @@ export class ConflictService {
     }
     await this.hooks.blocked(pr, reason, record.files);
     return this.event(pr, record);
+  }
+
+  /** Return the stored pre-dispatch card exactly once after RESOLVED; retries on reconciliation. */
+  private async restore(pr: number, record: Resolution): Promise<void> {
+    if (record.phase !== "resolved" || !record.prior || !record.dispatched || record.restored) {
+      return;
+    }
+    try {
+      await this.hooks.cardRestore(pr, record.prior);
+    } catch (error) {
+      this.deps.report(
+        `Conflict #${pr}: card could not return to its previous state: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return;
+    }
+    record.restored = true;
+    this.save(pr, record);
   }
 
   private event(pr: number, record: Resolution): string {

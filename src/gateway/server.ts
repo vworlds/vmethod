@@ -722,6 +722,7 @@ class GatewayServer {
           workerMetric: (pr, event) => this.workers.recordMetric(pr, event),
           resolveConflicts: (pr) => this.conflicts.resolve(pr),
           conflictPending: (pr) => this.conflicts.pending(pr),
+          conflictFixing: (pr) => this.conflicts.fixing(pr),
           board: { set: (input) => this.board.set(input) },
           digest: this.digest,
         },
@@ -781,6 +782,9 @@ class GatewayServer {
       merge: async (pr, reason, head) => {
         await this.flow.merge(String(pr), false, reason, head);
       },
+      cardPrior: (pr) => this.flow.cardPrior(String(pr)),
+      cardConflict: (pr) => this.flow.cardConflict(String(pr)),
+      cardRestore: (pr, prior) => this.flow.cardRestore(String(pr), prior),
     });
   }
 
@@ -1006,6 +1010,7 @@ class GatewayServer {
         stop: (pr) => this.workers.command(["stop", String(pr)]),
         close: (pr) => this.workers.closeSession(pr),
         resume: (pr, prompt) => this.workers.resume(pr, prompt),
+        clearWake: (pr) => this.workers.clearWake(pr),
       },
     };
     return new TaskFlow(this.root, this.env, this.config, deps, {

@@ -137,28 +137,31 @@ Format: `<state>[ 🔁<round>][ 🔴]`. Round digits use keycaps, for example `�
 Red CI is an independent suffix for the current head. Watcher updates are eventual;
 a worker reports by comments rather than writing the board.
 
-| Key            | State | Meaning / setter                                 |
-| -------------- | ----- | ------------------------------------------------ |
-| hold           | ⛔    | Opened on hold; task opener                      |
-| working        | 🤖🔨  | Worker building; launch, GO, changes or answer   |
-| question       | 🤖❓  | Worker QUESTION; watcher                         |
-| design         | 🤖📐  | Worker DESIGN; watcher                           |
-| blocked        | 🤖🚫  | Worker BLOCKED; watcher                          |
-| ready          | 🤖👍  | Worker READY with round; watcher                 |
-| verifying      | 🧭🔍  | Orchestrator verifying; verification action      |
-| owner-review   | 👤🔍  | Owner reads, tries or decides; handover          |
-| owner-question | 👤❓  | Owner must answer; question action               |
-| conflict       | 💥    | Branch conflicts with its base; watcher          |
-| silent         | ⏳    | Worker has no recent commit or comment; watcher  |
-| permission     | 🔑    | Worker waiting for permission; watcher           |
-| failed         | 🪫    | Worker turn failed; watcher                      |
-| idle           | 💤    | Worker has not picked up review; watcher         |
-| handoff        | 🤖🤝  | Worker HANDOFF, awaiting a model switch; watcher |
+| Key            | State | Meaning / setter                                  |
+| -------------- | ----- | ------------------------------------------------- |
+| hold           | ⛔    | Opened on hold; task opener                       |
+| working        | 🤖🔨  | Worker building; launch, GO, changes or answer    |
+| question       | 🤖❓  | Worker QUESTION; watcher                          |
+| design         | 🤖📐  | Worker DESIGN; watcher                            |
+| blocked        | 🤖🚫  | Worker BLOCKED; watcher                           |
+| ready          | 🤖👍  | Worker READY with round; watcher                  |
+| verifying      | 🧭🔍  | Orchestrator verifying; verification action       |
+| owner-review   | 👤🔍  | Owner reads, tries or decides; handover           |
+| owner-question | 👤❓  | Owner must answer; question action                |
+| conflict       | 💥    | Branch conflicts with its base; conflict dispatch |
+| silent         | ⏳    | Worker has no recent commit or comment; watcher   |
+| permission     | 🔑    | Worker waiting for permission; watcher            |
+| failed         | 🪫    | Worker turn failed; watcher                       |
+| idle           | 💤    | Worker has not picked up review; watcher          |
+| handoff        | 🤖🤝  | Worker HANDOFF, awaiting a model switch; watcher  |
 
 The stuck states are silent, permission, failed, idle and conflict. A new worker
 comment or commit returns stalled work to working, and clears `handoff` the same
 way; clear conflict only when the
-branch merges cleanly again. Approval and issue answers clear the active state;
+branch merges cleanly again, except while a dispatched conflict fixer owns the
+card: its activity keeps 💥, and the resolution then restores the stored
+pre-dispatch turn or hands the PR to the orchestrator. Approval and issue answers
+clear the active state;
 merge or close clears the entire field. Budget-delayed writes are queued, not lost.
 
 ## Done-6 and cross-repository scope

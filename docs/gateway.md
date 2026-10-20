@@ -784,7 +784,17 @@ These commands require `VMETHOD_ROLE=orchestrator`:
 The other headings are `ANSWER` and `GO`. Free-form review text stays on the PR.
 Idle workers resume immediately. Busy or permission-waiting workers persist the
 notification and return `queued for #n`; the worker-status poll delivers queued
-lines once the turn ends, without steering. No recorded/reachable session returns
+lines once the turn ends, without steering. A queued notification whose
+`[orchestrator]` comment is already older than the worker's latest protocol reply
+is dropped at that poll with a `stale wake dropped for #n` report instead of
+restarting the worker for an answered turn. Replies the dispatched conflict
+fixer posted for its resolution (between its dispatch NOTE and the next
+orchestrator turn comment) belong to the resolution, never to the task, and do
+not count, so a queued wake for an unanswered ANSWER is still delivered even
+when the fixer has posted its own READY or BLOCKED. `review owner` hands the turn to the
+owner and clears every queued wake for that PR. Conflict-fixer wakes do not use
+this queue: the resolver dispatches them directly, so they are never dropped as
+stale. No recorded/reachable session returns
 `no worker session for #n; nothing sent` rather than failing the posted review.
 Without worker control, these commands still post and update the board. Workers
 end their turn after a status comment; they do not poll for review replies.
@@ -818,12 +828,27 @@ or board transitions; only genuine conflicts beyond the limits are escalated.
    list rate on the same backend (family name breaks ties). A busy turn queues the
    switch until idle. Normal review resumption restores the original model only
    after the conflict turn becomes idle; an ANSWER/REVIEW notification received
-   while it runs is queued, not allowed to switch it back early. Both
+   while it runs is queued, not allowed to switch it back early, and it follows
+   the stale-wake rule under [Task-flow commands](#task-flow-commands) at the
+   drain. Both
    switches retain usage baselines and post the normal model NOTE.
 3. Otherwise a generic fixer starts in the PR's guarded linked worktree on the
    cheapest ungated, priced family. Its fixed prompt limits edits to conflicted
    hunks, requires any installed merge-scope verify hook and CI, forbids merging, and requires
    `[worker] BLOCKED` with conflicting files when it cannot comply.
+
+A step-2 or step-3 dispatch turns the card over to the fixer: Progress shows 💥
+and the assigned worker holds the assignee. The interrupted card turn (Status,
+Progress and assignees) is stored with the resolution record. On RESOLVED the
+card returns to that stored turn; on BLOCKED the escalation hands the PR to the
+orchestrator with 🤖🚫 instead. While the dispatched fixer runs, its own comments
+and commits keep that card instead of reviving it, so the resolution stays
+visible where people look; a terminal resolution also supersedes the conflicted
+turn's queued card moves. Each dispatch posts one audit line,
+`[orchestrator] NOTE: resolving a conflict with <base> (step <n>, <model>)`,
+so the fixer's activity is explained on the PR thread; a card write that fails is
+reported and the record remains, but reconciliation never repeats the dispatch
+or the note.
 
 The gateway independently checks the two merge parents, every remerge-diff path
 and the full-context textual patch. Changes outside conflict-marker regions,

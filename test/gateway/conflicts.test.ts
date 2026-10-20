@@ -78,6 +78,11 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     await git("update-ref", "refs/remotes/origin/task", snapshot.head);
     snapshot.conflict = false;
   };
+  let card: { status: string | null; progress: string | null; assignees: string[] } = {
+    status: "In progress",
+    progress: "🤖🔨",
+    assignees: ["worker"],
+  };
   const hooks: ConflictHooks = {
     snapshot: vi.fn(async () => ({ ...snapshot })),
     approved: vi.fn(async () => approved),
@@ -98,6 +103,13 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     verify: vi.fn(async () => true),
     blocked: vi.fn(async () => {}),
     merge: vi.fn(async () => {}),
+    cardPrior: vi.fn(async () => ({ ...card, assignees: [...card.assignees] })),
+    cardConflict: vi.fn(async () => {
+      card = { status: card.status, progress: "💥", assignees: ["worker"] };
+    }),
+    cardRestore: vi.fn(async (_pr, prior) => {
+      card = { status: prior.status, progress: prior.progress, assignees: [...prior.assignees] };
+    }),
   };
   const deps: Dependencies = {
     fetch: async () => {
@@ -139,6 +151,16 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     hooks,
     deps,
     snapshot,
+    card: () => card,
+    setCard: (
+      value: Partial<{ status: string | null; progress: string | null; assignees: string[] }>
+    ) => {
+      card = {
+        status: value.status !== undefined ? value.status : card.status,
+        progress: value.progress !== undefined ? value.progress : card.progress,
+        assignees: value.assignees ?? card.assignees,
+      };
+    },
     makeUpToDate: resolve,
     nextConflict: async () => {
       await git("checkout", "dev");
@@ -146,6 +168,14 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
       await git("checkout", "task");
       snapshot.head = await commit("conflict.txt", "keep prefix\nnew task\nkeep suffix\n");
       snapshot.conflict = true;
+      await git("update-ref", "refs/remotes/origin/dev", snapshot.baseSha);
+      await git("update-ref", "refs/remotes/origin/task", snapshot.head);
+    },
+    moveBase: async () => {
+      await git("checkout", "dev");
+      snapshot.baseSha = await commit("base.txt", "base move\n");
+      await git("checkout", "task");
+      snapshot.conflict = false;
       await git("update-ref", "refs/remotes/origin/dev", snapshot.baseSha);
       await git("update-ref", "refs/remotes/origin/task", snapshot.head);
     },
@@ -235,6 +265,9 @@ test.each([false, true])(
       f.hooks.verify,
       f.hooks.blocked,
       f.hooks.merge,
+      f.hooks.cardPrior,
+      f.hooks.cardConflict,
+      f.hooks.cardRestore,
     ]) {
       expect(hook).not.toHaveBeenCalled();
     }
@@ -336,6 +369,70 @@ test("base moved without textual conflicts updates the branch and waits for CI w
   expect(f.hooks.directory).not.toHaveBeenCalled();
   expect(f.hooks.verify).not.toHaveBeenCalled();
   expect(f.hooks.merge).not.toHaveBeenCalled();
+  expect(f.hooks.cardPrior).not.toHaveBeenCalled();
+  expect(f.hooks.cardConflict).not.toHaveBeenCalled();
+  expect(f.hooks.cardRestore).not.toHaveBeenCalled();
+}, 15000);
+
+test("a step-2 dispatch on an owner-turn card shows the fixer and RESOLVED restores it", async () => {
+  const f = await setup(true, false);
+  f.setCard({ status: "In review", progress: "👤🔍", assignees: ["owner"] });
+  vi.mocked(f.hooks.fix).mockImplementation(async () => 2);
+  expect(await f.service.resolve(31)).toBe("PENDING #31: conflict fixer dispatched (step 2)");
+  expect(f.hooks.cardPrior).toHaveBeenCalledTimes(1);
+  expect(f.hooks.cardConflict).toHaveBeenCalledTimes(1);
+  expect(f.card()).toMatchObject({ status: "In review", progress: "💥", assignees: ["worker"] });
+  await f.makeUpToDate();
+  expect(await f.service.resolve(31)).toBe("RESOLVED #31 (step 2)");
+  expect(f.hooks.cardRestore).toHaveBeenCalledTimes(1);
+  expect(f.hooks.cardRestore).toHaveBeenCalledWith(31, {
+    status: "In review",
+    progress: "👤🔍",
+    assignees: ["owner"],
+  });
+  expect(f.card()).toMatchObject({ status: "In review", progress: "👤🔍", assignees: ["owner"] });
+  expect(f.service.pending(31)).toBe(false);
+  await f.service.resolve(31);
+  expect(f.hooks.cardRestore).toHaveBeenCalledTimes(1);
+}, 15000);
+
+test("a blocked resolution never restores the prior card and leaves the turn with the orchestrator", async () => {
+  const f = await setup(true, false, true);
+  f.setCard({ status: "In review", progress: "👤🔍", assignees: ["owner"] });
+  vi.mocked(f.hooks.fix).mockImplementation(async () => 2);
+  expect(await f.service.resolve(31)).toMatch(/^PENDING/);
+  await f.makeUpToDate();
+  expect(await f.service.resolve(31)).toMatch(/^BLOCKED #31: conflict escalated/);
+  expect(f.hooks.blocked).toHaveBeenCalledOnce();
+  expect(f.hooks.cardRestore).not.toHaveBeenCalled();
+  expect(f.card()).toMatchObject({ status: "In review", progress: "💥", assignees: ["worker"] });
+  expect(f.service.pending(31)).toBe(false);
+}, 15000);
+
+test("a lost card restore is retried by reconciliation without repeating the resolution", async () => {
+  const f = await setup(true, false);
+  f.setCard({ status: "In review", progress: "👤🔍", assignees: ["owner"] });
+  vi.mocked(f.hooks.fix).mockImplementation(async () => 2);
+  await f.service.resolve(31);
+  await f.makeUpToDate();
+  vi.mocked(f.hooks.cardRestore)
+    .mockImplementationOnce(async () => {
+      throw new Error("board unavailable");
+    })
+    .mockImplementation(async (_pr, prior) => {
+      f.setCard({ status: prior.status, progress: prior.progress, assignees: prior.assignees });
+    });
+  expect(await f.service.resolve(31)).toBe("RESOLVED #31 (step 2)");
+  expect(f.deps.report).toHaveBeenCalledWith(
+    expect.stringContaining("card could not return to its previous state")
+  );
+  expect(f.card()).toMatchObject({ status: "In review", progress: "💥", assignees: ["worker"] });
+  await f.moveBase();
+  expect(await f.service.resolve(31)).toBe("RESOLVED #31 (step 2)");
+  expect(f.hooks.cardRestore).toHaveBeenCalledTimes(2);
+  expect(f.card()).toMatchObject({ status: "In review", progress: "👤🔍", assignees: ["owner"] });
+  await f.service.resolve(31);
+  expect(f.hooks.cardRestore).toHaveBeenCalledTimes(2);
 }, 15000);
 
 test.each([true, false])(

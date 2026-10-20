@@ -6,7 +6,7 @@ export function turnAssignees(
   people: Person[],
   repo: string,
   current: string[],
-  role: "owner" | "orchestrator" | null
+  role: "owner" | "orchestrator" | "worker" | null
 ): string[] {
   if (role === null) {
     const managed = new Set(

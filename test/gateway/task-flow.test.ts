@@ -537,6 +537,8 @@ function fixture() {
     issueClosed = false,
     branchExists = true,
     checkoutHead = sha;
+  let assignees: string[] = [];
+  let boardValues: Record<string, string | number | null> = {};
   const comments: ObjectData[] = [];
   const cards: Card[] = [
     {
@@ -629,9 +631,14 @@ function fixture() {
         method === "GET" &&
         [issueNumber, 27].some((n) => path === `/repos/example/project/issues/${n}`)
       ) {
-        data = { assignees: [] };
+        data = { assignees: assignees.map((login) => ({ login })) };
       } else if (
         method === "POST" &&
+        /^\/repos\/example\/project\/issues\/(8|27)\/assignees$/.test(path)
+      ) {
+        data = {};
+      } else if (
+        method === "DELETE" &&
         /^\/repos\/example\/project\/issues\/(8|27)\/assignees$/.test(path)
       ) {
         data = {};
@@ -760,6 +767,16 @@ function fixture() {
         events.push(`board-add ${id}`);
         return id;
       },
+      item: async (id) => {
+        events.push(`board-item ${id}`);
+        return {
+          id,
+          repo: "example/project",
+          kind: "PullRequest",
+          assignees,
+          values: { ...boardValues },
+        };
+      },
       set: async (input) => {
         if (fail === "board" && input.value === "Done") {
           throw new Error("board failed");
@@ -840,6 +857,8 @@ function fixture() {
       issueClosed?: boolean;
       references?: ObjectData;
       isDraft?: boolean;
+      assignees?: string[];
+      boardValues?: Record<string, string | number | null>;
     }) => {
       approved = values.approved ?? approved;
       issueApproved = values.issueApproved ?? issueApproved;
@@ -858,6 +877,8 @@ function fixture() {
       issueClosed = values.issueClosed ?? issueClosed;
       references = values.references ?? references;
       isDraft = values.isDraft ?? isDraft;
+      assignees = values.assignees ?? assignees;
+      boardValues = values.boardValues ?? boardValues;
     },
     red: () => {
       checks = checks.map((c) => ({ ...c, conclusion: "failure" }));
@@ -2669,6 +2690,115 @@ test("independent conflict rejection names files and gives the blocked PR back t
   );
   expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
   expect(f.writes.some((write) => write.path.endsWith("/assignees"))).toBe(true);
+  f.done();
+});
+
+test("card prior captures the interrupted turn from the board and the PR", async () => {
+  const f = fixture();
+  f.set({ boardValues: { Status: "In review", Progress: "👤🔍" }, assignees: ["owner"] });
+  expect(await f.flow().cardPrior("27")).toEqual({
+    status: "In review",
+    progress: "👤🔍",
+    assignees: ["owner"],
+  });
+  f.done();
+});
+
+test("card conflict hands the turn to the fixing worker under 💥", async () => {
+  const f = fixture();
+  f.set({ assignees: ["owner"] });
+  await f.flow().cardConflict("27");
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "pr", field: "Progress", value: "💥" })
+  );
+  expect(f.writes).toContainEqual({
+    path: "/repos/example/project/issues/27/assignees",
+    body: { assignees: ["worker"] },
+  });
+  f.done();
+});
+
+test("card restore returns the stored turn to the board and the PR", async () => {
+  const f = fixture();
+  f.set({ assignees: ["worker"] });
+  await f.flow().cardRestore("27", {
+    status: "In review",
+    progress: "👤🔍",
+    assignees: ["owner"],
+  });
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({
+      id: "pr",
+      field: "Status",
+      value: "In review",
+      progress: "👤🔍",
+    })
+  );
+  expect(f.writes).toContainEqual({
+    path: "/repos/example/project/issues/27/assignees",
+    body: { assignees: ["owner"] },
+  });
+  f.done();
+});
+
+test.each(["cardConflict", "cardRestore"] as const)(
+  "board-disabled configuration still moves the %s assignees without board writes",
+  async (verb) => {
+    const f = fixture();
+    f.config.board = { ...object(f.config.board), enabled: false };
+    f.set({ assignees: verb === "cardRestore" ? ["worker"] : ["owner"] });
+    await f.flow()[verb]("27", {
+      status: "In review",
+      progress: "👤🔍",
+      assignees: ["owner"],
+    });
+    expect(f.touched).toEqual([]);
+    const assigneeWrites = f.writes
+      .filter((write) => write.path.endsWith("/assignees"))
+      .map((write) => [write.body.assignees, write.path.split("/").at(-2)]);
+    if (verb === "cardRestore") {
+      expect(assigneeWrites).toEqual([
+        [["worker"], "27"],
+        [["owner"], "27"],
+      ]);
+    } else {
+      expect(assigneeWrites).toEqual([
+        [["owner"], "27"],
+        [["worker"], "27"],
+      ]);
+    }
+    f.done();
+  }
+);
+
+test("card prior reads only the PR when the board is disabled", async () => {
+  const f = fixture();
+  f.config.board = { ...object(f.config.board), enabled: false };
+  f.set({ boardValues: { Status: "In review" }, assignees: ["owner"] });
+  expect(await f.flow().cardPrior("27")).toEqual({
+    status: null,
+    progress: null,
+    assignees: ["owner"],
+  });
+  f.done();
+});
+
+test("review owner clears queued wakes; other outcomes keep them", async () => {
+  const f = fixture();
+  const cleared: number[] = [];
+  f.deps.workers!.clearWake = async (pr) => {
+    cleared.push(pr);
+  };
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Owner decides.\n");
+  await f.flow().review({ ref: "27", outcome: "owner", file });
+  expect(cleared).toEqual([27]);
+  cleared.length = 0;
+  f.deps.workers!.clearWake = async () => {
+    throw new Error("must not clear on other outcomes");
+  };
+  await f.flow().review({ ref: "27", outcome: "answer", file });
+  expect(cleared).toEqual([]);
   f.done();
 });
 

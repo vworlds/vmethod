@@ -21,6 +21,8 @@ export interface Dependencies {
     stop?(pr: number): Promise<string | void>;
     /** Best-effort list closure; false leaves the merge journal step retryable. */
     close?(pr: number): Promise<boolean>;
+    /** Drop queued worker wakes; used when a review hands the turn to the owner. */
+    clearWake?(pr: number): Promise<void>;
   };
   fetch: typeof fetch;
   exec: (

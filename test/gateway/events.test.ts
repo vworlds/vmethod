@@ -2083,6 +2083,85 @@ test("REST conflicts are once per head SHA and red CI is Progress only", async (
   expect(object(f.cards[0].progress).text).toContain("🔴");
 });
 
+test("a dispatched fixer keeps the conflict card against its own activity and protocol turns", async () => {
+  const f = setup();
+  f.task();
+  f.conflictFixing = () => true;
+  object(f.cards[0].progress).text = "💥";
+  const loop = f.loop();
+  let events = await f.tick(loop);
+  await f.ack(loop, events);
+  expect(f.writes).toEqual([]);
+  f.advance();
+  f.comment("[worker] resolving the conflicted hunks now", 1);
+  object(f.pulls[0].head).sha = "c".repeat(40);
+  events = await f.tick(loop);
+  await f.ack(loop, events);
+  expect(f.writes).toEqual([]);
+  f.advance();
+  f.comment("[worker] READY FOR REVIEW (round 1)", 1);
+  events = await f.tick(loop);
+  expect(events.some((event) => event.kind === "ready")).toBe(true);
+  expect(f.writes).toEqual([]);
+  expect(object(f.cards[0].progress).text).toBe("💥");
+  await f.ack(loop, events);
+  f.done();
+});
+
+test("worker activity outside a dispatched fixer still revives the conflict card", async () => {
+  const f = setup();
+  f.task();
+  object(f.cards[0].progress).text = "💥";
+  const loop = f.loop();
+  let events = await f.tick(loop);
+  await f.ack(loop, events);
+  f.advance();
+  f.comment("[worker] back on the task", 1);
+  events = await f.tick(loop);
+  await f.ack(loop, events);
+  expect(f.writes).toContainEqual({
+    itemId: "PVTI_24",
+    field: "Progress",
+    value: "🤖🔨",
+  });
+  f.done();
+});
+
+test.each([
+  "RESOLVED #24 (step 1)",
+  "MERGED #24 (conflict-only, approval carried)",
+  "BLOCKED #24: conflict escalated (remerge diff is not limited to conflicted hunks)",
+])("a terminal conflict result %s supersedes the queued card move", async (result) => {
+  const f = setup();
+  f.task();
+  f.mergeable = false;
+  f.resolveConflicts = vi.fn(async () => result);
+  mkdirSync(f.dir, { recursive: true });
+  writeFileSync(join(f.dir, "pending-progress-24"), JSON.stringify({ state: "working" }));
+  const loop = f.loop();
+  const events = await f.tick(loop);
+  expect(
+    events.filter((event) => event.kind === "conflict-resolution").map((event) => event.line)
+  ).toEqual([result]);
+  expect(existsSync(join(f.dir, "pending-progress-24"))).toBe(false);
+  expect(f.writes.filter((write) => write.field === "Progress")).toEqual([]);
+  await f.ack(loop, events);
+  f.done();
+});
+
+test("a pending resolution result keeps its queued conflict card move", async () => {
+  const f = setup();
+  f.task();
+  f.mergeable = false;
+  f.resolveConflicts = vi.fn(async () => "PENDING #24: conflict fixer dispatched (step 2)");
+  const loop = f.loop();
+  const events = await f.tick(loop);
+  expect(events.filter((event) => event.kind === "conflict-resolution")).toEqual([]);
+  expect(f.writes).toContainEqual({ itemId: "PVTI_24", field: "Progress", value: "💥 🔁2️⃣" });
+  await f.ack(loop, events);
+  f.done();
+});
+
 test.each([{ issues: [] }, { issues: [6] }])(
   "worker-less relation task merge is reported regardless of branch pattern: %j",
   async ({ issues }) => {
