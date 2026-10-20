@@ -53,6 +53,8 @@ This posts your answer with the reply link and current head, assigns the owner
 and restores `👤🔍`. Plain `post` does not hand the turn back; it warns when the
 card is still on you after an owner comment.
 
+The owner replies to your OWNER QUESTION with a question or a comment, not a decision → reply with `review <pr> ask --in-reply-to <owner comment>`; the worker stays out until the owner decides.
+
 The watcher reminds you with `ORCHESTRATOR TURN #n: waiting on you for 30+ min (<progress>)`
 after observing a card on the orchestrator for 30 minutes, then hourly while that
 stretch continues. Progress beginning `🧭`, or an orchestrator assigned in review,

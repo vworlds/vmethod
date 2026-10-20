@@ -3,7 +3,7 @@ import { assertEstimate } from "../board/estimate.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
 import { workerWorktree } from "./worker-path.js";
 import { WorktreeService, type WorktreeTask } from "./worktrees.js";
-import { GitHubClient, type Dependencies } from "./client.js";
+import { GitHubClient, GitHubHttpError, type Dependencies } from "./client.js";
 import { Digest } from "./digest.js";
 import {
   PeopleFilter,
@@ -1062,6 +1062,7 @@ class GatewayServer {
       people: loadYaml(this.root, "people") as Person[],
       thread: (ref, kind) => this.flowThread(ref, kind),
       comments: (id) => this.flowComments(id),
+      replyTarget: (id) => this.flowComment(id),
       approved: (ref, historical) => this.approvalFor(ref, historical),
       candidates: async (ref) => {
         const { item, person } = await this.thread(ref, "pr");
@@ -1147,6 +1148,51 @@ class GatewayServer {
       }
     }
     return output;
+  }
+  /**
+   * The comment with this REST id: its verified pinned author (an editor replaces the
+   * author, as PeopleFilter.accept decides for delivery), its issue number and the
+   * body's first line. Only ever the protocol tag of a write verb's target leaves
+   * this process, so unknown authors return undefined without a digest drop.
+   */
+  private async flowComment(
+    id: string
+  ): Promise<{ author: Person; issue: number; firstLine: string } | undefined> {
+    let comment: ObjectData;
+    try {
+      comment = object(
+        await this.github.rest(`/repos/${String(this.config.repo)}/issues/comments/${id}`)
+      );
+    } catch (error) {
+      // An unknown REST id (including review-thread hashes) is no protocol target.
+      if (error instanceof GitHubHttpError && error.status === 404) {
+        return undefined;
+      }
+      throw error;
+    }
+    if (typeof comment.node_id !== "string" || !comment.node_id) {
+      throw new Error("Comment has no node id");
+    }
+    const node = await this.node(comment.node_id, "body issue { number }", "IssueComment");
+    let author = this.filter.identity(node.author);
+    if (node.lastEditedAt != null) {
+      // An edited comment counts as the editor's input, never the original author's.
+      author = this.filter.identity(node.editor);
+    }
+    const issue = object(node.issue).number;
+    if (
+      !author ||
+      repoOf(node).repo !== String(this.config.repo) ||
+      !Number.isSafeInteger(issue) ||
+      Number(issue) < 1
+    ) {
+      return undefined;
+    }
+    return {
+      author: { ...author, role: this.filter.roleIn(author, String(this.config.repo)) },
+      issue: Number(issue),
+      firstLine: typeof node.body === "string" ? node.body.split(/\r?\n/)[0] : "",
+    };
   }
   constructor(
     private root: string,

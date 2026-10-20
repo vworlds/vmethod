@@ -125,9 +125,15 @@ export function fakeServer(requests: Request[]) {
   };
 }
 
-export function fixtureServer(requests: Request[], viewer = actor(2), peopleList = people) {
+export function fixtureServer(
+  requests: Request[],
+  viewer = actor(2),
+  peopleList = people,
+  patch?: (root: string) => void
+) {
   const root = validProject();
   writeFileSync(join(root, "people.yaml"), stringify(peopleList));
+  patch?.(root);
   const fake = fakeServer(requests);
   let clock = Date.UTC(2026, 0, 1);
   const sleeps: number[] = [];

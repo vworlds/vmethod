@@ -7,7 +7,7 @@ import { parse } from "graphql";
 import { TaskFlow, conformingTitle } from "../../src/gateway/task-flow.js";
 import { GitHubClient, type Dependencies } from "../../src/gateway/client.js";
 import { getConfig } from "../../src/config.js";
-import { object, type ObjectData } from "../../src/gateway/people.js";
+import { object, type ObjectData, type Person } from "../../src/gateway/people.js";
 import type { Card } from "../../src/board/types.js";
 import { validProject } from "../helpers.js";
 import { actor, people, sha } from "./helpers.js";
@@ -28,6 +28,9 @@ import { scopeIssue, scopeComment, scopeMove } from "./scope-fixture.js";
 import packageInfo from "../../package.json" with { type: "json" };
 
 const holdBanner = "> ⛔ ON HOLD. Wait for [orchestrator] GO.";
+
+/** What the scripted host reports for a reply target's REST comment id. */
+type ReplyTarget = { author: Person; issue: number; firstLine: string };
 
 const baseSha = "b".repeat(40),
   mergedSha = "c".repeat(40);
@@ -544,6 +547,7 @@ function fixture() {
   let assignees: string[] = [];
   let boardValues: Record<string, string | number | null> = {};
   const comments: ObjectData[] = [];
+  let replyTarget: ReplyTarget | undefined;
   const cards: Card[] = [
     {
       id: "issue-card",
@@ -826,6 +830,10 @@ function fixture() {
       };
     },
     comments: async () => comments,
+    replyTarget: async (id) => {
+      events.push(`reply-target ${id}`);
+      return replyTarget;
+    },
     approved: async () => approved,
     candidates: async () => [],
     issueApproved: async () => issueApproved,
@@ -863,6 +871,7 @@ function fixture() {
       isDraft?: boolean;
       assignees?: string[];
       boardValues?: Record<string, string | number | null>;
+      replyTarget?: ReplyTarget;
     }) => {
       approved = values.approved ?? approved;
       issueApproved = values.issueApproved ?? issueApproved;
@@ -883,6 +892,7 @@ function fixture() {
       isDraft = values.isDraft ?? isDraft;
       assignees = values.assignees ?? assignees;
       boardValues = values.boardValues ?? boardValues;
+      replyTarget = values.replyTarget ?? replyTarget;
     },
     red: () => {
       checks = checks.map((c) => ({ ...c, conclusion: "failure" }));
@@ -947,6 +957,149 @@ test.each([
   writeFileSync(file, "Please address this.\n");
   await f.flow().review({ ref: "27", outcome, file });
   expect(f.resumes).toEqual([{ pr: 27, prompt }]);
+  f.done();
+});
+
+const REPLY_REFUSAL =
+  "answer replies to a worker QUESTION or BLOCKED; to reply to the owner use review <pr> ask --in-reply-to <url>";
+
+test.each([
+  {
+    case: "an unknown comment",
+    target: undefined,
+    hash: "issuecomment-5",
+  },
+  {
+    case: "an owner comment",
+    target: { author: { ...people[0] }, issue: 27, firstLine: "What does done mean here?" },
+    hash: "issuecomment-5",
+  },
+  {
+    case: "a collaborator comment",
+    target: {
+      author: { ...people[2], role: "collaborator" },
+      issue: 27,
+      firstLine: "[worker] QUESTION\n\nWhat now?",
+    },
+    hash: "issuecomment-5",
+  },
+  {
+    case: "a non-protocol worker comment",
+    target: {
+      author: { ...people[1] },
+      issue: 27,
+      firstLine: "[worker] READY FOR REVIEW (round 1)",
+    },
+    hash: "issuecomment-5",
+  },
+  {
+    case: "a worker reply on another card",
+    target: { author: { ...people[1] }, issue: 8, firstLine: "[worker] BLOCKED\n\nWaiting" },
+    hash: "issuecomment-5",
+  },
+  {
+    case: "a review-thread target",
+    target: { author: { ...people[1] }, issue: 27, firstLine: "[worker] QUESTION\n\nWhat now?" },
+    hash: "discussion_r9",
+  },
+] as const)(
+  "review answer --in-reply-to refuses $case before posting anything",
+  async ({ target, hash }) => {
+    const f = fixture();
+    f.set({ replyTarget: target });
+    const file = join(f.root, "answer.md");
+    writeFileSync(file, "The decision.\n");
+    await expect(
+      f.flow().review({
+        ref: "27",
+        outcome: "answer",
+        file,
+        replyTo: `https://github.com/example/project/pull/27#${hash}`,
+      })
+    ).rejects.toThrow(REPLY_REFUSAL);
+    expect(
+      f.writes.some((write) => write.path === "/repos/example/project/issues/27/comments")
+    ).toBe(false);
+    expect(f.touched).toEqual([]);
+    expect(f.resumes).toEqual([]);
+    if (hash.startsWith("issuecomment-")) {
+      expect(f.events).toContain("reply-target 5");
+    } else {
+      expect(f.events.some((event) => event.startsWith("reply-target"))).toBe(false);
+    }
+    f.done();
+  }
+);
+
+test.each(["QUESTION", "BLOCKED"] as const)(
+  "review answer --in-reply-to a worker %s posts, wakes and replies as before",
+  async (tag) => {
+    const f = fixture();
+    f.set({
+      replyTarget: {
+        author: { ...people[1] },
+        issue: 27,
+        firstLine: `[worker] ${tag}\n\nWhat should I do?`,
+      },
+    });
+    const file = join(f.root, "answer.md");
+    writeFileSync(file, "Round one first.\n");
+    expect(
+      await f.flow().review({
+        ref: "27",
+        outcome: "answer",
+        file,
+        replyTo: "https://github.com/example/project/pull/27#issuecomment-7",
+      })
+    ).toBe("Posted ANSWER on #27");
+    expect(f.events).toContain("reply-target 7");
+    expect(
+      f.writes.find((write) => write.path === "/repos/example/project/issues/27/comments")
+    ).toEqual({
+      path: "/repos/example/project/issues/27/comments",
+      body: {
+        body: "[orchestrator] ANSWER\n\nin reply to https://github.com/example/project/pull/27#issuecomment-7\n\nRound one first.\n",
+      },
+    });
+    expect(f.resumes).toEqual([
+      {
+        pr: 27,
+        prompt: "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 27 and act.",
+      },
+    ]);
+    f.done();
+  }
+);
+
+test("review ask --in-reply-to an owner comment hands the owner the turn without waking the worker", async () => {
+  const f = fixture();
+  const file = join(f.root, "question.md");
+  writeFileSync(file, "Which behavior should win?\n");
+  await f.flow().review({
+    ref: "27",
+    outcome: "ask",
+    file,
+    replyTo: "https://github.com/example/project/pull/27#issuecomment-5",
+  });
+  expect(
+    f.writes.find((write) => write.path === "/repos/example/project/issues/27/comments")
+  ).toEqual({
+    path: "/repos/example/project/issues/27/comments",
+    body: {
+      body: "[orchestrator] OWNER QUESTION\n\nin reply to https://github.com/example/project/pull/27#issuecomment-5\n\nWhich behavior should win?\n",
+    },
+  });
+  expect(f.touched).toContainEqual(expect.objectContaining({ id: "pr", progress: "👤❓" }));
+  expect(f.writes).toContainEqual({
+    path: "/repos/example/project/issues/27/assignees",
+    body: { assignees: ["owner"] },
+  });
+  expect(f.writes).not.toContainEqual({
+    path: "/repos/example/project/issues/8/assignees",
+    body: { assignees: ["owner"] },
+  });
+  expect(f.resumes).toEqual([]);
+  expect(f.events.some((event) => event.startsWith("reply-target"))).toBe(false);
   f.done();
 });
 
@@ -2278,6 +2431,16 @@ test.each(["owner", "changes", "answer", "ask", "approve"] as const)(
     const file = join(f.root, "review.md");
     writeFileSync(file, "Review evidence.");
     f.comments.push({ body: "[orchestrator] REVIEW round 2" });
+    if (outcome === "answer") {
+      // A reply target is only valid on a worker protocol ask (the refusals are tested above).
+      f.set({
+        replyTarget: {
+          author: { ...people[1] },
+          issue: 27,
+          firstLine: "[worker] QUESTION\n\nWhich variant?",
+        },
+      });
+    }
     await f.flow().review({
       ref: "27",
       outcome,

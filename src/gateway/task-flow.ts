@@ -35,6 +35,14 @@ import { WorktreeService } from "./worktrees.js";
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;
   comments(id: string): Promise<ObjectData[]>;
+  /**
+   * The comment with this REST id: the verified pinned author (an editor replaces the
+   * author) with the repository-adjusted role, its issue number and the body's first
+   * line. Target data for a write verb; undefined when the id is unknown or unpinned.
+   */
+  replyTarget(
+    id: string
+  ): Promise<{ author: Person; issue: number; firstLine: string } | undefined>;
   approved(ref: string, historical?: string): Promise<boolean | "unknown">;
   candidates(ref: string): Promise<string[]>;
   issueApproved(item: ObjectData): Promise<boolean | "unknown">;
@@ -691,6 +699,22 @@ export class TaskFlow {
         !/^#(?:issuecomment-|discussion_r)\d+$/.test(url.hash)
       ) {
         throw new Error("Invalid reply URL");
+      }
+      // An answer hands the turn back to the worker; replying to the owner instead
+      // would wake a session while the discussion is still settling the course.
+      if (input.outcome === "answer") {
+        const id = /#issuecomment-(\d+)$/.exec(url.hash)?.[1];
+        const target = id ? await this.host.replyTarget(id) : undefined;
+        if (
+          !target ||
+          target.issue !== this.number(input.ref) ||
+          target.author.role !== "worker" ||
+          !/^\[worker\] (QUESTION|BLOCKED)\b/.test(target.firstLine)
+        ) {
+          throw new Error(
+            "answer replies to a worker QUESTION or BLOCKED; to reply to the owner use review <pr> ask --in-reply-to <url>"
+          );
+        }
       }
     }
     const body =
