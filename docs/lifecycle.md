@@ -69,10 +69,15 @@ Workers implement agreed specifications, not open owner decisions.
 
 ## Dependencies
 
-Use **Blocked-by issue relations**, not a mention in prose alone. Record them when
-filing an issue, including cross-repository blockers where needed. A blocked Ready
-card stays there until its open blockers close; take the next unblocked card.
-Closing a blocker prompts a fresh estimate, not automatic subtraction of points.
+Dependencies live **only** in the blocked-by issue relation, never in issue text: open-task
+copies the body into the task brief, where a prose blocker line reads as a live blocker.
+Set relations with `vmethod issue block <n> <blocker>` and clear them with
+`vmethod issue unblock <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`);
+`issue create` and `issue edit` refuse a body whose line consists only of a dependency
+reference. Record relations when filing an issue, including cross-repository blockers
+where needed. A blocked Ready card stays there until its open blockers close; take the
+next unblocked card. Closing a blocker prompts a fresh estimate, not automatic
+subtraction of points.
 
 ## Tracks and packs
 

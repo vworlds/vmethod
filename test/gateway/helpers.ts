@@ -55,7 +55,7 @@ export function item(overrides: ObjectData = {}): ObjectData {
   };
 }
 
-interface Request {
+export interface Request {
   redirect?: RequestRedirect;
   path: string;
   method?: string;

@@ -15,6 +15,10 @@ export interface Operations {
   issueClose: { input: { ref: string; comment?: string }; output: string };
   /** Replace a previously read issue body, refusing stale read evidence. */
   issueEdit: { input: { ref: string; file: string }; output: string };
+  /** Set a blocked-by relation on a configured-repository issue; the blocker may be cross-repository. */
+  issueBlock: { input: { ref: string; blocker: string }; output: string };
+  /** Clear a blocked-by relation on a configured-repository issue. */
+  issueUnblock: { input: { ref: string; blocker: string }; output: string };
   /** Publish body-bound scope review and give the owner the issue turn. */
   scopeReview: { input: { ref: string; file: string }; output: string };
   /** Null clears only Progress or Estimate; strings retain ordinary value validation. */

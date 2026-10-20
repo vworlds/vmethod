@@ -21,8 +21,8 @@ The permission template denies raw `git push` and allows the `push` compatibilit
 See [CI and integration commands](gateway.md#ci-and-integration-commands) for
 `wait-checks`, `verify`, `refresh-checks`, `check-task-ci` and the project verify hook.
 See [gateway commands](gateway.md#commands) for orchestrator-only `issue create`,
-`issue close` and `board set` housekeeping (including validated Progress and
-`--clear` for Progress/Estimate),
+`issue close`, `issue block`/`issue unblock` and `board set` housekeeping
+(including validated Progress and `--clear` for Progress/Estimate),
 tracked owner questions with `ask <issue> <file>`, and
 [task flow](gateway.md#task-flow-commands) for structured full/partial deliveries
 and `link-task <pr> [--complete|--unlink]` Development-link backfill and plan changes.

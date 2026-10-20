@@ -10,6 +10,13 @@ export async function gatewayVerb(
   const ctx = context(env);
   switch (verb) {
     case "issue": {
+      if ((args[0] === "block" || args[0] === "unblock") && args.length === 3) {
+        return transport.call(
+          args[0] === "block" ? "issueBlock" : "issueUnblock",
+          { ref: args[1], blocker: args[2] },
+          ctx
+        );
+      }
       if (args[0] === "edit" && args.length === 3) {
         return transport.call("issueEdit", { ref: args[1], file: args[2] }, ctx);
       }
@@ -68,7 +75,7 @@ export async function gatewayVerb(
         return transport.call("issueClose", { ref: args[1], comment: args[3] }, ctx);
       }
       throw new Error(
-        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] | issue close <n> [--comment file] | issue edit <n> <body-file>"
+        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] | issue close <n> [--comment file] | issue edit <n> <body-file> | issue block <n> <blocker> | issue unblock <n> <blocker>"
       );
     }
     case "scope-review":

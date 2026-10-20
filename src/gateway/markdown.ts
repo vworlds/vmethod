@@ -166,3 +166,21 @@ export function guardClosingKeywords(text: string): void {
     );
   }
 }
+
+/**
+ * Dependency references live only in the blocked-by relation, never in issue text:
+ * open-task copies the body into the task brief, where a copied blocker line
+ * wrongly signals a live blocker. A line consisting only of a dependency
+ * reference (`Blocked by #n`, `Depends on #n`, `Blocked by org/repo#n`; optionally
+ * bulleted and/or bold, case-insensitive) is refused; a sentence that only
+ * mentions an issue passes.
+ */
+export function guardDependencyText(text: string): void {
+  const dependencyOnlyLine =
+    /^[ \t]*(?:[-*+][ \t]+)?(?:\*\*)?[ \t]*(?:Blocked by|Depends on)[ \t]+(?:[\w.-]+\/[\w.-]+)?#\d+(?:\*\*)?[ \t\r]*$/i;
+  if (text.split("\n").some((line) => dependencyOnlyLine.test(line))) {
+    throw new Error(
+      "dependencies go in the blocked-by relation: vmethod issue block <n> <blocker>"
+    );
+  }
+}

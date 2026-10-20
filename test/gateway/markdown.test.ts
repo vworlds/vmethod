@@ -1,7 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { checkMarkdown, guardClosingKeywords } from "../../src/gateway/markdown.js";
+import {
+  checkMarkdown,
+  guardClosingKeywords,
+  guardDependencyText,
+} from "../../src/gateway/markdown.js";
 import { fixture } from "../helpers.js";
 
 test("Markdown fence checking accepts balanced mixed fences", async () => {
@@ -87,3 +91,33 @@ test("closing guard rejects fenced or formatted closing phrases but permits ordi
   }
   expect(() => guardClosingKeywords("Related to #4; this fixes the parser.")).not.toThrow();
 }, 15000);
+
+test("dependency guard refuses dependency-only lines in every tolerated form", () => {
+  for (const line of [
+    "Blocked by #379",
+    "**Blocked by #379**",
+    "- Depends on #12",
+    "* blocked by vworlds/vecs#7",
+    "+ Depends on vworlds/vmethod#12",
+    "  - **Depends on #12** ",
+    "Blocked by #379\r",
+  ]) {
+    expect(() => guardDependencyText(line)).toThrow(
+      "dependencies go in the blocked-by relation: vmethod issue block <n> <blocker>"
+    );
+  }
+});
+
+test("dependency guard permits prose that only mentions an issue", () => {
+  for (const line of [
+    "Uses the API from #379",
+    "Uses the API from #379 (blocked by it earlier).",
+    "Depends on the parser: see #12.",
+    "**Blocked by #379** needs the new API",
+    "Depends on 5",
+    "`Depends on #12`",
+    "Fixes Blocked by: see #4",
+  ]) {
+    expect(() => guardDependencyText(line)).not.toThrow();
+  }
+});

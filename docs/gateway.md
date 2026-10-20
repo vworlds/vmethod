@@ -87,6 +87,8 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name]`
 - `vmethod issue close <n> [--comment file]`
 - `vmethod issue edit <n> <body-file>`
+- `vmethod issue block <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`)
+- `vmethod issue unblock <n> <blocker>`
 - `vmethod scope-review <n> <summary-file>`
 - `vmethod board set <issue> <field> <value>|--clear`
 
@@ -97,9 +99,18 @@ installed package with `npm exec --no -- vmethod`, never a downloading fallback.
 Read an issue first: `read issue` saves its exact body hash in worktree-local
 `.tmp/`; `issue edit` checks the live body against it immediately before writing.
 This is a stale-read guard, not an atomic GitHub compare-and-swap. Both writes
-validate Markdown and closing syntax. `scope-review` takes a plain change summary,
-adds the live hash itself and hands the issue to the owner. See the
+validate Markdown and closing syntax, and refuse a body whose line consists only
+of a dependency reference: dependencies go in the blocked-by relation through
+`issue block`/`issue unblock`, not in issue text. `scope-review` takes a plain
+change summary, adds the live hash itself and hands the issue to the owner. See the
 [scope review procedure](orchestrator-guide.md#scope-review).
+
+`issue block`/`issue unblock` are orchestrator-only relation writes. They resolve
+the target from the configured repository and the blocker from any repository in
+the configured org, refuse a missing blocker, then add or remove GitHub's
+blocked-by relation. Dependencies never live in issue text; bodies written before
+this rule are migrated with `issue block` to record the relation plus an
+`issue edit` that drops the prose line.
 
 Read operations gate metadata before fetching bodies, comments, reviews, files,
 diffs or checks, and recheck identity on body responses. Accepted text is labelled
@@ -183,8 +194,8 @@ native field-clear mutation rather than an empty text or numeric zero.
 Status writes clear Progress first; the gateway client journals the
 successful mutations like other writes. No housekeeping command changes repository/board scope.
 The typed operations are `issueCreate({title, file, labels?, estimate?, status?})`,
-`issueClose({ref, comment?})` and `boardSetIssue({ref, field, value})` in
-`src/gateway/transport.ts`.
+`issueClose({ref, comment?})`, `issueBlock({ref, blocker})`, `issueUnblock({ref, blocker})`
+and `boardSetIssue({ref, field, value})` in `src/gateway/transport.ts`.
 
 ## Worker commands
 

@@ -23,7 +23,7 @@ import {
   repoOf,
   restActor,
 } from "./queries.js";
-import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
+import { checkMarkdown, guardClosingKeywords, guardDependencyText } from "./markdown.js";
 import {
   inProcess,
   type CallContext,
@@ -56,7 +56,7 @@ import {
 
 import { ChecksService } from "./checks.js";
 import { VerificationService } from "./verify.js";
-import { reference } from "./refs.js";
+import { blockerLabel, blockerReference, reference, type ThreadRef } from "./refs.js";
 import { LearningsService } from "./learnings.js";
 import { LearningAnnotations, type LearningBundle } from "./learning-annotations.js";
 import { checkLearningPr } from "./learning-check.js";
@@ -860,6 +860,7 @@ class GatewayServer {
       throw new Error("Board is disabled; estimate/status require a configured board");
     }
     const body = readFileSync(file, "utf8");
+    guardDependencyText(body);
     await checkMarkdown(this.root, `${title}\n\n${body}`);
     guardClosingKeywords(`${title}\n\n${body}`);
     const created = object(
@@ -901,6 +902,7 @@ class GatewayServer {
   issueEdit: Handlers["issueEdit"] = async ({ ref, file }) => {
     const number = this.localNumber(ref);
     const body = readFileSync(file, "utf8");
+    guardDependencyText(body);
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
     const item = await this.flowThread(String(number), "issue");
@@ -1003,6 +1005,44 @@ class GatewayServer {
     await this.board.setIssueField(closed.node_id, "Progress", null);
     return `Closed issue #${number}`;
   };
+
+  /** Set a blocked-by relation; the target is in the configured repository, the blocker may be elsewhere. */
+  issueBlock: Handlers["issueBlock"] = async ({ ref, blocker }) => {
+    const number = this.localNumber(ref);
+    const target = await this.flowThread(String(number), "issue");
+    const blockerRef = blockerReference(blocker, this.config);
+    await this.github.graphql(
+      `mutation($issueId: ID!, $blockingIssueId: ID!) { addBlockedBy(input: { issueId: $issueId, blockingIssueId: $blockingIssueId }) { issue { number } blockingIssue { number } } }`,
+      { issueId: String(target.id), blockingIssueId: await this.issueNodeId(blockerRef) }
+    );
+    return `Blocked #${number} by ${blockerLabel(blockerRef, this.config)}`;
+  };
+
+  /** Clear a blocked-by relation set through issueBlock. */
+  issueUnblock: Handlers["issueUnblock"] = async ({ ref, blocker }) => {
+    const number = this.localNumber(ref);
+    const target = await this.flowThread(String(number), "issue");
+    const blockerRef = blockerReference(blocker, this.config);
+    await this.github.graphql(
+      `mutation($issueId: ID!, $blockingIssueId: ID!) { removeBlockedBy(input: { issueId: $issueId, blockingIssueId: $blockingIssueId }) { issue { number } blockingIssue { number } } }`,
+      { issueId: String(target.id), blockingIssueId: await this.issueNodeId(blockerRef) }
+    );
+    return `Unblocked #${number} from ${blockerLabel(blockerRef, this.config)}`;
+  };
+
+  private async issueNodeId(ref: ThreadRef): Promise<string> {
+    const result = object(
+      await this.github.graphql(
+        `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { id } } }`,
+        { owner: ref.owner, name: ref.name, number: ref.number }
+      )
+    );
+    const issue = object(object(result.repository).issue);
+    if (!issue.id) {
+      throw new Error(`Blocker issue not found: ${blockerLabel(ref, this.config)}`);
+    }
+    return String(issue.id);
+  }
   boardArchive: Handlers["boardArchive"] = async ({ itemId }) => this.board.archive(itemId);
 
   private get flow(): TaskFlow {
@@ -1817,6 +1857,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     learningCheck: server.learningCheck,
     issueCreate: server.issueCreate,
     issueEdit: server.issueEdit,
+    issueBlock: server.issueBlock,
+    issueUnblock: server.issueUnblock,
     scopeReview: server.scopeReview,
     issueClose: server.issueClose,
     boardSetIssue: server.boardSetIssue,
@@ -1859,6 +1901,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     learningCheck: ["worker", "orchestrator"],
     issueCreate: ["orchestrator"],
     issueEdit: ["orchestrator"],
+    issueBlock: ["orchestrator"],
+    issueUnblock: ["orchestrator"],
     scopeReview: ["orchestrator"],
     issueClose: ["orchestrator"],
     boardSetIssue: ["orchestrator"],

@@ -27,3 +27,15 @@ export function reference(value: string, config: Config): ThreadRef {
     link: `https://github.com/${repo}/issues/${match[2]}`,
   };
 }
+
+/** Blocker arguments also accept a leading `#` (`#m`), normalized before the org-scoped thread ref. */
+export function blockerReference(value: string, config: Config): ThreadRef {
+  return reference(value.startsWith("#") ? value.slice(1) : value, config);
+}
+
+/** Same-repository blockers read as `#n`; cross-repository blockers keep their `org/repo#n`. */
+export function blockerLabel(ref: ThreadRef, config: Config): string {
+  return ref.repo.toLowerCase() === String(config.repo).toLowerCase()
+    ? `#${ref.number}`
+    : `${ref.repo}#${ref.number}`;
+}

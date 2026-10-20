@@ -10,6 +10,14 @@ in [Lifecycle](lifecycle.md) and [Board](board.md). When an unblocked card reach
 Ready, take it in priority order; do not wait to be told. Develop it on the issue,
 flipping the assignee whenever the next move changes.
 
+Record dependencies only in the blocked-by relation, never in issue text: a task
+brief copies the body, so a copied blocker line reads as a live blocker. Set and
+clear relations with `vmethod issue block <n> <blocker>` and `vmethod issue unblock
+<n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`); `issue create` and
+`issue edit` refuse a body whose line consists only of a dependency reference.
+Migrate old bodies with `issue block` to record the relation plus an `issue edit`
+that drops the prose line.
+
 Read code, settled decisions and git history before proposing to reverse deliberate
 behavior. Separate verified facts from assumptions. Present options with a
 recommendation and acceptance/verification criteria. **Confirm ambiguous readings
