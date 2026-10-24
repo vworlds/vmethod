@@ -176,7 +176,8 @@ repository. Issue creation reads checked Markdown from a file; repeat `--label` 
 multiple labels. With the board enabled, creation ensures membership on the
 configured board through the issue-side relation, then applies optional points-scale
 `--estimate` and exact-name
-`--status` values through the shared field writer; Status clears Progress. You can
+`--status` values through the shared field writer; Status clears Progress, and
+without `--status` it defaults to the first workflow column (Backlog). You can
 immediately use `board set` after successful creation. If board follow-up fails,
 the error identifies the created issue: inspect it and retry board operations,
 never repeat creation. A disabled board skips membership; estimate/status flags
