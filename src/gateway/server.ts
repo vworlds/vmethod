@@ -1225,6 +1225,33 @@ class GatewayServer {
     return `Autopilot stopped on #${number}`;
   };
 
+  /** Re-run open-task's authenticated grant copy on an accepted task PR (#249): a
+   * watcher cleanup or a failed first inheritance is repaired by a live issue grant. */
+  autopilotInherit: Handlers["autopilotInherit"] = async ({ ref }) => {
+    const number = this.localNumber(ref);
+    const pr = await this.flowThread(String(number), "pr");
+    const issues = taskIssueNumbers(String(pr.body)) ?? [];
+    if (!issues.length) {
+      throw new Error(`No linked task issue to inherit the autopilot grant from on #${number}`);
+    }
+    for (const issue of issues) {
+      const item = await this.flowThread(String(issue), "issue");
+      if (
+        await inheritAutopilot(
+          this.github,
+          this.filter,
+          this.config,
+          item,
+          pr,
+          "[orchestrator] AUTOPILOT\n\nCopied the task issue's owner-authorized autopilot grant onto this PR."
+        )
+      ) {
+        return `Autopilot grant copied from #${issue} to #${number}`;
+      }
+    }
+    throw new Error(`No live autopilot grant on the task's linked issues: ${issues.join(", ")}`);
+  };
+
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
   reviewTask: Handlers["reviewTask"] = async (input) => this.flow.review(input);
   askIssue: Handlers["askIssue"] = async (input) => this.flow.ask(input.ref, input.file);
@@ -2154,6 +2181,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueEstimate: server.issueEstimate,
     scopeReview: server.scopeReview,
     autopilotStop: server.autopilotStop,
+    autopilotInherit: server.autopilotInherit,
     issueClose: server.issueClose,
     boardSetIssue: server.boardSetIssue,
     worker: server.worker,
@@ -2199,6 +2227,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueEstimate: ["orchestrator"],
     scopeReview: ["orchestrator"],
     autopilotStop: ["orchestrator"],
+    autopilotInherit: ["orchestrator"],
     issueClose: ["orchestrator"],
     boardSetIssue: ["orchestrator"],
     worker: ["orchestrator"],

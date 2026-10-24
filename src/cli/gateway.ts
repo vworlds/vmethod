@@ -92,14 +92,17 @@ export async function gatewayVerb(
       }
       return transport.call("scopeReview", { ref: args[0], file: args[1] }, ctx);
     case "autopilot":
-      if (args.length !== 3 || args[0] !== "stop" || !["issue", "pr"].includes(args[1])) {
-        throw new Error("Usage: autopilot stop <issue|pr> <n>");
+      if (args.length === 3 && args[0] === "stop" && ["issue", "pr"].includes(args[1])) {
+        return transport.call(
+          "autopilotStop",
+          { ref: args[2], kind: args[1] as "issue" | "pr" },
+          ctx
+        );
       }
-      return transport.call(
-        "autopilotStop",
-        { ref: args[2], kind: args[1] as "issue" | "pr" },
-        ctx
-      );
+      if (args.length === 2 && args[0] === "inherit") {
+        return transport.call("autopilotInherit", { ref: args[1] }, ctx);
+      }
+      throw new Error("Usage: autopilot stop <issue|pr> <n> | autopilot inherit <pr>");
     case "worker":
       return transport.call("worker", { args }, ctx);
     case "worktrees":

@@ -9,6 +9,12 @@ you until Done. Never add it yourself: only the pinned owner's label event grant
 authority. The watcher removes and reports unauthorized additions at the next scoped
 poll. `open-task` may copy a live issue grant to its task PR; the gateway records
 the exact inherited label event, so a later manual non-owner addition cannot reuse it.
+While that inheritance is in flight (a journaled operation within two minutes), the
+watcher does not judge the copied label, so a poll between the label write and its
+proof never removes it. The watcher's own cleanup removal of an unauthorized label is
+not a revocation: the task's other members keep their delegation. A copy whose label
+was already removed is never certified retroactively, even if a late proof write
+lands.
 
 On an `AUTOPILOT #n` wake-up, continue the current step without waiting for an owner
 move. You still make and document the engineering decisions:
@@ -39,6 +45,12 @@ an alternative to inheritance.
 To stop delegation yourself, use `autopilot stop <issue|pr> <n>` on a card carrying
 the label. This removal-only gateway command comments on the thread; it never
 grants authority or reverts a completed step.
+
+If a task PR lost its copied label — a watcher cleanup of an unproofed copy or a
+failed first inheritance — restore it with `autopilot inherit <pr>`. The verb
+re-runs the authenticated copy, taking authority only from the linked issue's
+current live grant; a revoked grant refuses. The task's delegation never needed
+repair on the issue side, because watcher cleanups leave it untouched.
 
 Releases, permissions, identity pins (`people.yaml`) and every other owner-reserved
 decision remain with the owner. The merge path refuses delegated merges to the

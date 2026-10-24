@@ -47,10 +47,146 @@ test.each(["issue", "pr"] as const)(
   }
 );
 
+const grantHistory = {
+  timelineItems: {
+    nodes: [
+      {
+        __typename: "LabeledEvent",
+        id: "grant",
+        createdAt: "2026-01-01T00:00:00Z",
+        actor: actor(0),
+        label: { name: "autopilot" },
+      },
+    ],
+    pageInfo: { hasNextPage: false, endCursor: null },
+  },
+};
+
+test("autopilot inherit re-copies a live issue grant onto the accepted task PR", async () => {
+  const granted = item({
+    __typename: "Issue",
+    number: 8,
+    body: "Grant source",
+    labels: { nodes: [{ name: "autopilot" }], pageInfo: { hasNextPage: false } },
+  });
+  const f = fixtureServer([
+    graph({ repository: { pullRequest: item({ author: actor(2) }) } }),
+    graph({
+      node: item({
+        __typename: "PullRequest",
+        number: 27,
+        author: actor(2),
+        body: 'Task text\n\n<!-- vmethod-task {"issues":[8]} -->\n',
+        labels: { nodes: [], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+    graph({ repository: { issue: item() } }),
+    graph({ node: granted }),
+    scopeGraph({ nodes: [granted] }),
+    scopeGraph({ nodes: [granted] }),
+    graph({ n0: { ...item({ __typename: "Issue", number: 8 }), ...grantHistory } }),
+    { path: "/repos/example/project/issues/27/labels", method: "POST", json: {} },
+    graph({
+      node: item({
+        __typename: "PullRequest",
+        author: actor(2),
+        timelineItems: {
+          nodes: [
+            {
+              __typename: "LabeledEvent",
+              id: "copy",
+              createdAt: "2026-01-01T00:00:01Z",
+              actor: actor(2),
+              label: { name: "autopilot" },
+            },
+          ],
+          pageInfo: { hasNextPage: false, endCursor: null },
+        },
+      }),
+    }),
+    scopeGraph({ nodes: [granted] }),
+    scopeGraph({ nodes: [granted] }),
+    graph({ n0: { ...item({ __typename: "Issue", number: 8 }), ...grantHistory } }),
+    {
+      path: "/repos/example/project/pulls/27",
+      method: "PATCH",
+      body: {
+        body: 'Task text\n\n<!-- vmethod-autopilot-copy {"event":"copy","source":"grant"} -->\n\n<!-- vmethod-task {"issues":[8]} -->\n',
+      },
+      json: {},
+    },
+    {
+      path: "/repos/example/project/issues/27/comments",
+      method: "POST",
+      body: {
+        body: "[orchestrator] AUTOPILOT\n\nCopied the task issue's owner-authorized autopilot grant onto this PR.",
+      },
+      json: {},
+    },
+  ]);
+  await expect(
+    gatewayVerb(f.transport, "autopilot", ["inherit", "27"], { VMETHOD_ROLE: "orchestrator" })
+  ).resolves.toBe("Autopilot grant copied from #8 to #27");
+  f.done();
+});
+
+test("autopilot inherit refuses task PRs without a linked task issue", async () => {
+  const f = fixtureServer([
+    graph({ repository: { pullRequest: item() } }),
+    graph({
+      node: item({
+        __typename: "PullRequest",
+        body: 'Task text\n\n<!-- vmethod-task {"issues":[]} -->\n',
+        labels: { nodes: [], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+  ]);
+  await expect(
+    gatewayVerb(f.transport, "autopilot", ["inherit", "27"], { VMETHOD_ROLE: "orchestrator" })
+  ).rejects.toThrow("No linked task issue to inherit the autopilot grant from");
+  f.done();
+});
+
+test("autopilot inherit refuses when no linked issue holds the grant", async () => {
+  const unlabeled = item({
+    __typename: "Issue",
+    number: 8,
+    body: "Grant source",
+    labels: { nodes: [], pageInfo: { hasNextPage: false } },
+  });
+  const f = fixtureServer([
+    graph({ repository: { pullRequest: item() } }),
+    graph({
+      node: item({
+        __typename: "PullRequest",
+        body: 'Task text\n\n<!-- vmethod-task {"issues":[8]} -->\n',
+        labels: { nodes: [], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+    graph({ repository: { issue: item() } }),
+    graph({ node: unlabeled }),
+    scopeGraph({ nodes: [unlabeled] }),
+    scopeGraph({ nodes: [unlabeled] }),
+    graph({
+      n0: {
+        ...item({ __typename: "Issue", number: 8 }),
+        timelineItems: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+      },
+    }),
+  ]);
+  await expect(
+    gatewayVerb(f.transport, "autopilot", ["inherit", "27"], { VMETHOD_ROLE: "orchestrator" })
+  ).rejects.toThrow("No live autopilot grant on the task's linked issues: 8");
+  f.done();
+});
+
 test("worker cannot stop delegation and issue creation cannot grant it", async () => {
   const f = fixtureServer([]);
   await expect(
     f.gateway.call("autopilotStop", { ref: "27", kind: "pr" }, { role: "worker", taskPr: 27 })
+  ).rejects.toThrow("denied for client role");
+  await expect(
+    f.gateway.call("autopilotInherit", { ref: "27" }, { role: "worker", taskPr: 27 })
   ).rejects.toThrow("denied for client role");
   await expect(
     f.transport.call("issueCreate", { title: "Task", file: "unused.md", labels: ["autopilot"] })

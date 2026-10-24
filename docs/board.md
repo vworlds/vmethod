@@ -94,7 +94,10 @@ and delivery reviews, and merges through the ordinary wrappers. Each transition 
 a thread comment identifying autopilot. Adding or removing the label on either task
 card takes effect at the next poll; removing it returns the current step to the
 owner without reverting completed work. A later owner addition can grant control
-again. The watcher reports these changes without making engineering decisions.
+again. The watcher's own cleanup of an unauthorized label is the exception: it does
+not revoke, and the task's remaining owner grant keeps the delegation. A copied
+task-PR label whose issue grant is live can be restored with `autopilot inherit`.
+The watcher reports these changes without making engineering decisions.
 
 The owner gate for expensive models applies unchanged. Releases, permissions and
 `people.yaml` remain the owner's decisions. CI, worker stopping, scope hashes and

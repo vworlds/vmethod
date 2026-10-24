@@ -25,6 +25,8 @@ export interface Operations {
   scopeReview: { input: { ref: string; file: string }; output: string };
   /** Remove delegation only; no operation lets an agent grant autopilot. */
   autopilotStop: { input: { ref: string; kind: "issue" | "pr" }; output: string };
+  /** Re-copy a linked issue's live owner grant onto an accepted task PR. */
+  autopilotInherit: { input: { ref: string }; output: string };
   /** Null clears only Progress or Estimate; strings retain ordinary value validation. */
   boardSetIssue: { input: { ref: string; field: string; value: string | null }; output: string };
   worker: { input: { args: string[] }; output: string };

@@ -97,6 +97,7 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod issue unblock <n> <blocker>`
 - `vmethod scope-review <n> <summary-file>`
 - `vmethod autopilot stop <issue|pr> <n>`
+- `vmethod autopilot inherit <pr>`
 - `vmethod board set <issue> <field> <value>|--clear`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
@@ -111,6 +112,14 @@ and `open-task` inheritance live in `src/gateway/autopilot.ts`; see
 [autopilot procedure](orchestrator-guide.md#autopilot). Under current delegation,
 `scope-review` and `review <pr> owner` explicitly record and advance their owner
 gates. `merge-task` rechecks delegation after normal verification.
+
+`autopilot inherit <pr>` is the orchestrator-only repair for a task PR whose copied
+grant is gone: a watcher cleanup or a failed first inheritance that left no proof.
+It re-runs the authenticated `open-task` copy from the linked issue's **live** grant
+only; a revoked issue grant refuses. It journals the inheritance operation first, so
+the watcher leaves the copied label unjudged for the two-minute in-flight window
+(#199) while the label and its proof write land. The typed operation is
+`autopilotInherit({ref}) → string`.
 
 `issue edit` and `scope-review` are orchestrator-only, configured-repository writes.
 Read an issue first: `read issue` saves its exact body hash in worktree-local

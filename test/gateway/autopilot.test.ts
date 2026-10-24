@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
@@ -128,7 +128,14 @@ function setup() {
   return { root, config, env, filter };
 }
 
-test.each(["active", "absent", "revoked", "intervening actor"])(
+test.each([
+  "active",
+  "absent",
+  "revoked",
+  "intervening actor",
+  "cleaned during copy",
+  "re-added after cleanup",
+])(
   "task inheritance writes the label and exact copy proof only with live authority (%s)",
   async (scenario) => {
     const f = setup();
@@ -164,19 +171,32 @@ test.each(["active", "absent", "revoked", "intervening actor"])(
             });
           }
           if (payload.query.includes("AutopilotCopy")) {
-            return Response.json({
-              data: {
-                node: {
-                  ...pr,
-                  timelineItems: {
-                    nodes: [
+            const cleaned = event(false, {
+              id: "cleaned",
+              actor: actor(2),
+              createdAt: "2026-10-24T17:49:39Z",
+            });
+            const all =
+              scenario === "cleaned during copy"
+                ? [event(true, { id: "copy", actor: actor(2) }), cleaned]
+                : scenario === "re-added after cleanup"
+                  ? [cleaned, event(true, { id: "copy", actor: actor(2) })]
+                  : [
                       event(true, {
                         id: "copy",
                         actor: scenario === "intervening actor" ? actor(1) : actor(2),
                       }),
-                    ],
-                  },
-                },
+                    ];
+            // GitHub serves exactly the requested tail of the requested item types.
+            const visible = all.filter(
+              (node) =>
+                payload.query.includes("UNLABELED_EVENT") || node.__typename !== "UnlabeledEvent"
+            );
+            const tail = /timelineItems\(last: (\d+)/.exec(String(payload.query));
+            const nodes = tail ? visible.slice(-Number(tail[1])) : visible;
+            return Response.json({
+              data: {
+                node: { ...pr, timelineItems: { ...wire.timelineItems, nodes } },
               },
             });
           }
@@ -203,15 +223,19 @@ test.each(["active", "absent", "revoked", "intervening actor"])(
     });
     try {
       const result = inheritAutopilot(github, f.filter, f.config, source, pr);
-      if (scenario === "revoked" || scenario === "intervening actor") {
+      if (["revoked", "intervening actor", "cleaned during copy"].includes(scenario)) {
         await expect(result).rejects.toThrow(
-          scenario === "revoked" ? "revoked during task creation" : "Cannot certify"
+          scenario === "revoked"
+            ? "revoked during task creation"
+            : "Cannot certify copied autopilot label"
         );
         expect(writes).toHaveLength(1);
       } else {
         await result;
         if (scenario === "absent") {
           expect(writes).toEqual([]);
+          // No grant, no inherited label: the watcher's in-flight window is not on.
+          expect(github.writes.recentlyWrote("example/project", 27)).toBe(false);
         } else {
           expect(writes.map((write) => write.method)).toEqual(["POST", "PATCH", "POST"]);
           expect(writes[0].payload).toEqual({ labels: ["autopilot"] });
@@ -219,6 +243,8 @@ test.each(["active", "absent", "revoked", "intervening actor"])(
             `Task text\n\n<!-- vmethod-autopilot-copy {"event":"copy","source":"grant"} -->\n\n<!-- vmethod-task {"issues":[8]} -->\n`
           );
           expect(writes[2].payload.body).toContain("Task opened under autopilot");
+          // The copied label's no-unauthorized window opens with the label write (#249).
+          expect(github.writes.recentlyWrote("example/project", 27)).toBe(true);
         }
       }
     } finally {
@@ -288,6 +314,180 @@ test("removal on either side stops the task; exact inherited event is the only n
     );
   } finally {
     rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+/** A task issue with the owner's grant beside its task PR carrying the plain copy. */
+function taskCopy(body: string): {
+  f: WatchFake;
+  writes: { path: string; method: string }[];
+  prCard: ObjectData;
+} {
+  const f = new WatchFake();
+  const issueCard = f.card(8, "Executing");
+  issueCard.content = { ...object(issueCard.content), ...issue(), id: "issue" };
+  const prCard = f.card(27, "Executing", "PullRequest");
+  prCard.content = {
+    ...object(prCard.content),
+    ...issue({ __typename: "PullRequest", id: "pr", number: 27, body }),
+    id: "pr",
+  };
+  f.cards = [issueCard, prCard];
+  const clean = event(false, {
+    id: "cleaned",
+    actor: actor(2),
+    createdAt: "2026-10-24T17:49:39Z",
+  });
+  const histories: Record<string, ObjectData[]> = {
+    issue: [event(true, { createdAt: "2026-10-24T17:49:37Z" })],
+    pr: [event(true, { id: "copy", actor: actor(2), createdAt: "2026-10-24T17:49:38Z" })],
+  };
+  const writes: { path: string; method: string }[] = [];
+  const original = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path === "/graphql") {
+      const payload = JSON.parse(String(init?.body));
+      if (String(payload.query).includes("AutopilotNodes")) {
+        const ids: string[] = payload.variables.ids;
+        return Response.json({
+          data: {
+            nodes: f.cards
+              .map((card) => object(card.content))
+              .filter((content) => ids.includes(String(content.id))),
+          },
+        });
+      }
+      if (String(payload.query).includes("AutopilotHistory")) {
+        const data: ObjectData = {};
+        for (const key of Object.keys(payload.variables)) {
+          if (!key.startsWith("id")) {
+            continue;
+          }
+          const id = String(payload.variables[key]);
+          const content = f.cards
+            .map((card) => object(card.content))
+            .find((item) => String(item.id) === id);
+          data[`n${key.slice(2)}`] = {
+            ...content,
+            timelineItems: { ...wire.timelineItems, nodes: histories[id] ?? [] },
+          };
+        }
+        return Response.json({ data });
+      }
+    }
+    if (
+      path === "/repos/example/project/issues/27/labels/autopilot" ||
+      (path === "/repos/example/project/issues/27/comments" && init?.method === "POST")
+    ) {
+      writes.push({ path, method: String(init?.method) });
+      if (init?.method === "DELETE") {
+        object(prCard.content).labels = structuredClone(wire.labels);
+        histories.pr = [...histories.pr, clean];
+      }
+      return Response.json({});
+    }
+    return original(input, init);
+  };
+  return { f, writes, prCard };
+}
+
+test("watcher polls between the copied label and its proof write never remove the label", async () => {
+  const body = 'Task text\n\n<!-- vmethod-task {"issues":[8]} -->\n';
+  const { f, writes, prCard } = taskCopy(body);
+  try {
+    mkdirSync(f.dir, { recursive: true });
+    // open-task's journaled inheritance operation marks the window in flight (#199).
+    writeFileSync(
+      join(f.dir, "writes.jsonl"),
+      `${JSON.stringify({
+        at: f.iso(),
+        kind: "operation",
+        op: "autopilot inherit",
+        repo: "example/project",
+        number: 27,
+      })}\n`
+    );
+    const loop = f.loop();
+    const first = await f.once(loop);
+    expect(writes).toEqual([]);
+    expect(
+      first.some(
+        (value) =>
+          value.kind === "autopilot" && value.line.includes("AUTOPILOT #8: owner-delegated")
+      )
+    ).toBe(true);
+    expect(first.some((value) => value.kind === "autopilot" && value.line.includes("#27"))).toBe(
+      false
+    );
+    // The proof lands and the window expires: the copied label survives, authorized.
+    object(prCard.content).body = body.replace(
+      "<!-- vmethod-task",
+      `<!-- vmethod-autopilot-copy {"event":"copy","source":"grant"} -->\n\n<!-- vmethod-task`
+    );
+    f.advance(121_000);
+    const second = await f.once(loop);
+    expect(writes).toEqual([]);
+    expect(
+      second.some(
+        (value) =>
+          value.kind === "autopilot" && value.line.includes("AUTOPILOT #27: owner-delegated")
+      )
+    ).toBe(true);
+  } finally {
+    f.done();
+  }
+});
+
+test("a watcher cleanup removal keeps the issue's delegation active", async () => {
+  const body = 'Task text\n\n<!-- vmethod-task {"issues":[8]} -->\n';
+  const { f, writes } = taskCopy(body);
+  try {
+    mkdirSync(f.dir, { recursive: true });
+    // After the window, an unproofed label is still judged and cleaned.
+    writeFileSync(
+      join(f.dir, "writes.jsonl"),
+      `${JSON.stringify({
+        at: f.iso(-130_000),
+        kind: "operation",
+        op: "autopilot inherit",
+        repo: "example/project",
+        number: 27,
+      })}\n`
+    );
+    const loop = f.loop();
+    const removed = await f.once(loop);
+    expect(writes.map((write) => write.method)).toEqual(["DELETE", "POST"]);
+    expect(
+      removed.some(
+        (value) =>
+          value.kind === "autopilot" &&
+          value.line.includes("AUTOPILOT #27: unauthorized label removed")
+      )
+    ).toBe(true);
+    // The cleanup is the watcher's own, not a revocation: no stopped report for the
+    // issue whose owner grant stays untouched.
+    expect(
+      removed.some(
+        (value) => value.kind === "autopilot" && value.line.includes("AUTOPILOT #8: stopped")
+      )
+    ).toBe(false);
+    expect(
+      removed.some(
+        (value) =>
+          value.kind === "autopilot" && value.line.includes("AUTOPILOT #8: owner-delegated")
+      )
+    ).toBe(true);
+    expect(f.marker("autopilot-8")).toBe("on");
+    expect(f.marker("autopilot-27")).toBe("on");
+    // With the cleaned label gone and never re-proofed, the task stays delegated.
+    f.advance();
+    const next = await f.once(loop);
+    expect(writes).toHaveLength(2);
+    expect(next.filter((value) => value.kind === "autopilot")).toEqual([]);
+    expect(f.marker("autopilot-8")).toBe("on");
+  } finally {
+    f.done();
   }
 });
 

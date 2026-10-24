@@ -23,26 +23,32 @@ const labelEvents = `__typename ... on LabeledEvent { id createdAt actor { ${act
 
 /** Copy a current owner grant to a newly created task PR. Persist the exact
  * generated event ID in authenticated task metadata, then announce inheritance.
- * A revoked grant or an intervening label write refuses certification.
+ * A revoked grant or an intervening label write refuses certification. Returns
+ * whether a live grant existed and was copied; the watcher never judges a copied
+ * label while this operation is in flight (#249).
  */
 export async function inheritAutopilot(
   github: GitHubClient,
   filter: PeopleFilter,
   config: Config,
   issue: ObjectData,
-  pr: ObjectData
-): Promise<void> {
+  pr: ObjectData,
+  announce = "[orchestrator] AUTOPILOT\n\nTask opened under autopilot; copied the issue's owner-authorized label."
+): Promise<boolean> {
   const reader = new AutopilotReader(github, filter, config);
   const state = (await reader.read([String(issue.id)])).get(String(issue.id));
   if (!state?.active || !state.grant) {
-    return;
+    return false;
   }
   const repo = String(config.repo);
   const number = Number(pr.number);
+  // The copied label sits alone for seconds until its proof lands; journal the
+  // operation first so the watcher's polls leave the window unjudged (#249).
+  github.writes.beginOperation("autopilot inherit", [{ repo, number }]);
   await github.rest(`/repos/${repo}/issues/${number}/labels`, "POST", { labels: ["autopilot"] });
   const data = object(
     await github.graphql(
-      `query AutopilotCopy($id: ID!) { node(id: $id) { ... on PullRequest { ${identityFields} timelineItems(last: 1, itemTypes: [LABELED_EVENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { ${actorFields} } label { name } } } } } } }`,
+      `query AutopilotCopy($id: ID!) { node(id: $id) { ... on PullRequest { ${identityFields} timelineItems(last: 20, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) { nodes { __typename ... on LabeledEvent { id createdAt actor { ${actorFields} } label { name } } ... on UnlabeledEvent { id createdAt actor { ${actorFields} } label { name } } } } } } }`,
       { id: pr.id }
     )
   );
@@ -50,10 +56,16 @@ export async function inheritAutopilot(
   if (!filter.accept(current, repoOf(current).owner, `https://github.com/${repo}/pull/${number}`)) {
     throw new Error("Autopilot copy identity changed");
   }
-  const events = object(current.timelineItems).nodes;
-  const event = Array.isArray(events) && events.length === 1 ? object(events[0]) : {};
+  const nodes = object(current.timelineItems).nodes;
+  const timeline = Array.isArray(nodes)
+    ? (nodes as ObjectData[]).map(object).filter((item) => object(item.label).name === "autopilot")
+    : [];
+  // Never certify a removed copy: a proof for a cleaned label would retro-activate
+  // it and turn the watcher's own cleanup into a revocation (#249).
+  const event = timeline.length ? timeline[timeline.length - 1] : {};
   const actor = filter.identity(event.actor);
   if (
+    event.__typename !== "LabeledEvent" ||
     object(event.label).name !== "autopilot" ||
     typeof event.id !== "string" ||
     !actor ||
@@ -77,10 +89,11 @@ export async function inheritAutopilot(
     `/repos/${repo}/issues/${number}/comments`,
     "POST",
     {
-      body: "[orchestrator] AUTOPILOT\n\nTask opened under autopilot; copied the issue's owner-authorized label.",
+      body: announce,
     },
     false
   );
+  return true;
 }
 
 /** Read owner-delegated authority from complete label history, not label presence.
@@ -95,6 +108,13 @@ export class AutopilotReader {
   ) {}
 
   async read(ids: string[]): Promise<Map<string, AutopilotState>> {
+    return autopilotStates(await this.records(ids), this.filter, String(this.config.repo));
+  }
+
+  /** The wire records behind read()'s states. The watcher cleans an unauthorized
+   * label from these records in memory and recomputes the affected task groups
+   * without another fetch (#249). */
+  async records(ids: string[]): Promise<{ item: ObjectData; events: ObjectData[] }[]> {
     const metadata = await this.nodes(ids, "");
     const accepted = metadata.filter((item) => this.accept(item));
     const items = await this.nodes(
@@ -102,13 +122,12 @@ export class AutopilotReader {
       "body number labels(first: 100) { nodes { name } pageInfo { hasNextPage } }"
     );
     const histories = await this.histories(items.filter((item) => this.accept(item)));
-    const records = items
+    return items
       .filter((item) => this.accept(item))
       .map((item) => ({
         item,
         events: histories.get(String(item.id)) ?? [],
       }));
-    return autopilotStates(records, this.filter, String(this.config.repo));
   }
 
   private accept(item: ObjectData): boolean {

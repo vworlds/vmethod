@@ -38,7 +38,7 @@ import { workerWorktree } from "./worker-path.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
 import { ScopeReader, legacyScopeCutoff } from "./scope.js";
-import { AutopilotReader, type AutopilotState } from "./autopilot.js";
+import { AutopilotReader, autopilotStates, type AutopilotState } from "./autopilot.js";
 import { sameAssignees, setTurn, turnAssignees } from "./turn.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
@@ -2813,35 +2813,60 @@ export class EventLoop {
         break;
       }
     }
-    const targets = own.filter((card) => selected.has(card.number));
-    this.autopilot = await new AutopilotReader(
+    // A card whose open-task inheritance is in flight (journal operation within the
+    // two-minute window, #199) is not judged (#249): a poll between the copied label
+    // and its proof write never removes the label or reports its task stopped.
+    const targets = own.filter(
+      (card) => selected.has(card.number) && !this.writes.recentlyWrote(card.repo, card.number)
+    );
+    const records = await new AutopilotReader(
       this.host.github,
       this.host.filter,
       this.host.config
-    ).read(targets.map((card) => card.contentId));
+    ).records(targets.map((card) => card.contentId));
+    let states = autopilotStates(records, this.host.filter, String(this.host.config.repo));
+    for (const card of targets) {
+      if (!states.get(card.contentId)?.unauthorized) {
+        continue;
+      }
+      await this.host.github.rest(
+        `/repos/${this.own}/issues/${card.number}/labels/autopilot`,
+        "DELETE"
+      );
+      await this.host.github.rest(
+        `/repos/${this.own}/issues/${card.number}/comments`,
+        "POST",
+        {
+          body: "[orchestrator] AUTOPILOT\n\nRemoved an unauthorized autopilot label. Only the pinned owner can grant autopilot; open-task may copy an existing owner grant.",
+        },
+        false
+      );
+      this.emit(
+        `autopilot-invalid-${card.number}@${this.host.deps.now()}`,
+        "autopilot",
+        `AUTOPILOT #${card.number}: unauthorized label removed ${this.threadUrl(card.repo, card.number, card.kind)}`
+      );
+      // This watcher's cleanup is not a revocation: drop the label from the read
+      // records and recompute, so the affected task keeps its other members' active
+      // delegation in this same poll instead of a poll of false "stopped" (#249).
+      for (const record of records) {
+        if (String(record.item.id) !== card.contentId) {
+          continue;
+        }
+        const labels = object(record.item.labels);
+        if (Array.isArray(labels.nodes)) {
+          labels.nodes = (labels.nodes as ObjectData[]).filter(
+            (label) => label.name !== "autopilot"
+          );
+        }
+      }
+      states = autopilotStates(records, this.host.filter, String(this.host.config.repo));
+    }
+    this.autopilot = states;
     for (const card of targets) {
       const state = this.autopilot.get(card.contentId);
       if (!state) {
         continue;
-      }
-      if (state.unauthorized) {
-        await this.host.github.rest(
-          `/repos/${this.own}/issues/${card.number}/labels/autopilot`,
-          "DELETE"
-        );
-        await this.host.github.rest(
-          `/repos/${this.own}/issues/${card.number}/comments`,
-          "POST",
-          {
-            body: "[orchestrator] AUTOPILOT\n\nRemoved an unauthorized autopilot label. Only the pinned owner can grant autopilot; open-task may copy an existing owner grant.",
-          },
-          false
-        );
-        this.emit(
-          `autopilot-invalid-${card.number}@${this.host.deps.now()}`,
-          "autopilot",
-          `AUTOPILOT #${card.number}: unauthorized label removed ${this.threadUrl(card.repo, card.number, card.kind)}`
-        );
       }
       const name = `autopilot-${card.number}`;
       const old = this.readMarker(name);
