@@ -1919,6 +1919,38 @@ test("a discarded snapshot does not swallow the later real move to a third colum
   expect(events[0].line).toContain("Owner review → Approved");
 });
 
+test("a transient empty Status read emits nothing, keeps the baseline and the real move reports once", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "In review")];
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  // One poll reads the Status as empty while GitHub is mid-update on the move.
+  object(f.cards[0].status).name = "";
+  expect(await f.tick(loop)).toEqual([]);
+  expect(readFileSync(join(f.dir, "board", "PVTI_6"), "utf8")).toBe("In review\n");
+  expect(f.reports).toEqual([]);
+  f.advance();
+  object(f.cards[0].status).name = "Approved";
+  const events = await f.tick(loop);
+  expect(events.map((event) => event.kind)).toEqual(["board"]);
+  expect(events[0].line).toContain("BOARD #6 (ISSUE): In review → Approved");
+  await f.ack(loop, events);
+  expect(await f.tick(loop)).toEqual([]);
+});
+
+test("a truly unset card with no baseline still reports its later Status as a new card", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "")];
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  object(f.cards[0].status).name = "In review";
+  const events = await f.tick(loop);
+  expect(events.map((event) => event.kind)).toEqual(["board"]);
+  expect(events[0].line).toContain("BOARD #6 (ISSUE): new card → In review");
+});
+
 test("an old journalled Executing move does not suppress a later unblocking LAUNCH", async () => {
   const f = setup();
   f.cards = [f.card()];

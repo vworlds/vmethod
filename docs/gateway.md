@@ -597,6 +597,9 @@ of the field's `updatedAt`: `creator` is the first writer, not the latest actor.
 An unmatched board move is reported without attributing an actor. Changed board
 values are re-read before reporting; a stale listing is discarded on stderr only,
 without advancing its previous-column baseline or producing NEXT/LAUNCH from it.
+An empty Status read on a card whose baseline holds a column is transient
+(GitHub mid-update) and reports nothing for that poll: the baseline is kept, so
+the later real move reports once instead of as a new card.
 A card baseline is pruned only after its item has been absent from every
 successful board poll for 24 hours and from at least 3 of them, tracked in a
 per-item absence marker; a failed or partial poll never counts, and a card one
