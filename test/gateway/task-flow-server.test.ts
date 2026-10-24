@@ -352,7 +352,7 @@ test("merge is refused at the gateway when worker management reports live, witho
 });
 
 const REPLY_REFUSAL =
-  "answer replies to a worker QUESTION or BLOCKED; to reply to the owner use review <pr> ask --in-reply-to <url>";
+  "answer replies to a worker QUESTION, BLOCKED, DESIGN or HANDOFF; to reply to the owner use review <pr> ask --in-reply-to <url>";
 
 /** A scripted open task PR: the request list after this thread read stays small. */
 function reviewThread() {

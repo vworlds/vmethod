@@ -196,7 +196,9 @@ mergeable.
 5. Post a numbered [REVIEW](protocol.md) with disposition and actionable points.
    Send the same worker the review link; preserve context across rounds. A DESIGN
    note deserves a decision; QUESTION or BLOCKED deserves an answer or escalation.
-   Answer BLOCKED and QUESTION only through `review <pr> answer <file>`, which
+   Answer DESIGN, QUESTION, BLOCKED and HANDOFF only through
+   `review <pr> answer <file>`, optionally with
+   `--in-reply-to <comment-url>` naming the worker's protocol comment, which
    records the answer on the PR, updates the board and wakes the worker. A model
    switch alone does not hand back the turn; never substitute `worker send`.
 6. Hand the delivery over as OWNER REVIEW with evidence and instructions; this moves
