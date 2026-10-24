@@ -64,7 +64,7 @@ test("migration 0003 dry run on v2 names Cost and the version bump without write
   const before = { readme: board.readme, fields: structuredClone(board.fields) };
   const result = await board.service(loadMigrations().slice(0, 5)).migrate({ dryRun: true });
   expect(result.message).toBe(
-    "Dry run: 2 → 5; v3: add field Cost (number); v4: remove field Cost; v4: add field Cost (text); v5: add option fable to Model"
+    'Dry run: 2 → 5; v3: add field Cost (number); v4: remove field Cost; v4: add field Cost (text); v5: add option fable to Model; v5: Model.fable metadata null → {"color":"GRAY","description":""}'
   );
   expect(result.state.version).toBe(2);
   expect(result.pending.map((migration) => migration.version)).toEqual([3, 4, 5]);
@@ -156,6 +156,9 @@ test("dry-run descriptions list every pending operation across migrations", asyn
       "v2: remove option other from Model",
       "v2: remove field Unused",
       "v3: rewrite Progress prefix old → new",
+      'v2: Model.custom metadata null → {"color":"GRAY","description":""}',
+      'v2: Model.custom metadata {"color":"GRAY","description":""} → {"color":"GREEN","description":"Selected"}',
+      'v2: Status.Inbox metadata null → {"color":"GRAY","description":""}',
     ].join("; ")
   );
   expect(board.mutations).toEqual([]);

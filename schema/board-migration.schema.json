@@ -30,6 +30,23 @@
     }
   },
   "$defs": {
+    "option": {
+      "oneOf": [
+        { "$ref": "#/$defs/name" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "color", "description"],
+          "properties": {
+            "name": { "$ref": "#/$defs/name" },
+            "color": {
+              "enum": ["GRAY", "BLUE", "GREEN", "YELLOW", "ORANGE", "RED", "PINK", "PURPLE"]
+            },
+            "description": { "type": "string" }
+          }
+        }
+      ]
+    },
     "name": { "type": "string", "minLength": 1 },
     "shape": {
       "type": "object",
@@ -40,7 +57,7 @@
         "options": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/name" }
+          "items": { "$ref": "#/$defs/option" }
         },
         "states": {
           "type": "array",
@@ -82,7 +99,7 @@
             "options": {
               "type": "array",
               "uniqueItems": true,
-              "items": { "$ref": "#/$defs/name" }
+              "items": { "$ref": "#/$defs/option" }
             }
           }
         },

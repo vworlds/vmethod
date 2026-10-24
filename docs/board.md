@@ -204,6 +204,16 @@ Migrations resume idempotently after interruption. A budget pause releases the l
 and records its position; a failed verification stops at the last verified version.
 Use explicit stale-lock recovery only after checking the holder. They never downgrade.
 
+Do not run `board migrate` on rc.6: upgrade directly to its successor rc first.
+GitHub's API clears item values when updating a single-select option list. Option
+updates now persist a name-based restore journal in the managed README before any
+destructive write, restore mapped values in batches, and verify every item (including
+unset values) before advancing. Missing options and verification mismatches fail
+visibly and retain the journal for recovery. Dry runs list each item to restore and
+each changed option's color and description. Migration 0007 applies the seven Status
+colors and descriptions through this same path. Already-lost values cannot be recovered
+without an earlier snapshot.
+
 Shared boards **expand, then contract** across releases. Contract waits until every
 repository in `board.repos`, including open tracks and packs, has adopted the
 required version. An ahead but compatible board gives a notice; an incompatible
@@ -237,6 +247,10 @@ an unmanaged board must already have the baseline fields to adopt it.
 Each file contains `version`, `up`, `expect: { fields, policy: { doneKeeps: 6 } }`
 and optionally `requires` (an exact minimum package version). Field shapes use
 `type: text|number|single_select` and ordered `options` for single selects.
+Use `{ name, color, description }` option objects for new migrations, including in
+`expect`; legacy name-only lists remain readable for append-only compatibility.
+Metadata in `expect` is verified as well as option order and names. Every option-list
+write must use the runner's journaled preservation path, including new operation types.
 Operations are objects discriminated by `op`:
 
 - `add_field { field, type, options? }`

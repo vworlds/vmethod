@@ -28,7 +28,7 @@ export class FakeBoard {
     type: shape.type,
     options: (shape.options ?? []).map((name, option) => ({
       id: `option-${index}-${option}`,
-      name,
+      name: typeof name === "string" ? name : name.name,
       color: "GRAY",
       description: "",
     })),
@@ -45,6 +45,8 @@ export class FakeBoard {
   dropCreate = false;
   raceCreate = false;
   failMove = false;
+  ignoreMoves = false;
+  dropOptions = false;
   failExpect = false;
   budgetAfterBatch = false;
   low = false;
@@ -204,14 +206,20 @@ export class FakeBoard {
           field.options = arg.singleSelectOptions.map((value) => {
             const option = object(value);
             return {
-              id:
-                field.options.find((old) => old.name === option.name)?.id ??
-                `new-option-${++this.counter}`,
+              id: `new-option-${++this.counter}`,
               name: String(option.name),
               color: String(option.color),
               description: String(option.description),
             };
           });
+          // Observed in live v5/v6: API option-list writes regenerate IDs and clear values.
+          for (const card of this.cards) {
+            card.values[field.name] = null;
+          }
+          if (this.dropOptions) {
+            this.dropOptions = false;
+            throw new Error("Lost options response");
+          }
           if (this.failExpect) {
             field.options.reverse();
           }
@@ -291,13 +299,15 @@ export class FakeBoard {
               return this.unknown(payload.query);
             }
             const value = object(input.value);
-            card.values[field.name] =
-              selection.name.value === "clearProjectV2ItemFieldValue"
-                ? null
-                : field.type === "single_select"
-                  ? (field.options.find((option) => option.id === value.singleSelectOptionId)
-                      ?.name ?? null)
-                  : ((value.text ?? value.number) as string | number);
+            if (!this.ignoreMoves) {
+              card.values[field.name] =
+                selection.name.value === "clearProjectV2ItemFieldValue"
+                  ? null
+                  : field.type === "single_select"
+                    ? (field.options.find((option) => option.id === value.singleSelectOptionId)
+                        ?.name ?? null)
+                    : ((value.text ?? value.number) as string | number);
+            }
             data[String(alias)] = { projectV2Item: { id: card.id } };
           }
           if (this.budgetAfterBatch) {

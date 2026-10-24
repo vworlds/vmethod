@@ -13,11 +13,174 @@ import { baseline, FakeBoard } from "./fake.js";
 import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
 
 let fake: FakeBoard;
-test.each(["none", "failure", "budget"])(
+test.each([5, 7])("v%s preserves every value across destructive option writes", async (version) => {
+  const board = setup();
+  const migrations = loadMigrations().slice(0, version);
+  const previous = migrations[version - 2];
+  board.stamp(version - 1, 4);
+  board.fields = Object.entries(previous.expect.fields).map(([name, shape], index) => ({
+    id: `field-${index}`,
+    name,
+    type: shape.type,
+    createdAt: board.clock,
+    options: (shape.options ?? []).map((option, i) => ({
+      id: `old-${index}-${i}`,
+      ...(typeof option === "string" ? { name: option, color: "GRAY", description: "" } : option),
+    })),
+  }));
+  const fieldName = version === 5 ? "Model" : "Status";
+  const names = board.fields
+    .find(({ name }) => name === fieldName)!
+    .options.map(({ name }) => name);
+  names.forEach((name, index) => {
+    const card = board.card(`value-${index}`, index % 2 ? "example/foreign" : "example/project");
+    card.kind = index % 2 ? "DraftIssue" : "Issue";
+    card.values[fieldName] = name;
+  });
+  board.card("unset").values[fieldName] = null;
+  const before = structuredClone(board.cards.map(({ id, values }) => ({ id, values })));
+  const dry = await board.service(migrations).migrate({ dryRun: true });
+  for (const card of before) {
+    expect(dry.message).toContain(`restore ${fieldName} on ${card.id}`);
+  }
+  if (version === 7) {
+    for (const option of migrations[6].expect.fields.Status.options!) {
+      expect(dry.message).toContain(
+        JSON.stringify(typeof option === "string" ? option : option.description)
+      );
+    }
+  }
+  expect(board.mutations).toEqual([]);
+  await board.service(migrations).migrate({});
+  expect(board.cards.map(({ id, values }) => ({ id, values }))).toEqual(before);
+  expect(readState(board.readme).version).toBe(version);
+  expect(readState(board.readme).optionUpdate).toBeUndefined();
+  expect(board.mutations).toContain("BoardOptions");
+  if (version === 7) {
+    expect(
+      board.fields
+        .find(({ name }) => name === "Status")!
+        .options.map(({ name, color, description }) => ({ name, color, description }))
+    ).toEqual(migrations[6].expect.fields.Status.options);
+  }
+});
+
+test("option restore verification fails loudly and resumes from the original names", async () => {
+  const board = setup();
+  board.stamp(1);
+  const card = board.card();
+  board.ignoreMoves = true;
+  await expect(board.service([baseline, expand]).migrate({})).rejects.toThrow(
+    "Option restore verification failed"
+  );
+  expect(card.values.Status).toBeNull();
+  expect(readState(board.readme)).toMatchObject({
+    version: 1,
+    optionUpdate: { values: [{ id: card.id, value: "Inbox" }] },
+  });
+  board.ignoreMoves = false;
+  board.clock += 61 * 60_000;
+  await board.service([baseline, expand]).migrate({ steal: true });
+  expect(card.values.Status).toBe("Inbox");
+  expect(readState(board.readme).version).toBe(2);
+});
+
+test.each(["lost-response", "partial-batch"])(
+  "option update resumes after %s without replacing its snapshot",
+  async (failure) => {
+    const board = setup();
+    board.stamp(1);
+    for (let index = 0; index < 30; index++) {
+      board.card(String(index));
+    }
+    board.dropOptions = failure === "lost-response";
+    board.failBatch = failure === "partial-batch" ? 2 : 0;
+    await expect(board.service([baseline, expand]).migrate({})).rejects.toThrow();
+    expect(readState(board.readme).version).toBe(1);
+    expect(readState(board.readme).optionUpdate!.values).toHaveLength(30);
+    const writes = board.mutations.filter((name) => name === "BoardOptions").length;
+    const dry = await board.service([baseline, expand]).migrate({ dryRun: true });
+    expect(dry.message).toContain("resume restore Status on 29: Inbox");
+    board.clock += 61 * 60_000;
+    await board.service([baseline, expand]).migrate({ steal: true });
+    expect(board.cards.every((card) => card.values.Status === "Inbox")).toBe(true);
+    expect(board.mutations.filter((name) => name === "BoardOptions")).toHaveLength(writes);
+  }
+);
+
+test("a disappearing value is reported before destructive writes, including dry-run", async () => {
+  const board = setup();
+  board.stamp(1);
+  board.card().values.Status = "unknown-option";
+  const add: Migration = {
+    ...expand,
+    up: [{ op: "add_option", field: "Status", option: "Inbox" }],
+  };
+  await expect(board.service([baseline, add]).migrate({ dryRun: true })).rejects.toThrow(
+    "option unknown-option disappears"
+  );
+  expect(board.mutations).toEqual([]);
+  await expect(board.service([baseline, add]).migrate({})).rejects.toThrow(
+    "option unknown-option disappears"
+  );
+  expect(board.mutations).not.toContain("BoardOptions");
+  expect(board.cards[0].values.Status).toBe("unknown-option");
+});
+
+test("option objects carry metadata into new fields and expect checks metadata", async () => {
+  const board = setup();
+  board.stamp(1);
+  const options = [{ name: "yes", color: "GREEN", description: "Ready for delivery" }];
+  const migration: Migration = {
+    version: 2,
+    up: [{ op: "add_field", field: "Decision", type: "single_select", options }],
+    expect: {
+      ...baseline.expect,
+      fields: { ...baseline.expect.fields, Decision: { type: "single_select", options } },
+    },
+  };
+  await board.service([baseline, migration]).migrate({});
+  expect(
+    board.fields
+      .find(({ name }) => name === "Decision")!
+      .options.map(({ name, color, description }) => ({ name, color, description }))
+  ).toEqual(options);
+  board.fields.find(({ name }) => name === "Decision")!.options[0].description = "Wrong";
+  expect((await board.service([baseline, migration]).status()).drift).toHaveLength(1);
+  board.stamp(1);
+  await expect(board.service([baseline, migration]).migrate({})).rejects.toThrow("expect failed");
+  expect(readState(board.readme).version).toBe(1);
+});
+
+test("restore journal round-trips option text without interpreting README markers", () => {
+  const state = {
+    version: 1,
+    minCompatible: 0,
+    aliases: {},
+    completed: ["2/1"],
+    optionUpdate: {
+      position: "2/2",
+      field: "Model",
+      options: [
+        {
+          name: "special",
+          color: "GREEN",
+          description: "<!-- vmethod-board -->\n<!-- /vmethod-board -->",
+        },
+      ],
+      values: [{ id: "card", value: "special" }],
+    },
+  };
+  expect(readState(writeState("Human notes\n", state, true))).toMatchObject(state);
+  const malformed = writeState("", state, true).replace('"value":"special"', '"value":42');
+  expect(() => readState(malformed)).toThrow("Invalid option restore journal");
+});
+
+test.each(["none", "failure", "contract", "budget"])(
   "v6 remaps every legacy state with evidence and is resumable and idempotent (interrupt=%s)",
   async (interrupt) => {
     const board = setup();
-    const migrations = loadMigrations();
+    const migrations = loadMigrations().slice(0, 6);
     board.stamp(5, 4);
     board.pinSelf("example/project", "dev");
     board.fields = Object.entries(migrations[4].expect.fields).map(([name, shape], index) => ({
@@ -27,7 +190,7 @@ test.each(["none", "failure", "budget"])(
       createdAt: board.clock,
       options: (shape.options ?? []).map((name, option) => ({
         id: `option-${index}-${option}`,
-        name,
+        name: typeof name === "string" ? name : name.name,
         color: "GRAY",
         description: "",
       })),
@@ -81,19 +244,28 @@ test.each(["none", "failure", "budget"])(
       board.failMove = false;
       board.clock += 61 * 60_000;
     }
+    if (interrupt === "contract") {
+      board.failBatch = 2;
+      await expect(service.migrate({})).rejects.toThrow();
+      expect(readState(board.readme).version).toBe(5);
+      expect(readState(board.readme).optionUpdate!.values).toEqual(
+        cases.map((entry, index) => ({ id: `card-${index}`, value: entry[2] }))
+      );
+      board.clock += 61 * 60_000;
+    }
     if (interrupt === "budget") {
       board.budgetAfterBatch = true;
       const paused = await service.migrate({});
-      expect(paused.message).toContain("workflow cards left");
+      expect(paused.message).toContain("cards left");
       expect(paused.state).toMatchObject({ version: 5, paused: "6/1" });
       expect(paused.state.lock).toBeUndefined();
       expect(board.cards.some((card) => card.values.Status === "Scoping")).toBe(true);
-      expect(board.cards.some((card) => card.values.Status === "Ready")).toBe(true);
+      expect(board.cards.some((card) => card.values.Status === null)).toBe(true);
       board.low = false;
       service = board.service(migrations);
       service.workflowEvidence = async () => evidence;
     }
-    await service.migrate({ steal: interrupt === "failure" });
+    await service.migrate({ steal: interrupt === "failure" || interrupt === "contract" });
     expect(board.cards.map((card) => card.values.Status)).toEqual([
       ...cases.map((entry) => entry[2]),
       ...Array(extra).fill("Scoping"),
@@ -487,6 +659,11 @@ test("failed expect and lost lock never advance version", async () => {
   expect(readState(board.readme).version).toBe(1);
   board.failExpect = false;
   board.fields.find((field) => field.name === "Status")!.options.reverse();
+  // Start a separate operation to exercise lock loss, not a completed journal entry.
+  board.stamp(1);
+  board.fields.find((field) => field.name === "Status")!.options = board.fields
+    .find((field) => field.name === "Status")!
+    .options.filter((option) => option.name !== "Inbox");
   board.cards[0].values.Status = "Backlog";
   board.clock += 3600001;
   board.stealBeforeBump = true;

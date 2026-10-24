@@ -1,0 +1,109 @@
+{
+  "version": 7,
+  "up": [
+    {
+      "op": "set_option_meta",
+      "field": "Status",
+      "option": "Backlog",
+      "color": "GREEN",
+      "description": "Idea, estimated; not started"
+    },
+    {
+      "op": "set_option_meta",
+      "field": "Status",
+      "option": "Scoping",
+      "color": "BLUE",
+      "description": "Discussion in comments; turn shown by assignee"
+    },
+    {
+      "op": "set_option_meta",
+      "field": "Status",
+      "option": "Spec review",
+      "color": "PURPLE",
+      "description": "Final body and estimate awaiting the owner's go"
+    },
+    {
+      "op": "set_option_meta",
+      "field": "Status",
+      "option": "Executing",
+      "color": "YELLOW",
+      "description": "Delivery in progress; turn shown by assignee and Progress"
+    },
+    {
+      "op": "set_option_meta",
+      "field": "Status",
+      "option": "Owner review",
+      "color": "RED",
+      "description": "Delivery awaiting the owner's approval"
+    },
+    {
+      "op": "set_option_meta",
+      "field": "Status",
+      "option": "Approved",
+      "color": "GREEN",
+      "description": "Approved by the owner; must be merged"
+    },
+    {
+      "op": "set_option_meta",
+      "field": "Status",
+      "option": "Done",
+      "color": "ORANGE",
+      "description": "Merged, delivered or closed"
+    }
+  ],
+  "expect": {
+    "fields": {
+      "Status": {
+        "type": "single_select",
+        "options": [
+          { "name": "Backlog", "color": "GREEN", "description": "Idea, estimated; not started" },
+          {
+            "name": "Scoping",
+            "color": "BLUE",
+            "description": "Discussion in comments; turn shown by assignee"
+          },
+          {
+            "name": "Spec review",
+            "color": "PURPLE",
+            "description": "Final body and estimate awaiting the owner's go"
+          },
+          {
+            "name": "Executing",
+            "color": "YELLOW",
+            "description": "Delivery in progress; turn shown by assignee and Progress"
+          },
+          {
+            "name": "Owner review",
+            "color": "RED",
+            "description": "Delivery awaiting the owner's approval"
+          },
+          {
+            "name": "Approved",
+            "color": "GREEN",
+            "description": "Approved by the owner; must be merged"
+          },
+          { "name": "Done", "color": "ORANGE", "description": "Merged, delivered or closed" }
+        ]
+      },
+      "Model": {
+        "type": "single_select",
+        "options": [
+          "sol",
+          "luna",
+          "astra",
+          "sonnet",
+          "opus",
+          "glm",
+          "big-pickle",
+          "glm-flash",
+          "other",
+          "fable"
+        ]
+      },
+      "Estimate": { "type": "number" },
+      "Cost": { "type": "text" },
+      "Progress": { "type": "text" }
+    },
+    "policy": { "doneKeeps": 6 }
+  }
+}

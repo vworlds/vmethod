@@ -204,11 +204,15 @@ export class BoardService implements BoardIO {
             dataType: shape.type.toUpperCase(),
             ...(shape.options
               ? {
-                  singleSelectOptions: shape.options.map((name) => ({
-                    name,
-                    color: "GRAY",
-                    description: "",
-                  })),
+                  singleSelectOptions: shape.options.map((option) =>
+                    typeof option === "string"
+                      ? {
+                          name: option,
+                          color: "GRAY",
+                          description: "",
+                        }
+                      : option
+                  ),
                 }
               : {}),
           },

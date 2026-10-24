@@ -25,7 +25,8 @@ export interface Card {
 }
 export interface FieldShape {
   type: FieldType;
-  options?: string[];
+  /** Ordered options; new migrations use metadata objects, legacy name lists remain valid. */
+  options?: (string | Omit<Option, "id">)[];
   states?: { name: string; emoji: string }[];
 }
 export type Operation =
@@ -57,6 +58,15 @@ export interface BoardState {
   paused?: string;
   migrating?: string;
   aliases: Record<string, string>;
+  completed?: string[];
+  /** Durable pre-write snapshot retained until every restored value has been verified. */
+  optionUpdate?: {
+    position: string;
+    field: string;
+    options: Omit<Option, "id">[];
+    finalOptions?: Omit<Option, "id">[];
+    values: { id: string; value: string | null }[];
+  };
 }
 export interface Snapshot {
   id: string;
@@ -92,6 +102,7 @@ export interface BoardIO {
   readme(projectId: string, readme: string): Promise<void>;
   createField(projectId: string, name: string, shape: FieldShape): Promise<string>;
   deleteField(id: string): Promise<void>;
+  /** Destructive API write: migration callers must journal/restore/verify all item values. */
   options(field: Field, options: Omit<Option, "id">[]): Promise<void>;
   cards(projectId: string): Promise<Card[]>;
   setCards(

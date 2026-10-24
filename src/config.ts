@@ -20,7 +20,9 @@ const ajv = new Ajv({ allErrors: true, strict: true, useDefaults: true });
 function modelFamilyOptions(): string[] {
   try {
     const last = loadMigrations().at(-1);
-    return last?.expect.fields.Model.options ?? baselineModels.expect.fields.Model.options;
+    return (last?.expect.fields.Model.options ?? baselineModels.expect.fields.Model.options).map(
+      (option) => (typeof option === "string" ? option : option.name)
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return baselineModels.expect.fields.Model.options;
