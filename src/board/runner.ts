@@ -16,7 +16,8 @@ import type {
 const lockName = "vmethod-migration-lock";
 const minute = 60000;
 const batchSize = 25;
-const workflowColumns = [
+/** The ordered Status column lifecycle every vmethod board keeps, Backlog first. */
+export const workflowColumns = [
   "Backlog",
   "Scoping",
   "Spec review",
@@ -78,7 +79,7 @@ export class MigrationRunner {
       }
       const closed = Boolean(card.closedAt);
       const status = typeof card.values.Status === "string" ? card.values.Status : null;
-      return closed !== (status === "Done")
+      return closed !== (status === "Done") || !status
         ? [
             {
               itemId: card.id,

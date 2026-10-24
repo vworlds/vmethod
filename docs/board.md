@@ -43,9 +43,10 @@ without changing columns. The worker stays paused until an explicitly attested o
 agreement is quoted in the hand-back, or the owner unassigns themself. A plain owner
 comment does not release the pause. See [the summons procedure](orchestrator-guide.md#owner-summons-inside-executing).
 
-`board status` lists cards whose open/closed state disagrees with Status. Use
-`board status --fix` to move closed cards to Done and open cards out of Done to
-Backlog, clearing stale Progress as it reconciles each card. Closing an issue also
+`board status` lists cards whose open/closed state disagrees with Status, and cards
+with an empty Status, which otherwise appear in no column. Use `board status --fix`
+to move closed cards to Done and open cards to Backlog, clearing stale Progress as it
+reconciles each card. Closing an issue also
 moves its card to Done and clears its assignee.
 
 The watcher also reconciles closures made in GitHub's UI: closed issues and closed

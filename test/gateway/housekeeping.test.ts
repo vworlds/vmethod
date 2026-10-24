@@ -313,6 +313,11 @@ test.each(["1.5", "4", "1000000"])(
 
 test("issue create sends validated file content and repeated labels to the configured repository", async () => {
   const recording = createdCard();
+  const card = recording.items.nodes[0];
+  const progressField = recording.fields.nodes.find((field) => field.name === "Progress")!;
+  const statusField = recording.fields.nodes.find((field) => field.name === "Status")!;
+  const backlog = { id: "6f1a2b3c", name: "Backlog", color: "GRAY", description: "" };
+  statusField.options!.push(backlog);
   const f = fixtureServer([
     {
       path: "/repos/example/project/issues",
@@ -320,6 +325,25 @@ test("issue create sends validated file content and repeated labels to the confi
       json: { number: issueResponse.number, node_id: issueResponse.node_id },
     },
     ...createBoardReads(recording),
+    ...boardReads(recording),
+    {
+      ...boardGraph({
+        m0: { projectV2Item: { id: card.id } },
+        m1: { projectV2Item: { id: card.id } },
+      }),
+      checkQuery(query, variables) {
+        expect(query).toContain("mutation BoardSetCards");
+        expect(variables).toEqual({
+          m0: { projectId: recording.id, itemId: card.id, fieldId: progressField.id },
+          m1: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: statusField.id,
+            value: { singleSelectOptionId: backlog.id },
+          },
+        });
+      },
+    },
     graph({ repository: { issue: item({ id: issueResponse.node_id }) } }),
     graph({ node: { ...acceptedIssue(), id: issueResponse.node_id } }),
     ...boardReads(recording),
@@ -338,6 +362,53 @@ test("issue create sends validated file content and repeated labels to the confi
   expect(
     await f.transport.call("boardSetIssue", { ref: "37", field: "Estimate", value: "5" })
   ).toBe("Board field updated");
+  f.done();
+}, 15000);
+
+test("issue create without --status sets the first column (Backlog) on the new card", async () => {
+  const recording = createdCard();
+  const card = recording.items.nodes[0];
+  const statusField = recording.fields.nodes.find((field) => field.name === "Status")!;
+  const backlog = { id: "6f1a2b3c", name: "Backlog", color: "GRAY", description: "" };
+  statusField.options!.push(backlog);
+  const f = fixtureServer([
+    {
+      path: "/repos/example/project/issues",
+      json: { number: issueResponse.number, node_id: issueResponse.node_id },
+    },
+    ...createBoardReads(recording),
+    ...boardReads(recording),
+    {
+      ...boardGraph({
+        m0: { projectV2Item: { id: card.id } },
+        m1: { projectV2Item: { id: card.id } },
+      }),
+      checkQuery(query, variables) {
+        expect(query).toContain("clearProjectV2ItemFieldValue");
+        expect(query).toContain("updateProjectV2ItemFieldValue");
+        expect(variables).toEqual({
+          m0: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((field) => field.name === "Progress")!.id,
+          },
+          m1: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: statusField.id,
+            value: { singleSelectOptionId: backlog.id },
+          },
+        });
+      },
+    },
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "Body");
+  expect(
+    await gatewayVerb(f.transport, "issue", ["create", "Title", file], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).toBe("Created issue #37");
   f.done();
 }, 15000);
 

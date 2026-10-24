@@ -191,6 +191,41 @@ test("board status reports closed/open column mismatches and --fix reconciles th
   expect(closed.values.Progress).toBeNull();
   expect(draft.values.Status).toBe("Done");
 });
+
+test("board status reports empty Status cards and --fix reconciles them like the invariant", async () => {
+  const board = setup();
+  board.stamp(1);
+  const open = board.card("open");
+  open.number = 44;
+  delete open.values.Status;
+  const closed = board.card("closed");
+  closed.number = 45;
+  closed.closedAt = "2026-10-18T12:07:00Z";
+  delete closed.values.Status;
+  const status = await board.service().status();
+  expect(status.mismatches).toEqual([
+    {
+      itemId: "open",
+      number: 44,
+      closed: false,
+      status: null,
+      summary: "#44: open, Status (unset)",
+    },
+    {
+      itemId: "closed",
+      number: 45,
+      closed: true,
+      status: null,
+      summary: "#45: closed, Status (unset)",
+    },
+  ]);
+  const fixed = await board.service().fixStatus();
+  expect(fixed.mismatches).toEqual([]);
+  expect(open.values.Status).toBe("Backlog");
+  expect(closed.values.Status).toBe("Done");
+  expect(open.values.Progress).toBeNull();
+  expect(closed.values.Progress).toBeNull();
+});
 afterEach(() => fake?.done());
 function setup() {
   fake = new FakeBoard();
