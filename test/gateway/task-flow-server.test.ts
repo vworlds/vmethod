@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "graphql";
 import { actor, fixtureServer, graph, item, people, sha } from "./helpers.js";
+import type { Request } from "./helpers.js";
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
 import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import {
@@ -268,9 +269,39 @@ const approvedSpecScope = () => [
 
 const imposter = { login: "imposter", databaseId: 4242, __typename: "User" };
 
-/** The gate refuses foreign lines unread; the owner's line authorizes the open flow,
- * which then stops at the fixture's first git call before any GitHub mutation. */
-test.each([
+/** A task card on the configured board with one optional field value. */
+const cardRead = (value?: ObjectData) =>
+  graph({
+    node: item({
+      projectItems: {
+        nodes: [
+          {
+            id: "card-1",
+            project: { number: 1, owner: { login: "example" } },
+            fieldValues: {
+              nodes: value ? [value] : [],
+              pageInfo: { hasNextPage: false },
+            },
+          },
+        ],
+        pageInfo: { hasNextPage: false },
+      },
+    }),
+  });
+
+interface GateScenario {
+  case: string;
+  edited: string | null;
+  metas: ObjectData[];
+  bodies: Request[];
+  authorized: boolean;
+  /** The issue card's Model value the gate reads (#242) after the comment path fails. */
+  card?: ObjectData;
+  /** The comment path approves; no card read happens, so no card response is scripted. */
+  commentsFirst?: boolean;
+}
+
+const gateScenarios: GateScenario[] = [
   {
     case: "refuses a line predating the issue body's last edit",
     edited: "2026-01-06T00:00:00Z",
@@ -320,35 +351,92 @@ test.each([
     bodies: [lineBody("2026-01-07T00:00:00Z", actor(0))],
     authorized: true,
   },
-])("open-task model gate verifies the owner line at the server: $case", async (scenario) => {
-  // The board is off so the flow reaches the model gate with scope metadata reads only.
-  const f = fixtureServer(
-    [
-      ...approvedSpecScope(),
-      graph({ repository: { issue: item() } }),
-      editedIssue(scenario.edited),
-      graph({ node: item({ comments: scopeConnection(scenario.metas) }) }),
-      ...scenario.bodies,
-    ],
-    actor(2),
-    people,
-    (root) => {
-      const file = join(root, "vmethod.yaml");
-      writeFileSync(file, readFileSync(file, "utf8").replace("enabled: true", "enabled: false"));
-    }
-  );
-  await expect(
-    f.transport.call("openTask", { issue: "8", model: "astra", ownerApproved: true })
-  ).rejects.toThrow(
-    scenario.authorized
-      ? // Authorized: the flow continues past the gate; the scripted harness stops it
-        // at the base fetch (the first git call), so "Fetch failed" marks a pass.
-        "Fetch failed"
-      : // Unauthorized: the gate refusal names the owner line.
-        "APPROVE MODEL astra"
-  );
-  f.done();
-});
+  {
+    case: "accepts an owner line before any card read (#242)",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [lineMeta(actor(0))],
+    bodies: [lineBody("2026-01-07T00:00:00Z", actor(0))],
+    authorized: true,
+    commentsFirst: true,
+  },
+  {
+    case: "accepts the Model value the owner set on the issue card (#242)",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [],
+    bodies: [],
+    authorized: true,
+    card: { field: { name: "Model" }, name: "astra", creator: actor(0) },
+  },
+  {
+    case: "accepts the Model value the owner set as card text (#242)",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [],
+    bodies: [],
+    authorized: true,
+    card: { field: { name: "Model" }, text: "astra", creator: actor(0) },
+  },
+  {
+    case: "refuses the Model value the orchestrator set on the issue card (#242)",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [],
+    bodies: [],
+    authorized: false,
+    card: { field: { name: "Model" }, name: "astra", creator: actor(2) },
+  },
+  {
+    case: "refuses the Model value of an unpinned card author (#242)",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [],
+    bodies: [],
+    authorized: false,
+    card: { field: { name: "Model" }, name: "astra", creator: imposter },
+  },
+  {
+    case: "refuses an owner card value set for another family (#242)",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [],
+    bodies: [],
+    authorized: false,
+    card: { field: { name: "Model" }, name: "sonnet", creator: actor(0) },
+  },
+];
+
+/** The gate refuses foreign lines unread; the owner's line authorizes the open flow,
+ * which then stops at the fixture's first git call before any GitHub mutation. */
+test.each(gateScenarios)(
+  "open-task model gate verifies the owner line at the server: $case",
+  async (scenario) => {
+    // The board is off so the flow reaches the model gate with scope metadata reads only.
+    const readsCard = !(scenario.authorized && scenario.bodies.length) && !scenario.commentsFirst;
+    const f = fixtureServer(
+      [
+        ...approvedSpecScope(),
+        graph({ repository: { issue: item() } }),
+        editedIssue(scenario.edited),
+        graph({ node: item({ comments: scopeConnection(scenario.metas) }) }),
+        ...scenario.bodies,
+        ...(readsCard ? [cardRead(scenario.card)] : []),
+      ],
+      actor(2),
+      people,
+      (root) => {
+        const file = join(root, "vmethod.yaml");
+        writeFileSync(file, readFileSync(file, "utf8").replace("enabled: true", "enabled: false"));
+      }
+    );
+    await expect(
+      f.transport.call("openTask", { issue: "8", model: "astra", ownerApproved: true })
+    ).rejects.toThrow(
+      scenario.authorized
+        ? // Authorized: the flow continues past the gate; the scripted harness stops it
+          // at the base fetch (the first git call), so "Fetch failed" marks a pass.
+          "Fetch failed"
+        : // Unauthorized: the gate refusal names the owner line.
+          "APPROVE MODEL astra"
+    );
+    f.done();
+  }
+);
 
 test("worker status goes through accepted metadata and defaults to unknown, never stopped", async () => {
   const f = fixtureServer([

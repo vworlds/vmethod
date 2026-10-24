@@ -395,10 +395,14 @@ to family names and configured raw ids; unconfigured provider/id selections need
 an explicit `other` family policy. Owner-gated families verify the owner's
 authorization (#218): `--owner-approved` is honored only when the task issue or
 task PR carries the owner's comment whose first line is exactly
-`APPROVE MODEL <family>`, posted after the issue body's last edit; until then the
-gateway refuses and names that line, and a line from any other identity (worker,
-peer orchestrator, unpinned author) is void. A direct task without an issue has
-no body-edit bound: the task PR hosts the line. `models` lists configured
+`APPROVE MODEL <family>`, posted after the issue body's last edit, or — #242 —
+when the task issue's or task PR's card **Model** is set to the family by the
+owner themselves: GitHub records who set each project field value, and a Model
+value written by anyone else, including `open-task`, never counts. Until then
+the gateway refuses and names both ways, and an approval line or card value from
+any other identity (worker, peer orchestrator, unpinned author) is void. A
+direct task without an issue has no body-edit bound: the task PR hosts the
+line. `models` lists configured
 gates/fallbacks and
 the models offered by opencode. Suggestions use Estimate and task labels and
 print a local family learning when available; advice cannot override an owner gate.
@@ -755,9 +759,13 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   the issue when the completing PR merges into the repository's default branch.
   No closing-keyword or association-reference text is added to the PR description.
   Gates and expensive-only Handoff breakpoints are enforced server-side; an
-  owner-gated `--model` (or its issue-card Model hint) additionally requires the
-  owner's verified `APPROVE MODEL <family>` line on the issue, or the open refuses
-  with that line (see [worker management](#worker-management-orchestrator-only)).
+  owner-gated `--model` (or its issue-card Model hint) additionally requires
+  `--owner-approved` and the owner's verified approval on the issue — the
+  `APPROVE MODEL <family>` comment line (#218), or the owner's own Model value
+  on the issue's or task PR's card (#242): GitHub records who set each project
+  field value, so `open-task` writing the PR card's Model never counts. The open
+  refuses and names both ways
+  (see [worker management](#worker-management-orchestrator-only)).
   Existing conforming title prefixes are preserved. An issue-only `bug:` alias
   becomes `fix:`; prose/nonconforming titles receive `feat:` without broadening
   the accepted delivery-title types. `--part` requires an issue and records

@@ -100,9 +100,13 @@ test("unparseable times never qualify and a direct task without an issue is unbo
   expect(isModelApproved([comment("APPROVE MODEL fable")], "fable", undefined)).toBe(true);
 });
 
-test("the refusal names the exact line to ask the owner for", () => {
+test("the refusal names both ways the owner can approve (#242)", () => {
+  const message = modelGateError("fable").message;
+  // The owner's two approval ways: the card's Model value, or the verifiable line.
+  expect(message).toContain("card's Model to fable");
+  expect(message).toContain("`APPROVE MODEL fable`");
+  expect(message).toContain("issue or task PR");
   expect(() => {
     throw modelGateError("fable");
   }).toThrow(/APPROVE MODEL fable/);
-  expect(modelGateError("fable").message).toContain("issue or task PR");
 });

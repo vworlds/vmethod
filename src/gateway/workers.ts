@@ -1849,6 +1849,6 @@ export class WorkerService {
           .split("\n")
           .find((line) => line.trim() && !line.startsWith("#"))
       : "Shared model learnings not available locally yet";
-    return `${model.family}: Estimate ${meta.estimate ?? "unset"}, kind ${meta.kind}; gate ${model.gate}${model.gate === "owner" ? ' (requires --owner-approved and the owner\'s "APPROVE MODEL <family>" line, see gateway.md)' : ""}\n${untrusted(lesson ?? "No matching learning")}`;
+    return `${model.family}: Estimate ${meta.estimate ?? "unset"}, kind ${meta.kind}; gate ${model.gate}${model.gate === "owner" ? ' (requires --owner-approved and the owner\'s "APPROVE MODEL <family>" line or the owner-set card Model, see gateway.md)' : ""}\n${untrusted(lesson ?? "No matching learning")}`;
   }
 }
