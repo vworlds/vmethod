@@ -739,10 +739,10 @@ export class TaskFlow {
           !target ||
           target.issue !== this.number(input.ref) ||
           target.author.role !== "worker" ||
-          !/^\[worker\] (QUESTION|BLOCKED)\b/.test(target.firstLine)
+          !/^\[worker\] (QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(target.firstLine)
         ) {
           throw new Error(
-            "answer replies to a worker QUESTION or BLOCKED; to reply to the owner use review <pr> ask --in-reply-to <url>"
+            "answer replies to a worker QUESTION, BLOCKED, DESIGN or HANDOFF; to reply to the owner use review <pr> ask --in-reply-to <url>"
           );
         }
       }

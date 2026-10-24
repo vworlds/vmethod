@@ -176,7 +176,8 @@ repository. Issue creation reads checked Markdown from a file; repeat `--label` 
 multiple labels. With the board enabled, creation ensures membership on the
 configured board through the issue-side relation, then applies optional points-scale
 `--estimate` and exact-name
-`--status` values through the shared field writer; Status clears Progress. You can
+`--status` values through the shared field writer; Status clears Progress, and
+without `--status` it defaults to the first workflow column (Backlog). You can
 immediately use `board set` after successful creation. If board follow-up fails,
 the error identifies the created issue: inspect it and retry board operations,
 never repeat creation. A disabled board skips membership; estimate/status flags
@@ -596,6 +597,9 @@ of the field's `updatedAt`: `creator` is the first writer, not the latest actor.
 An unmatched board move is reported without attributing an actor. Changed board
 values are re-read before reporting; a stale listing is discarded on stderr only,
 without advancing its previous-column baseline or producing NEXT/LAUNCH from it.
+An empty Status read on a card whose baseline holds a column is transient
+(GitHub mid-update) and reports nothing for that poll: the baseline is kept, so
+the later real move reports once instead of as a new card.
 A card baseline is pruned only after its item has been absent from every
 successful board poll for 24 hours and from at least 3 of them, tracked in a
 per-item absence marker; a failed or partial poll never counts, and a card one

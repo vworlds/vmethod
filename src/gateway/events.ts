@@ -2924,6 +2924,12 @@ export class EventLoop {
     if (old === card.column) {
       return true;
     }
+    // An empty Status read on a card whose baseline holds a column is a
+    // transient read (GitHub mid-update), not a move: emit nothing, keep the
+    // baseline and treat this poll's read as unknown (#216).
+    if (!card.column && old) {
+      return false;
+    }
     const remember = () => atomicWrite(path, `${card.column}\n`);
     const progress = () => {
       if (card.column === "Approved") {

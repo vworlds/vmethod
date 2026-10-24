@@ -37,6 +37,7 @@ import { isOwnerApproved } from "./approval.js";
 import { bodyHash, ScopeReader, legacyScopeCutoff } from "./scope.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { renderProgress } from "../board/progress.js";
+import { workflowColumns } from "../board/runner.js";
 import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
 import { isTaskPrompt } from "./task-flow-types.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
@@ -854,7 +855,8 @@ class GatewayServer {
 
   /** Create an own-repository issue from checked content and ensure readable configured-board
    * membership. Optional estimate/status use the shared board field writer; estimates must
-   * use the shared points scale and labels may repeat.
+   * use the shared points scale and labels may repeat. Status defaults to the first workflow
+   * column (Backlog), so a card filed without --status is never in no column.
    * Board follow-up failures identify the created issue so callers do not create a duplicate.
    */
   issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [], estimate, status }) => {
@@ -902,9 +904,7 @@ class GatewayServer {
         if (estimate !== undefined) {
           await board.setIssueField(created.node_id, "Estimate", String(estimate));
         }
-        if (status !== undefined) {
-          await board.setIssueField(created.node_id, "Status", status);
-        }
+        await board.setIssueField(created.node_id, "Status", status ?? workflowColumns[0]);
       } catch (error) {
         throw new Error(
           `Created issue #${String(created.number)}; board follow-up failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry board operations only.`,
