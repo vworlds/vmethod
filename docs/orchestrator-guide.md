@@ -2,6 +2,49 @@
 
 Develop decisions with the owner, brief a worker and verify the result independently.
 
+## Autopilot
+
+An owner-applied `autopilot` label delegates the task's ordinary owner decisions to
+you until Done. Never add it yourself: only the pinned owner's label event grants
+authority. The watcher removes and reports unauthorized additions at the next scoped
+poll. `open-task` may copy a live issue grant to its task PR; the gateway records
+the exact inherited label event, so a later manual non-owner addition cannot reuse it.
+
+On an `AUTOPILOT #n` wake-up, continue the current step without waiting for an owner
+move. You still make and document the engineering decisions:
+
+1. In Scoping, settle your proposal, rewrite the final issue body and revise Estimate.
+   Run `scope-review <issue> <summary-file>`. With current delegation it comments on
+   Scoping → Spec review and, on your hash-bound scope review, comments on and moves
+   Spec review → Executing. It rechecks delegation before the second move.
+2. Run `open-task` and launch the worker normally. Inheritance is automatic; the
+   expensive-model owner gate applies unchanged, with no autopilot exception.
+3. Review the delivery and its evidence yourself. Run `review <pr> owner <file>`;
+   under current delegation this records the Owner review handover, then an
+   `AUTOPILOT APPROVED` comment naming the current head and moves to Approved.
+   Existing held tasks, explicit owner summons and worker-stop rules still apply.
+4. Run `merge-task` normally. It requires your exact-head autopilot review, current
+   delegation and all ordinary CI/base/worker checks. It rechecks delegation after
+   verification and comments that the merge is under autopilot. Finish the ordinary
+   merge follow-up to Done.
+
+If the label is added while already in Spec review or Owner review, perform your
+corresponding review through the same wrapper; label presence alone is never a
+scope or delivery approval. Adding/removing on either related card takes effect
+at the next poll. On removal, stop making delegated decisions at the current step
+and return to ordinary owner review; do not revert completed steps. Removing and
+then adding again requires a new owner grant. Manual additions by you are not
+an alternative to inheritance.
+
+To stop delegation yourself, use `autopilot stop <issue|pr> <n>` on a card carrying
+the label. This removal-only gateway command comments on the thread; it never
+grants authority or reverts a completed step.
+
+Releases, permissions, identity pins (`people.yaml`) and every other owner-reserved
+decision remain with the owner. The merge path refuses delegated merges to the
+release branch and changes to identity/permission configuration. Ask the owner for
+any other reserved action rather than treating autopilot as blanket permission.
+
 ## Develop issues and collaborate with the owner
 
 File each issue estimated in Backlog, keeping open questions on the issue. The owner

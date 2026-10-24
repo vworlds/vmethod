@@ -32,6 +32,7 @@ import { runVerifyHook } from "./verify-hook.js";
 import { assertLockfileInSync, npmCiEnvironment } from "./lockfile.js";
 import packageInfo from "../../package.json" with { type: "json" };
 import { WorktreeService } from "./worktrees.js";
+import type { AutopilotState } from "./autopilot.js";
 
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;
@@ -57,6 +58,11 @@ interface Host {
   ): Promise<boolean>;
   /** #218: did the pinned owner verify this gated family on the task issue? */
   modelApproval(issue: number, family: string): Promise<boolean>;
+  /** Fresh owner-delegation evidence; never used by the expensive-model gate. */
+  autopilot?(ref: string, kind: "pr" | "issue"): Promise<AutopilotState>;
+  copyAutopilot?(issue: ObjectData, pr: ObjectData): Promise<void>;
+  /** Current delegation plus an authenticated review of the exact head. */
+  autopilotApproved?(ref: string, head: string): Promise<boolean>;
   github: GitHubClient;
   board: () => Pick<BoardService, "ensure" | "item" | "set" | "capDone" | "snapshot" | "cards">;
   people: Person[];
@@ -491,6 +497,7 @@ export class TaskFlow {
     if (issue) {
       await this.card(issue, "Executing", null);
       await this.turn(input.issue!, null);
+      await this.host.copyAutopilot?.(issue, { id: created.node_id, number: created.number, body });
     }
     return `Opened draft PR #${ref} (${branch})`;
   }
@@ -806,11 +813,14 @@ export class TaskFlow {
         "Continue the existing issue-card summons instead of opening a second owner turn"
       );
     }
+    const autopilot =
+      input.outcome === "owner" && (await this.host.autopilot?.(input.ref, "pr"))?.active === true;
     const body =
       `[orchestrator] ${heading}\n\n` +
       (input.replyTo ? `in reply to ${input.replyTo}\n\n` : "") +
       (input.outcome === "owner" ? `Current head: ${sha(item.headRefOid)}\n\n` : "") +
-      handback;
+      handback +
+      (autopilot ? "\n\nExecuting → Owner review under autopilot." : "");
     // One operation for the PR card and every linked issue's writes (#199): the
     // watcher's violation checks stay quiet while the writes land.
     this.host.github.writes.beginOperation("review", [
@@ -857,6 +867,14 @@ export class TaskFlow {
       if ((await this.status(input.ref)) === "live") {
         await this.deps.workers?.stop?.(this.number(input.ref));
       }
+    }
+    if (autopilot && (await this.host.autopilot?.(input.ref, "pr"))?.active) {
+      await this.post(
+        input.ref,
+        `[orchestrator] AUTOPILOT APPROVED\n\nCurrent head: ${sha(item.headRefOid)}\n\nOwner review → Approved under autopilot, on my delivery review.`
+      );
+      await this.card(item, "Approved", "🧭🔍");
+      await this.turn(input.ref, "orchestrator");
     }
     const wake =
       input.outcome === "changes" || input.outcome === "answer"
@@ -1156,6 +1174,7 @@ export class TaskFlow {
       }
       const liveBase = await liveBaseHead(base, { git });
       let certification: string | undefined;
+      let autopilot = false;
       if (carryApproval !== undefined) {
         for (const approved of await this.host.candidates(ref)) {
           if ((await this.host.approved(ref, approved)) !== true) {
@@ -1188,7 +1207,8 @@ export class TaskFlow {
           );
         }
       } else if ((await this.host.approved(ref)) !== true) {
-        let survived = false;
+        autopilot = (await this.host.autopilotApproved?.(ref, head)) === true;
+        let survived = autopilot;
         for (const approved of await this.host.candidates(ref)) {
           if (
             (await this.host.approved(ref, approved)) === true &&
@@ -1200,6 +1220,23 @@ export class TaskFlow {
         }
         if (!survived) {
           throw new Error("Owner approval is not valid for current head");
+        }
+      }
+      if (autopilot) {
+        const files = (await git.run("diff", "--name-only", `${liveBase}...${head}`))
+          .trim()
+          .split("\n");
+        if (
+          base === String(this.config.releaseBranch) ||
+          files.some((file) =>
+            /(?:^|\/)people\.ya?ml$|^(?:\.claude\/|\.opencode\/|opencode\.jsonc?$|vmethod\.yaml$|\.github\/CODEOWNERS$)/.test(
+              file
+            )
+          )
+        ) {
+          throw new Error(
+            "Autopilot cannot authorize releases, identity or permission changes; ask the owner"
+          );
         }
       }
       await this.green(ref, head);
@@ -1237,6 +1274,17 @@ export class TaskFlow {
       }
       if (certification) {
         await this.post(ref, certification);
+      }
+      if (autopilot) {
+        if (!(await this.host.autopilotApproved?.(ref, head))) {
+          throw new Error(
+            "Autopilot revoked during merge checks; ask the owner at the current step"
+          );
+        }
+        await this.post(
+          ref,
+          `[orchestrator] AUTOPILOT\n\nMerging ${head} under autopilot, after my delivery review and the normal merge checks.`
+        );
       }
       const merged = object(
         await this.host.github.rest(

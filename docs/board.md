@@ -57,6 +57,27 @@ journalled closures are silent. Peer not-planned requests instead prompt a reque
 notification. These notices flag any open task PR left for the issue. Foreign cards
 and muted or out-of-scope threads are not changed.
 
+## Autopilot
+
+Apply `autopilot` yourself as the pinned owner to delegate the task's decisions
+to the orchestrator until Done. Label presence alone is not authority: the gateway
+checks the label event's numeric actor identity. The next scoped watcher poll removes
+and reports unauthorized additions, including additions by the orchestrator.
+`open-task` alone may copy a verified issue grant onto its task PR, recording the
+exact copy event rather than granting new authority.
+
+The orchestrator settles the proposal, requests scope review, approves its own scope
+and delivery reviews, and merges through the ordinary wrappers. Each transition has
+a thread comment identifying autopilot. Adding or removing the label on either task
+card takes effect at the next poll; removing it returns the current step to the
+owner without reverting completed work. A later owner addition can grant control
+again. The watcher reports these changes without making engineering decisions.
+
+The owner gate for expensive models applies unchanged. Releases, permissions and
+`people.yaml` remain the owner's decisions. CI, worker stopping, scope hashes and
+exact-head delivery review are still required. See the
+[orchestrator procedure](orchestrator-guide.md#autopilot).
+
 ## Issue scope approval
 
 In Spec review the watcher emits `SCOPE #n` when the final scope review is not yet

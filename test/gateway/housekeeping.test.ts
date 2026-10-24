@@ -8,6 +8,96 @@ import issueResponse from "../fixtures/github/issue-response.json" with { type: 
 import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import { WatchFake } from "./watch-fake.js";
 import { bodyHash } from "../../src/gateway/scope.js";
+import autopilotWire from "../fixtures/github/autopilot-wire.json" with { type: "json" };
+import { scopeGraph } from "./scope-fixture.js";
+
+test("scope-review advances both gates under verified owner autopilot and comments on each step", async () => {
+  const recording = structuredClone(boardRecording);
+  const card = recording.items.nodes[0];
+  const status = recording.fields.nodes.find((field) => field.name === "Status")!;
+  status.options![0].name = "Spec review";
+  status.options!.push({ ...status.options![0], id: "executing", name: "Executing" });
+  const issue = {
+    ...acceptedIssue(),
+    __typename: "Issue",
+    number: 39,
+    id: card.content.id,
+    labels: { nodes: [{ name: "autopilot" }], pageInfo: { hasNextPage: false } },
+  };
+  const history = {
+    ...autopilotWire.data.repository.issue.timelineItems,
+    nodes: [
+      {
+        ...autopilotWire.data.repository.issue.timelineItems.nodes[0],
+        actor: actor(),
+        label: { name: "autopilot" },
+      },
+    ],
+  };
+  const authority = () => [
+    scopeGraph({ nodes: [issue] }),
+    scopeGraph({ nodes: [issue] }),
+    scopeGraph({ n0: { ...issue, timelineItems: history } }),
+  ];
+  const mutations = (values: unknown[]) => ({
+    path: "/graphql",
+    json: {
+      data: { m0: { projectV2Item: { id: card.id } }, m1: { projectV2Item: { id: card.id } } },
+    },
+    checkQuery(_query: string, variables: Record<string, unknown>) {
+      expect(Object.values(variables).map((value) => (value as { value: unknown }).value)).toEqual(
+        values
+      );
+    },
+  });
+  const f = fixtureServer([
+    graph({ repository: { issue: item({ id: issue.id }) } }),
+    graph({ node: issue }),
+    ...boardReads(recording).slice(0, 2),
+    { path: "/graphql", json: { data: { node: { items: recording.items } } } },
+    ...authority(),
+    graph({
+      node: item({ id: issue.id, assignees: { nodes: [], pageInfo: { hasNextPage: false } } }),
+    }),
+    {
+      path: "/repos/example/project/issues/39/assignees",
+      body: { assignees: ["owner"] },
+      json: {},
+    },
+    {
+      path: "/repos/example/project/issues/39/comments",
+      json: {},
+      checkQuery: undefined,
+      body: {
+        body: `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\nEstimate: 5\n\nSettled scope.\n\nAutopilot: scope approved.\n\nScoping → Spec review under autopilot.\n\nbody sha256: ${bodyHash("Specification")}`,
+      },
+    },
+    ...boardReads(recording),
+    mutations([{ text: "👤🔍" }, { singleSelectOptionId: status.options![0].id }]),
+    ...authority(),
+    {
+      path: "/repos/example/project/issues/39/comments",
+      body: {
+        body: "[orchestrator] AUTOPILOT\n\nSpec review → Executing under autopilot, on my scope review.",
+      },
+      json: {},
+    },
+    {
+      path: "/repos/example/project/issues/39/assignees",
+      method: "DELETE",
+      body: { assignees: ["owner"] },
+      json: {},
+    },
+    ...boardReads(recording),
+    mutations([undefined, { singleSelectOptionId: "executing" }]),
+  ]);
+  const file = join(f.root, "summary.md");
+  writeFileSync(file, "Settled scope.");
+  await expect(f.transport.call("scopeReview", { ref: "39", file })).resolves.toBe(
+    "Scope approved under autopilot for #39"
+  );
+  f.done();
+});
 
 test("scope-review publishes the body hash and hands the issue card to the owner without editing the body", async () => {
   const recording = structuredClone(boardRecording);

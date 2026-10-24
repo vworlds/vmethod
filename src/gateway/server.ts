@@ -35,6 +35,8 @@ import {
 import { tokenIdentity, tokenViewer } from "./identity.js";
 import { isOwnerApproved } from "./approval.js";
 import { bodyHash, ScopeReader, legacyScopeCutoff } from "./scope.js";
+import { AutopilotReader, inheritAutopilot, type AutopilotState } from "./autopilot.js";
+import { taskIssueNumbers } from "./task-flow-types.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { renderProgress } from "../board/progress.js";
 import { workflowColumns } from "../board/runner.js";
@@ -811,6 +813,14 @@ class GatewayServer {
    */
   issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [], estimate, status }) => {
     if (
+      Array.isArray(labels) &&
+      labels.some(
+        (label) => typeof label === "string" && label.trim().toLowerCase() === "autopilot"
+      )
+    ) {
+      throw new Error("Only the owner may add autopilot; issue create cannot grant delegation");
+    }
+    if (
       typeof title !== "string" ||
       !title.trim() ||
       /[\r\n]/.test(title) ||
@@ -915,7 +925,8 @@ class GatewayServer {
     const card = (await this.board.cards(snapshot.id)).find((card) => card.contentId === issue.id);
     const estimate = card?.values.Estimate;
     assertEstimate(estimate);
-    const body = `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\nEstimate: ${estimate}\n\n${summary.trim()}\n\nbody sha256: ${bodyHash(String(issue.body))}`;
+    const autopilot = (await this.autopilotFor(issue)).active;
+    const body = `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\nEstimate: ${estimate}\n\n${summary.trim()}\n\n${autopilot ? "Autopilot: scope approved.\n\nScoping → Spec review under autopilot.\n\n" : ""}body sha256: ${bodyHash(String(issue.body))}`;
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
     const assignments = await this.node(
@@ -957,6 +968,25 @@ class GatewayServer {
       "Spec review",
       renderProgress({ state: "owner-review", round: null, red: false })
     );
+    if (autopilot && (await this.autopilotFor(issue)).active) {
+      await this.github.rest(
+        `/repos/${String(this.config.repo)}/issues/${number}/comments`,
+        "POST",
+        {
+          body: "[orchestrator] AUTOPILOT\n\nSpec review → Executing under autopilot, on my scope review.",
+        },
+        false
+      );
+      await setTurn(
+        this.github,
+        String(this.config.repo),
+        number,
+        next,
+        turnAssignees(this.filter.people, String(this.config.repo), next, null)
+      );
+      await this.board.setIssueField(String(issue.id), "Status", "Executing");
+      return `Scope approved under autopilot for #${number}`;
+    }
     return `Scope review requested for #${number}`;
   };
 
@@ -1052,6 +1082,30 @@ class GatewayServer {
       github: this.github,
       board: () => this.board,
       people: loadYaml(this.root, "people") as Person[],
+      autopilot: async (ref, kind) => this.autopilotFor(await this.flowThread(ref, kind)),
+      copyAutopilot: async (issue, pr) => {
+        if (
+          (object(issue.labels).nodes as ObjectData[]).some((label) => label.name === "autopilot")
+        ) {
+          await inheritAutopilot(this.github, this.filter, this.config, issue, pr);
+        }
+      },
+      autopilotApproved: async (ref, head) => {
+        const pr = await this.flowThread(ref, "pr");
+        if (pr.headRefOid !== head) {
+          return false;
+        }
+        const state = await this.autopilotFor(pr);
+        return (
+          state.active &&
+          (await this.flowComments(String(pr.id))).some(
+            (comment) =>
+              String(comment.body).startsWith(
+                `[orchestrator] AUTOPILOT APPROVED\n\nCurrent head: ${head}\n`
+              ) && state.at(Date.parse(String(comment.lastEditedAt ?? comment.createdAt)))
+          )
+        );
+      },
       thread: (ref, kind) => this.flowThread(ref, kind),
       comments: (id, kind) => this.flowComments(id, kind === "issue" ? "Issue" : "PullRequest"),
       replyTarget: (id) => this.flowComment(id),
@@ -1116,6 +1170,56 @@ class GatewayServer {
       },
     });
   }
+  /** Gate reads are fresh; watcher state and label presence are not credentials. */
+  private async autopilotFor(item: ObjectData): Promise<AutopilotState> {
+    const items = [item];
+    if (item.__typename === "PullRequest") {
+      for (const issue of taskIssueNumbers(String(item.body)) ?? []) {
+        items.push(await this.flowThread(String(issue), "issue"));
+      }
+    }
+    if (
+      !items.some(
+        (value) =>
+          Array.isArray(object(value.labels).nodes) &&
+          (object(value.labels).nodes as ObjectData[]).some((label) => label.name === "autopilot")
+      )
+    ) {
+      return { active: false, at: () => false, unauthorized: false };
+    }
+    return (
+      (
+        await new AutopilotReader(this.github, this.filter, this.config).read(
+          items.map((value) => String(value.id))
+        )
+      ).get(String(item.id)) ?? { active: false, at: () => false, unauthorized: false }
+    );
+  }
+
+  /** Stop delegation on an accepted local thread; watcher reconciles its task turn. */
+  autopilotStop: Handlers["autopilotStop"] = async ({ ref, kind }) => {
+    if (kind !== "issue" && kind !== "pr") {
+      throw new Error("Expected issue or pr");
+    }
+    const number = this.localNumber(ref);
+    const item = await this.flowThread(String(number), kind);
+    if ((object(item.labels).nodes as ObjectData[]).some((label) => label.name === "autopilot")) {
+      await this.github.rest(
+        `/repos/${String(this.config.repo)}/issues/${number}/labels/autopilot`,
+        "DELETE"
+      );
+      await this.github.rest(
+        `/repos/${String(this.config.repo)}/issues/${number}/comments`,
+        "POST",
+        {
+          body: "[orchestrator] AUTOPILOT\n\nStopped autopilot; control returns to the owner at the current step. Completed work is not reverted.",
+        },
+        false
+      );
+    }
+    return `Autopilot stopped on #${number}`;
+  };
+
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
   reviewTask: Handlers["reviewTask"] = async (input) => this.flow.review(input);
   askIssue: Handlers["askIssue"] = async (input) => this.flow.ask(input.ref, input.file);
@@ -1136,7 +1240,7 @@ class GatewayServer {
     }
     const data = await this.node(
       String(item.id),
-      `title body state labels(first: 100) { nodes { name } pageInfo { hasNextPage } } ${kind === "pr" ? "headRefOid headRefName baseRefName baseRefOid isDraft mergeable headRepository { nameWithOwner } closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : ""}`,
+      `__typename number title body state labels(first: 100) { nodes { name } pageInfo { hasNextPage } } ${kind === "pr" ? "headRefOid headRefName baseRefName baseRefOid isDraft mergeable headRepository { nameWithOwner } closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : ""}`,
       kind === "pr" ? "PullRequest" : "Issue"
     );
     if (!this.filter.accept(data, repoOf(data).owner, link)) {
@@ -2044,6 +2148,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueUnblock: server.issueUnblock,
     issueEstimate: server.issueEstimate,
     scopeReview: server.scopeReview,
+    autopilotStop: server.autopilotStop,
     issueClose: server.issueClose,
     boardSetIssue: server.boardSetIssue,
     worker: server.worker,
@@ -2088,6 +2193,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueUnblock: ["orchestrator"],
     issueEstimate: ["orchestrator"],
     scopeReview: ["orchestrator"],
+    autopilotStop: ["orchestrator"],
     issueClose: ["orchestrator"],
     boardSetIssue: ["orchestrator"],
     worker: ["orchestrator"],

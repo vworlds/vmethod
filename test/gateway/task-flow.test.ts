@@ -30,6 +30,119 @@ import packageInfo from "../../package.json" with { type: "json" };
 
 const holdBanner = "> ⛔ ON HOLD. Wait for [orchestrator] GO.";
 
+test("autopilot delivery review advances Owner review to Approved with per-step comments", async () => {
+  const f = fixture();
+  f.set({ boardValues: { Status: "Executing", Progress: "🤖👍" } });
+  f.host.autopilot = async () => ({
+    active: true,
+    grant: "owner-grant",
+    at: () => true,
+    unauthorized: false,
+  });
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Reviewed implementation and tests.\n");
+  await f.flow().review({ ref: "27", outcome: "owner", file });
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ field: "Status", value: "Owner review" })
+  );
+  expect(f.touched).toContainEqual(expect.objectContaining({ field: "Status", value: "Approved" }));
+  const comments = f.writes
+    .filter((write) => write.path.endsWith("/comments"))
+    .map((write) => String(write.body.body));
+  expect(comments.some((body) => body.includes("Executing → Owner review under autopilot"))).toBe(
+    true
+  );
+  expect(
+    comments.some(
+      (body) =>
+        body.includes(`Current head: ${sha}`) &&
+        body.includes("Owner review → Approved under autopilot")
+    )
+  ).toBe(true);
+  f.done();
+});
+
+test("removal during autopilot review leaves the current Owner review step with the owner", async () => {
+  const f = fixture();
+  f.set({ boardValues: { Status: "Executing", Progress: "🤖👍" } });
+  let calls = 0;
+  f.host.autopilot = async () => ({ active: ++calls === 1, at: () => false, unauthorized: false });
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Reviewed.\n");
+  await f.flow().review({ ref: "27", outcome: "owner", file });
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ field: "Status", value: "Owner review" })
+  );
+  expect(f.touched.some((write) => write.value === "Approved")).toBe(false);
+  f.done();
+});
+
+test("open-task invokes owner-authorized label inheritance after creating the task", async () => {
+  const f = fixture();
+  const copies: unknown[] = [];
+  f.host.copyAutopilot = async (issue, pr) => {
+    copies.push({ issue: issue.id, pr: pr.id, number: pr.number });
+  };
+  await f.flow().open({ issue: "8", model: "sol" });
+  expect(copies).toEqual([{ issue: "issue", pr: "pr", number: 27 }]);
+  f.done();
+});
+
+test("autopilot never bypasses the expensive-model gate", async () => {
+  const f = fixture();
+  f.host.autopilot = async () => ({ active: true, at: () => true, unauthorized: false });
+  f.set({ modelApproval: false });
+  await expect(f.flow().open({ issue: "8", model: "astra", ownerApproved: true })).rejects.toThrow(
+    "owner-gated"
+  );
+  expect(f.writes).toEqual([]);
+  f.done();
+});
+
+test.each([
+  "people.yaml",
+  ".claude/settings.json",
+  "vmethod.yaml",
+  ".opencode/permissions.json",
+  ".github/CODEOWNERS",
+])("autopilot cannot authorize owner-reserved file %s", async (path) => {
+  const f = fixture();
+  f.set({ approved: false });
+  f.host.autopilotApproved = async () => true;
+  const original = f.deps.exec;
+  f.deps.exec = async (file, args, options) =>
+    args[0] === "diff" && args[1] === "--name-only" ? path : original(file, args, options);
+  await expect(f.flow().merge("27")).rejects.toThrow(
+    "cannot authorize releases, identity or permission changes"
+  );
+  expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+  f.done();
+});
+
+test.each([false, true])(
+  "autopilot merge requires fresh delegation and exact-head review (revoked=%s)",
+  async (revoked) => {
+    const f = fixture();
+    f.set({ approved: false });
+    let calls = 0;
+    f.host.autopilotApproved = async (ref, head) => {
+      expect({ ref, head }).toEqual({ ref: "27", head: sha });
+      return !revoked || ++calls === 1;
+    };
+    if (revoked) {
+      await expect(f.flow().merge("27")).rejects.toThrow("revoked during merge checks");
+      expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+    } else {
+      await f.flow().merge("27");
+      expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(true);
+      expect(
+        f.writes.some((write) => String(write.body.body).includes(`Merging ${sha} under autopilot`))
+      ).toBe(true);
+    }
+    f.done();
+  }
+);
+
 test("Executing issue summons pauses linked workers and requires agreement from that issue", async () => {
   const f = fixture();
   const original = f.deps.fetch;

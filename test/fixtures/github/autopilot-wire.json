@@ -1,0 +1,39 @@
+{
+  "data": {
+    "repository": {
+      "issue": {
+        "id": "I_kwDOVMIbYc8AAAABZoh45g",
+        "number": 239,
+        "labels": { "nodes": [], "pageInfo": { "hasNextPage": false, "endCursor": null } },
+        "timelineItems": {
+          "nodes": [
+            {
+              "__typename": "LabeledEvent",
+              "id": "LE_lADOVMIbYc8AAAABZoh45s8AAAAH8vtV1A",
+              "createdAt": "2026-10-24T17:49:37Z",
+              "actor": { "__typename": "User", "login": "vimescmd", "databaseId": 343394568 },
+              "label": { "name": "enhancement" }
+            },
+            {
+              "__typename": "UnlabeledEvent",
+              "id": "UNLE_lADOVMIbYc8AAAABZoh45s8AAAAH8vtYQA",
+              "createdAt": "2026-10-24T17:49:38Z",
+              "actor": { "__typename": "User", "login": "vimescmd", "databaseId": 343394568 },
+              "label": { "name": "enhancement" }
+            }
+          ],
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": "Y3Vyc29yOnYyOpPPAAABoW8IT1ABqzM0MTQxMzI5NDcy"
+          }
+        }
+      },
+      "pullRequest": {
+        "id": "PR_kwDOVMIbYc8AAAABKdlKpw",
+        "number": 231,
+        "labels": { "nodes": [], "pageInfo": { "hasNextPage": false, "endCursor": null } },
+        "timelineItems": { "nodes": [], "pageInfo": { "hasNextPage": false, "endCursor": null } }
+      }
+    }
+  }
+}

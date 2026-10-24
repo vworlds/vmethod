@@ -91,6 +91,15 @@ export async function gatewayVerb(
         throw new Error("Usage: scope-review <issue> <summary-file>");
       }
       return transport.call("scopeReview", { ref: args[0], file: args[1] }, ctx);
+    case "autopilot":
+      if (args.length !== 3 || args[0] !== "stop" || !["issue", "pr"].includes(args[1])) {
+        throw new Error("Usage: autopilot stop <issue|pr> <n>");
+      }
+      return transport.call(
+        "autopilotStop",
+        { ref: args[2], kind: args[1] as "issue" | "pr" },
+        ctx
+      );
     case "worker":
       return transport.call("worker", { args }, ctx);
     case "worktrees":

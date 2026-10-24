@@ -23,6 +23,8 @@ export interface Operations {
   issueEstimate: { input: { ref: string; points: number }; output: string };
   /** Publish body-bound scope review and give the owner the issue turn. */
   scopeReview: { input: { ref: string; file: string }; output: string };
+  /** Remove delegation only; no operation lets an agent grant autopilot. */
+  autopilotStop: { input: { ref: string; kind: "issue" | "pr" }; output: string };
   /** Null clears only Progress or Estimate; strings retain ordinary value validation. */
   boardSetIssue: { input: { ref: string; field: string; value: string | null }; output: string };
   worker: { input: { args: string[] }; output: string };

@@ -14,6 +14,49 @@ import {
 } from "./scope-fixture.js";
 import { bodyHash } from "../../src/gateway/scope.js";
 import type { ObjectData } from "../../src/gateway/people.js";
+import { gatewayVerb } from "../../src/cli/gateway.js";
+
+test.each(["issue", "pr"] as const)(
+  "orchestrator can stop but not grant autopilot on an accepted %s",
+  async (kind) => {
+    const f = fixtureServer([
+      graph({ repository: { [kind === "pr" ? "pullRequest" : "issue"]: item() } }),
+      graph({
+        node: item({
+          __typename: kind === "pr" ? "PullRequest" : "Issue",
+          body: "Task specification",
+          labels: { nodes: [{ name: "autopilot" }], pageInfo: { hasNextPage: false } },
+        }),
+      }),
+      { path: "/repos/example/project/issues/27/labels/autopilot", method: "DELETE", json: {} },
+      {
+        path: "/repos/example/project/issues/27/comments",
+        body: {
+          body: "[orchestrator] AUTOPILOT\n\nStopped autopilot; control returns to the owner at the current step. Completed work is not reverted.",
+        },
+        json: {},
+      },
+    ]);
+    await expect(
+      gatewayVerb(f.transport, "autopilot", ["stop", kind, "27"], { VMETHOD_ROLE: "orchestrator" })
+    ).resolves.toBe("Autopilot stopped on #27");
+    await expect(
+      gatewayVerb(f.transport, "autopilot", ["start", kind, "27"], { VMETHOD_ROLE: "orchestrator" })
+    ).rejects.toThrow("Usage");
+    f.done();
+  }
+);
+
+test("worker cannot stop delegation and issue creation cannot grant it", async () => {
+  const f = fixtureServer([]);
+  await expect(
+    f.gateway.call("autopilotStop", { ref: "27", kind: "pr" }, { role: "worker", taskPr: 27 })
+  ).rejects.toThrow("denied for client role");
+  await expect(
+    f.transport.call("issueCreate", { title: "Task", file: "unused.md", labels: ["autopilot"] })
+  ).rejects.toThrow("Only the owner may add autopilot");
+  f.done();
+});
 
 test("workers cannot invoke conflict automation or gain merge authority", async () => {
   const f = fixtureServer([], actor(1));

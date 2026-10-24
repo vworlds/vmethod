@@ -60,6 +60,7 @@ try {
     case "board":
     case "issue":
     case "scope-review":
+    case "autopilot":
     case "dropped":
     case "start-task":
     case "read-pr":

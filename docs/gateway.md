@@ -96,10 +96,21 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod issue block <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`)
 - `vmethod issue unblock <n> <blocker>`
 - `vmethod scope-review <n> <summary-file>`
+- `vmethod autopilot stop <issue|pr> <n>`
 - `vmethod board set <issue> <field> <value>|--clear`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package with `npm exec --no -- vmethod`, never a downloading fallback.
+
+`autopilot stop` is an orchestrator-only, configured-repository removal on an
+accepted issue or PR. It posts the stop in the thread; the next watcher poll
+reconciles the owner's turn without reverting completed steps. There is no agent
+grant command, and `issue create --label autopilot` is refused. The typed operation
+is `autopilotStop({ref, kind: "issue" | "pr"}) → string`. Owner-event authentication
+and `open-task` inheritance live in `src/gateway/autopilot.ts`; see
+[autopilot procedure](orchestrator-guide.md#autopilot). Under current delegation,
+`scope-review` and `review <pr> owner` explicitly record and advance their owner
+gates. `merge-task` rechecks delegation after normal verification.
 
 `issue edit` and `scope-review` are orchestrator-only, configured-repository writes.
 Read an issue first: `read issue` saves its exact body hash in worktree-local

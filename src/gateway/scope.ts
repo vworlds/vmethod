@@ -4,6 +4,7 @@ import { object, type ObjectData, type PeopleFilter, type Person } from "./peopl
 import { identityFields, actorFields, repoOf } from "./queries.js";
 import type { GitHubClient } from "./client.js";
 import { readState } from "../board/readme.js";
+import { AutopilotReader, type AutopilotState } from "./autopilot.js";
 
 /** Grandfather v5 owner approvals only before the recorded v6 migration. */
 export function legacyScopeCutoff(readme: string): number {
@@ -33,7 +34,8 @@ export function scopeApproved(
   timeline: ObjectData[],
   config: Config,
   filter: PeopleFilter,
-  legacyBefore = Infinity
+  legacyBefore = Infinity,
+  delegation?: AutopilotState
 ): boolean {
   if (typeof issue.body !== "string") {
     return false;
@@ -55,6 +57,12 @@ export function scopeApproved(
     const latest = reviews.filter((candidate) => time(candidate) === time(review));
     if (latest.some((candidate) => !matchesBody(candidate, String(issue.body)))) {
       return false;
+    }
+    if (
+      /^Autopilot: scope approved\.$/m.test(String(review.body)) &&
+      delegation?.at(time(review))
+    ) {
+      return true;
     }
     const labels = object(issue.labels).nodes;
     const fast = object(config.scope).fastPath;
@@ -169,7 +177,8 @@ export class ScopeReader {
     private github: GitHubClient,
     private filter: PeopleFilter,
     private config: Config,
-    private legacyBefore = Infinity
+    private legacyBefore = Infinity,
+    private delegations?: Map<string, AutopilotState>
   ) {}
 
   async approved(ids: string[]): Promise<Map<string, boolean>> {
@@ -226,6 +235,19 @@ export class ScopeReader {
         .filter((item) => this.accept(item))
         .map((item) => [item.id, item])
     );
+    const delegatedIds = issues
+      .filter((issue) =>
+        (comments.get(String(issue.id)) ?? []).some((meta) =>
+          /^Autopilot: scope approved\.$/m.test(String(bodies.get(meta.id)?.body))
+        )
+      )
+      .map((issue) => String(issue.id));
+    const delegations = new Map(this.delegations);
+    for (const [id, state] of await new AutopilotReader(this.github, this.filter, this.config).read(
+      delegatedIds.filter((id) => !delegations.has(id))
+    )) {
+      delegations.set(id, state);
+    }
     for (const issue of issues) {
       if (!this.accept(issue) || object(object(issue.labels).pageInfo).hasNextPage !== false) {
         continue;
@@ -241,7 +263,15 @@ export class ScopeReader {
       result.set(id, {
         approved:
           complete &&
-          scopeApproved(issue, discussion, events, this.config, this.filter, this.legacyBefore),
+          scopeApproved(
+            issue,
+            discussion,
+            events,
+            this.config,
+            this.filter,
+            this.legacyBefore,
+            delegations.get(id)
+          ),
         ownerApproved:
           ownerApprovalAt(events, this.config, this.filter, undefined, this.legacyBefore) !== null,
         reviewPending:

@@ -38,6 +38,7 @@ import { workerWorktree } from "./worker-path.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
 import { ScopeReader, legacyScopeCutoff } from "./scope.js";
+import { AutopilotReader, type AutopilotState } from "./autopilot.js";
 import { setTurn, turnAssignees } from "./turn.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
@@ -137,6 +138,8 @@ interface PrInfo {
 }
 
 interface CardInfo {
+  autopilotLabel?: boolean;
+  autopilotStopped?: boolean;
   contentId: string;
   scopePending?: boolean;
   ownerReview?: string;
@@ -385,6 +388,7 @@ export class EventLoop {
   private pendingMergedIssues = new Set<number>();
   private heldTasks = new Map<number, string>();
   private prCostCards = new Map<number, string>();
+  private autopilot = new Map<string, AutopilotState>();
   private observedPrs: PrInfo[] = [];
   private nextBoardAt = 0;
   private lastBoardAt = 0;
@@ -2500,6 +2504,7 @@ export class EventLoop {
       throw new Error("Missing board configuration");
     }
     const cards = await this.readBoard(owner, number);
+    await this.watchAutopilot(cards.list);
     const ownerWaits = cards.list.filter(
       (card) =>
         this.isOwn(card.repo) &&
@@ -2511,7 +2516,8 @@ export class EventLoop {
       this.host.github,
       this.host.filter,
       this.host.config,
-      legacyScopeCutoff(cards.readme)
+      legacyScopeCutoff(cards.readme),
+      this.autopilot
     ).read(ownerWaits.map((card) => card.contentId));
     for (const card of ownerWaits) {
       card.scopePending = scopeWaits.get(card.contentId)?.reviewPending;
@@ -2615,6 +2621,19 @@ export class EventLoop {
       currentCards.push(card);
       const columnProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
       await this.applyProgress(card);
+      if (
+        card.autopilotStopped &&
+        ["Spec review", "Owner review", "Approved"].includes(card.column)
+      ) {
+        const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, "owner");
+        await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
+        await this.host.board.set({ itemId: card.id, field: "Progress", value: "👤🔍" });
+        card.assignees = next;
+        card.progress = "👤🔍";
+      }
+      if (card.autopilotStopped) {
+        remove(join(this.dir, `autopilot-${card.number}-stop`));
+      }
       await this.reconcileTurn(card, pullsOk && !pendingProgress && !columnProgress);
       if (
         card.kind === "ISSUE" &&
@@ -2765,6 +2784,89 @@ export class EventLoop {
     this.writeMarker("orchestrator-turns.json", JSON.stringify(next));
   }
 
+  /** Observe label changes in the same scoped board poll. The orchestrator still
+   * makes the engineering decisions; these wake-ups release its owner wait. */
+  private async watchAutopilot(cards: CardInfo[]): Promise<void> {
+    const own = cards.filter(
+      (card) =>
+        this.isOwn(card.repo) && this.inScope(card.number) && card.state === "OPEN" && card.person
+    );
+    const selected = new Set(
+      own
+        .filter(
+          (card) =>
+            card.autopilotLabel ||
+            this.readMarker(`autopilot-${card.number}`) === "on" ||
+            this.marked(`autopilot-${card.number}-stop`)
+        )
+        .map((card) => card.number)
+    );
+    for (;;) {
+      const size = selected.size;
+      for (const [pr, issues] of this.taskIssues) {
+        if (selected.has(pr) || issues.some((number) => selected.has(number))) {
+          selected.add(pr);
+          issues.forEach((number) => selected.add(number));
+        }
+      }
+      if (size === selected.size) {
+        break;
+      }
+    }
+    const targets = own.filter((card) => selected.has(card.number));
+    this.autopilot = await new AutopilotReader(
+      this.host.github,
+      this.host.filter,
+      this.host.config
+    ).read(targets.map((card) => card.contentId));
+    for (const card of targets) {
+      const state = this.autopilot.get(card.contentId);
+      if (!state) {
+        continue;
+      }
+      if (state.unauthorized) {
+        await this.host.github.rest(
+          `/repos/${this.own}/issues/${card.number}/labels/autopilot`,
+          "DELETE"
+        );
+        await this.host.github.rest(
+          `/repos/${this.own}/issues/${card.number}/comments`,
+          "POST",
+          {
+            body: "[orchestrator] AUTOPILOT\n\nRemoved an unauthorized autopilot label. Only the pinned owner can grant autopilot; open-task may copy an existing owner grant.",
+          },
+          false
+        );
+        this.emit(
+          `autopilot-invalid-${card.number}@${this.host.deps.now()}`,
+          "autopilot",
+          `AUTOPILOT #${card.number}: unauthorized label removed ${this.threadUrl(card.repo, card.number, card.kind)}`
+        );
+      }
+      const name = `autopilot-${card.number}`;
+      const old = this.readMarker(name);
+      const value = state.active ? "on" : "off";
+      if (old === "on" && !state.active) {
+        this.mark(`${name}-stop`);
+      }
+      if (state.active) {
+        remove(join(this.dir, `${name}-stop`));
+      }
+      card.autopilotStopped = this.marked(`${name}-stop`);
+      const step = `${value}:${card.column}:${state.grant ?? ""}`;
+      if (this.readMarker(`${name}-step`) !== step && (state.active || old === "on")) {
+        this.emit(
+          `${name}@${key(step)}`,
+          "autopilot",
+          `AUTOPILOT #${card.number}: ${state.active ? "owner-delegated" : "stopped; owner's control at the current step"} (${card.column}) ${this.threadUrl(card.repo, card.number, card.kind)}`
+        );
+        this.nextSignature = "";
+      }
+      this.writeMarker(name, value);
+      this.writeMarker(`${name}-step`, step);
+    }
+  }
+
   private async readBoard(
     owner: string,
     number: number
@@ -2776,7 +2878,7 @@ export class EventLoop {
       for (;;) {
         const data = object(
           await this.host.github.graphql(
-            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number state stateReason closedAt subIssues(first: 100) { nodes { id } pageInfo { hasNextPage } } closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { number state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
+            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state stateReason closedAt subIssues(first: 100) { nodes { id } pageInfo { hasNextPage } } closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
             { owner, number, cursor }
           )
         );
@@ -2830,6 +2932,9 @@ export class EventLoop {
     }
     const estimate = object(node.estimate).number;
     return {
+      autopilotLabel:
+        this.list(object(content.labels).nodes).some((label) => label.name === "autopilot") ||
+        object(object(content.labels).pageInfo).hasNextPage === true,
       ownerReview: this.list(object(content.reviews).nodes)
         .filter(
           (review) =>
@@ -3486,7 +3591,8 @@ export class EventLoop {
       this.host.github,
       this.host.filter,
       this.host.config,
-      legacyBefore
+      legacyBefore,
+      this.autopilot
     ).read([...candidates, ...specReview].map((card) => card.contentId));
     const launch = await this.firstUnblocked(
       candidates.filter((card) => scopes.get(card.contentId)?.approved === true)
