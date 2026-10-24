@@ -43,6 +43,29 @@ without changing columns. The worker stays paused until an explicitly attested o
 agreement is quoted in the hand-back, or the owner unassigns themself. A plain owner
 comment does not release the pause. See [the summons procedure](orchestrator-guide.md#owner-summons-inside-executing).
 
+## Card order
+
+GitHub keeps one manual order per project: `updateProjectV2ItemPosition` moves an
+item after another (`afterId: null` moves it to the top) and the item listing
+returns that order. What the top card means differs by column; vmethod only orders
+the two columns it owns:
+
+| Column               | Top means                   | Who orders            | vmethod does                                                                                                                 |
+| -------------------- | --------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Backlog              | most important to the owner | owner                 | never reorders                                                                                                               |
+| Scoping, Spec review | deal with first             | owner                 | never reorders; the orchestrator works these top-down, and the watcher lists pending Scoping/Spec review work in board order |
+| Executing            | most recent activity        | vmethod               | moves the card to the top whenever its Progress or assignee changes, through a verb or the watcher                           |
+| Owner review         | oldest handover (FIFO)      | vmethod               | moves a card to the bottom (after the column's last card) when it enters Owner review                                        |
+| Approved             | merge first                 | owner (drop position) | the orchestrator merges top-down, and the watcher lists approved PRs in board order                                          |
+
+Position writes are best effort: a failure is reported and never blocks the verb
+or board move that triggered it, and like those writes a reorder is journaled
+automatically at the gateway boundary. The watcher keeps Scoping, Spec review and
+Approved lists in board order but derives no event from card position, so a
+reorder silently settles into the next poll. Hand-drag a card when _you_ are
+ordering a column; vmethod imposes the two rules above again only on its next
+write, never while just reading the board.
+
 `board status` lists cards whose open/closed state disagrees with Status, and cards
 with an empty Status, which otherwise appear in no column. Use `board status --fix`
 to move closed cards to Done and open cards to Backlog, clearing stale Progress as it

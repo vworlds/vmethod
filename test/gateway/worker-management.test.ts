@@ -192,6 +192,8 @@ function fixture(prefix?: string, legacy = false) {
         const { query, variables } = JSON.parse(String(init?.body));
         parse(query);
         if (query.includes("query WorkerIdentity")) {
+          // `viewer` is a User: an `... on Bot` spread is a GraphQL validation error live.
+          expect(query).toBe("query WorkerIdentity { viewer { __typename login databaseId } }");
           expect(object(init?.headers).authorization).toBe("Bearer worker-token");
           return Response.json({ data: { viewer } });
         }

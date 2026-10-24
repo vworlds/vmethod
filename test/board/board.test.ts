@@ -806,6 +806,172 @@ test("card writes enforce content repo scope, Status+Progress, PR Estimate polic
   expect(board.cards).toEqual([foreign]);
 });
 
+/** A v6 board's fields: the migration's expected shapes are the fake's option source. */
+function v6Fields(): void {
+  fake.fields = Object.entries(loadMigrations()[5].expect.fields).map(([name, shape], index) => ({
+    id: `field-${index}`,
+    name,
+    createdAt: Date.UTC(2026, 0, 1),
+    type: shape.type,
+    options: (shape.options ?? []).map((option, optionIndex) => ({
+      id: `option-${index}-${optionIndex}`,
+      color: "GRAY",
+      description: "",
+      ...{ ...(typeof option === "string" ? { name: option } : option) },
+    })),
+  }));
+}
+
+test("a Progress or assignee change on an Executing card moves it to the top", async () => {
+  const board = setup();
+  board.stamp(6, 6);
+  v6Fields();
+  const older = board.card("older");
+  older.values.Status = "Executing";
+  older.values.Progress = "🤖🔨 🔁2️⃣";
+  board.card("newest");
+  const pr = board.card("pr");
+  pr.kind = "PullRequest";
+  pr.values.Status = "Executing";
+  pr.values.Progress = "🤖👍 🔁1️⃣";
+  const service = board.service(loadMigrations());
+  await service.set({ itemId: pr.id, field: "Progress", value: "🤖👍 🔁2️⃣ 🔴" });
+  // The manual order puts the just-active card first; `afterId: null` is the top.
+  expect(board.cards.map((card) => card.id)).toEqual(["pr", "older", "newest"]);
+  expect(board.mutations).toEqual(["BoardSetCards", "BoardPosition"]);
+  // An unchanged write is not activity: neither field nor position change.
+  await service.set({ itemId: pr.id, field: "Progress", value: "🤖👍 🔁2️⃣ 🔴" });
+  expect(board.cards.map((card) => card.id)).toEqual(["pr", "older", "newest"]);
+  expect(board.mutations).toEqual(["BoardSetCards", "BoardPosition", "BoardSetCards"]);
+  // A Status entry into Executing (here issue-side) is activity as well.
+  const newest = board.cards.find((card) => card.id === "newest")!;
+  newest.contentId = "newest-content";
+  await board
+    .service(loadMigrations())
+    .setIssueField("newest-content", "Status", "Executing", "🤖🔨");
+  expect(board.cards.map((card) => card.id)).toEqual(["newest", "pr", "older"]);
+  expect(board.mutations).toEqual([
+    "BoardSetCards",
+    "BoardPosition",
+    "BoardSetCards",
+    "BoardSetCards",
+    "BoardPosition",
+  ]);
+});
+
+test("entering Owner review moves the handover card after the column's last card", async () => {
+  const board = setup();
+  board.stamp(6, 6);
+  v6Fields();
+  const oldest = board.card("oldest");
+  oldest.values.Status = "Owner review";
+  const pr = board.card("pr");
+  pr.kind = "PullRequest";
+  pr.values.Status = "Executing";
+  board.card("active"); // Still Executing later in the manual order.
+  const service = board.service(loadMigrations());
+  // FIFO: the handover queues behind the column's last card, not the whole project.
+  await service.set({ itemId: pr.id, field: "Status", value: "Owner review", progress: "👤🔍" });
+  expect(board.cards.map((card) => card.id)).toEqual(["oldest", "pr", "active"]);
+  expect(board.mutations).toEqual(["BoardSetCards", "BoardPosition"]);
+  // The next handover queues after the prior one, still ahead of non-Owner review items.
+  const another = board.card("another");
+  another.kind = "PullRequest";
+  another.values.Status = "Executing";
+  await service.set({
+    itemId: another.id,
+    field: "Status",
+    value: "Owner review",
+    progress: "👤❓",
+  });
+  expect(board.cards.map((card) => card.id)).toEqual(["oldest", "pr", "another", "active"]);
+  // An emptied Owner review column uses the top (afterId null).
+  board.cards = board.cards.filter((card) => card.id === "active");
+  const fresh = board.card("fresh");
+  fresh.kind = "PullRequest";
+  fresh.values.Status = "Executing";
+  await service.set({ itemId: fresh.id, field: "Status", value: "Owner review", progress: "👤🔍" });
+  expect(board.cards.map((card) => card.id)).toEqual(["fresh", "active"]);
+});
+
+test("a direct card order write still respects board compatibility", async () => {
+  const board = setup();
+  v6Fields();
+  const pr = board.card("pr");
+  pr.kind = "PullRequest";
+  pr.values.Status = "Executing";
+  board.stamp(8, 8); // A min_compatible above this service refuses every write.
+  await board.service(loadMigrations()).moveToTop(pr.id);
+  expect(board.reports).toEqual([
+    expect.stringContaining("BOARD INCOMPATIBLE: upgrade @vworlds/vmethod to board ≥ 8"),
+  ]);
+  expect(board.mutations).toEqual([]);
+  expect(board.cards.map((card) => card.id)).toEqual(["pr"]);
+});
+
+test("Backlog, Scoping, Spec review, Approved and Done are never reordered by vmethod", async () => {
+  const board = setup();
+  board.stamp(6, 6);
+  v6Fields();
+  board.card("one").values.Status = "Backlog";
+  board.card("two").values.Status = "Scoping";
+  const issue = board.card("issue");
+  issue.contentId = "issue-content";
+  issue.values.Status = "Spec review";
+  const pr = board.card("pr");
+  pr.kind = "PullRequest";
+  pr.values.Status = "Approved";
+  board.card("done").values.Status = "Done";
+  const service = board.service(loadMigrations());
+  await service.set({ itemId: "one", field: "Progress", value: "⛔" });
+  await service.set({ itemId: "two", field: "Status", value: "Scoping", progress: "👤❓" });
+  await board
+    .service(loadMigrations())
+    .setIssueField("issue-content", "Status", "Spec review", "👤🔍");
+  await service.set({ itemId: pr.id, field: "Progress", value: "🧭🔍" });
+  await service.set({ itemId: "done", field: "Status", value: "Done", progress: null });
+  expect(board.cards.map((card) => card.id)).toEqual(["one", "two", "issue", "pr", "done"]);
+  expect(board.mutations.filter((name) => name !== "BoardSetCards")).toEqual([]);
+});
+
+test("a failed position write is reported without failing the triggering verb", async () => {
+  const board = setup();
+  board.stamp(6, 6);
+  v6Fields();
+  const pr = board.card("pr");
+  pr.kind = "PullRequest";
+  pr.values.Status = "Executing";
+  pr.values.Progress = "🤖🔨";
+  const review = board.card("review"); // Owner review column for the bottom failure.
+  review.values.Status = "Owner review";
+  board.failOrder = true;
+  await expect(
+    board.service(loadMigrations()).set({ itemId: pr.id, field: "Progress", value: "🤖👍 🔁1️⃣" })
+  ).resolves.toBe("Board field updated");
+  expect(pr.values.Progress).toBe("🤖👍 🔁1️⃣");
+  expect(board.reports).toHaveLength(1);
+  expect(board.reports[0]).toContain("to the top failed for item pr");
+  expect(board.reports[0]).toContain("Interrupted order update");
+  expect(board.cards.map((card) => card.id)).toEqual(["pr", "review"]);
+  board.failOrder = true;
+  await expect(
+    board
+      .service(loadMigrations())
+      .set({ itemId: pr.id, field: "Status", value: "Owner review", progress: "👤🔍" })
+  ).resolves.toBe("Board field updated");
+  expect(pr.values.Status).toBe("Owner review");
+  expect(board.reports).toHaveLength(2);
+  expect(board.reports[1]).toContain("after Owner review failed for item pr");
+  expect(board.cards.map((card) => card.id)).toEqual(["pr", "review"]);
+  // Both attempts ran the field write and the failed position mutation.
+  expect(board.mutations).toEqual([
+    "BoardSetCards",
+    "BoardPosition",
+    "BoardSetCards",
+    "BoardPosition",
+  ]);
+});
+
 test("Cost is per PR; both issue write paths refuse it without mutations", async () => {
   const board = setup();
   board.stamp(1);

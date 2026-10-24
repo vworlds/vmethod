@@ -45,6 +45,8 @@ export class FakeBoard {
   dropCreate = false;
   raceCreate = false;
   failMove = false;
+  /** Whether the next position mutation fails, exercising the best-effort report. */
+  failOrder = false;
   ignoreMoves = false;
   dropOptions = false;
   failExpect = false;
@@ -319,6 +321,31 @@ export class FakeBoard {
             state.lock = "other-run rival since 2026-10-16T00:00:00.000Z";
             this.readme = writeState(this.readme, state);
           }
+          break;
+        }
+        case "BoardPosition": {
+          // GitHub keeps one manual order per project: `afterId: null` is the top.
+          expect(arg.projectId).toBe("project");
+          expect(arg.itemId).toBeTypeOf("string");
+          if (this.failOrder) {
+            this.failOrder = false;
+            return this.error("Interrupted order update");
+          }
+          const index = this.cards.findIndex((card) => card.id === arg.itemId);
+          if (index < 0) {
+            return this.unknown(payload.query);
+          }
+          const [moved] = this.cards.splice(index, 1);
+          if (arg.afterId === null || arg.afterId === undefined) {
+            this.cards.unshift(moved);
+          } else {
+            const after = this.cards.findIndex((card) => card.id === arg.afterId);
+            if (after < 0) {
+              return this.unknown(payload.query);
+            }
+            this.cards.splice(after + 1, 0, moved);
+          }
+          data = { BoardPosition: { clientMutationId: null } };
           break;
         }
         case "BoardArchive": {

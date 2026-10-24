@@ -39,7 +39,7 @@ import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
 import { ScopeReader, legacyScopeCutoff } from "./scope.js";
 import { AutopilotReader, type AutopilotState } from "./autopilot.js";
-import { setTurn, turnAssignees } from "./turn.js";
+import { sameAssignees, setTurn, turnAssignees } from "./turn.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 
@@ -107,7 +107,7 @@ export interface LoopHost {
   conflictPending?: (pr: number) => boolean;
   /** True while a dispatched conflict fixer owns the card; worker moves must not revive it. */
   conflictFixing?: (pr: number) => boolean;
-  board: Pick<BoardService, "set">;
+  board: Pick<BoardService, "set" | "moveToTop">;
   digest: Digest;
 }
 
@@ -3425,6 +3425,9 @@ export class EventLoop {
           : count(pending.round);
     const red = pending.ci === "red" ? true : pending.ci === "ok" ? false : current.red;
     const text = renderProgress({ state, round, red });
+    // Whether this cycle already wrote Progress/Status: its own order hook already
+    // positioned an Executing card, so an assignee release must not reorder again.
+    let wroteBoard = false;
     try {
       if (
         pending.status !== undefined &&
@@ -3439,14 +3442,22 @@ export class EventLoop {
         });
         card.column = str(pending.status);
         atomicWrite(join(this.dir, "board", card.id), `${card.column}\n`);
+        wroteBoard = true;
       } else if (text !== card.progress) {
         await this.host.board.set({ itemId: card.id, field: "Progress", value: text || null });
+        wroteBoard = true;
       }
       card.progress = text;
       if (pending.releaseOwner === true && state === null) {
         const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, null);
+        const changed = !sameAssignees(card.assignees, next);
         await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
         card.assignees = next;
+        // An Executing handback is activity too, unless the Status/Progress write
+        // above already ordered this card to the top this cycle (best effort).
+        if (changed && card.column === "Executing" && !wroteBoard) {
+          await this.host.board.moveToTop(card.id);
+        }
       }
       remove(path);
     } catch (error) {
@@ -3496,6 +3507,10 @@ export class EventLoop {
     if (next && mismatch) {
       await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
       card.assignees = next;
+      // A reconciled Executing turn is an assignee change: activity moves to the top.
+      if (card.column === "Executing") {
+        await this.host.board.moveToTop(card.id);
+      }
     }
   }
 

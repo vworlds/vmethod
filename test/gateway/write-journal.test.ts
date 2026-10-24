@@ -189,6 +189,45 @@ test("GraphQL aliases/fragments decode recorded board IDs into exact field/value
   f.done();
 });
 
+test("a card position write journals itself and never matches a board field event", async () => {
+  const f = fixtureServer([
+    {
+      path: "/graphql",
+      json: { data: { updateProjectV2ItemPosition: { clientMutationId: null } } },
+    },
+  ]);
+  const client = new GitHubClient(getConfig(f.root, {}), f.env, f.deps);
+  await client.graphql(
+    "mutation BoardPosition($input: UpdateProjectV2ItemPositionInput!) { updateProjectV2ItemPosition(input: $input) { clientMutationId } }",
+    { input: { projectId: "project", itemId: "item-1", afterId: null } }
+  );
+  const path = join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl");
+  const entries = readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({
+    kind: "updateProjectV2ItemPosition",
+    nodeId: "item-1",
+    number: 0,
+  });
+  expect(
+    client.writes.matches(
+      {
+        kind: "board",
+        repo: "example/project",
+        number: 24,
+        itemId: "item-1",
+        field: "Status",
+        value: "Executing",
+      },
+      entries[0].at
+    )
+  ).toBe(false);
+  f.done();
+});
+
 test("the client journals successful REST writes, not reads/failures; pruning and time/kind/item/value matching are bounded", async () => {
   const f = fixtureServer([
     { path: "/repos/example/project/issues/6", method: "GET", json: {} },

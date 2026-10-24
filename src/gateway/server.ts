@@ -644,7 +644,9 @@ class GatewayServer {
       this.deps
     );
     const viewer = object(
-      object(await client.graphql(`query WorkerIdentity { viewer { ${actorFields} } }`)).viewer
+      object(
+        await client.graphql(`query WorkerIdentity { viewer { __typename login databaseId } }`)
+      ).viewer
     );
     if (this.filter.identity(viewer, false)?.role !== "worker") {
       throw new Error(
@@ -690,7 +692,10 @@ class GatewayServer {
           resolveConflicts: (pr) => this.conflicts.resolve(pr),
           conflictPending: (pr) => this.conflicts.pending(pr),
           conflictFixing: (pr) => this.conflicts.fixing(pr),
-          board: { set: (input) => this.board.set(input) },
+          board: {
+            set: (input) => this.board.set(input),
+            moveToTop: (itemId) => this.board.moveToTop(itemId),
+          },
           digest: this.digest,
         },
         input

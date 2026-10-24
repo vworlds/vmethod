@@ -104,6 +104,8 @@ export class WatchFake {
   reports: string[] = [];
   sleeps: number[] = [];
   writes: ObjectData[] = [];
+  /** Executing order movements the loop requested through `board.moveToTop`. */
+  orders: { itemId: string; afterId: string | null }[] = [];
   loops: EventLoop[] = [];
   processStart = 42;
   legacyBatches: number[][] = [];
@@ -363,6 +365,26 @@ export class WatchFake {
                 result[alias] = { projectV2Item: { id: card.id } };
               }
               return graph(result);
+            }
+            if (name === "BoardPosition") {
+              // One manual order per project; `afterId: null` is the top.
+              const input = object(payload.variables.input);
+              const index = this.cards.findIndex((card) => card.id === input.itemId);
+              if (index < 0) {
+                return this.unknown(url);
+              }
+              const [moved] = this.cards.splice(index, 1);
+              if (input.afterId === null || input.afterId === undefined) {
+                this.cards.unshift(moved);
+              } else {
+                const after = this.cards.findIndex((card) => card.id === input.afterId);
+                if (after < 0) {
+                  return this.unknown(url);
+                }
+                this.cards.splice(after + 1, 0, moved);
+              }
+              this.writes.push({ itemId: input.itemId, position: input.afterId ?? null });
+              return graph({ BoardPosition: { clientMutationId: null } });
             }
           }
           if (
@@ -907,6 +929,14 @@ export class WatchFake {
               card.progress = { text: input.value };
             }
             return "updated";
+          },
+          moveToTop: async (itemId) => {
+            const index = this.cards.findIndex((card) => card.id === itemId);
+            if (index > 0) {
+              const [moved] = this.cards.splice(index, 1);
+              this.cards.unshift(moved);
+            }
+            this.orders.push({ itemId, afterId: null });
           },
         },
       },

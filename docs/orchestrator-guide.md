@@ -50,7 +50,9 @@ any other reserved action rather than treating autopilot as blanket permission.
 File each issue estimated in Backlog, keeping open questions on the issue. The owner
 moves it to Scoping when discussion should start. Keep initial intake visible as described
 in [Lifecycle](lifecycle.md) and [Board](board.md). When a card reaches
-Scoping, take it in priority order; do not wait to be told. Develop it on the issue,
+Scoping, take it in priority order; do not wait to be told. The board order is
+priority order: the top card is dealt with first (see
+[card order](board.md#card-order)). Develop it on the issue,
 flipping the assignee whenever the next move changes. Set an issue's initial
 Estimate at filing with `issue create --estimate`; estimate a Backlog issue filed
 without one (typically a collaborator's), or revise during discussion, with
@@ -254,6 +256,12 @@ Behavior a person will see or feel is judged by **trying it**, not by metrics al
 The specification must say that the owner tries it; metric acceptance is never
 presented as “done” for that work.
 
+Work the review columns top-down ([card order](board.md#card-order)): each review
+round you answer moves the PR to the top of Executing, Owner review queues
+handovers oldest-first, and Approved rows merge first at the top. Trust that
+column order when picking up the next PR instead of reconstructing it from
+memory or timestamps.
+
 Green CI is not semantic review. A useful recurring finding belongs in one owning
 guide with a guard where possible; do not copy the same rule into every prompt.
 Review temporary exceptions and trends in complexity, dependency fan-in, duplication,
@@ -266,7 +274,8 @@ incidental run. Local audit recipes and cadence stay with the project.
 
 Only `merge-task` (vmethod 1.0, #8) merges. Apply the [owner approval policy](roles.md)
 and repository protections. Require the PR in Approved after the owner's
-Owner review → Approved move. Stop the worker first. Require green checks for the
+Owner review → Approved move, and merge Approved PRs top-down: the top card is
+merge first. Stop the worker first. Require green checks for the
 exact reviewed head **and current base**: an old green merge run is stale if its
 base parent moved. `refresh-checks` updates the branch to trigger
 a new run; re-running the old event still tests its old base. Conflicts go back to

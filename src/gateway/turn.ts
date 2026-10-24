@@ -62,7 +62,9 @@ export async function setTurn(
   }
 }
 
-function sameAssignees(left: string[], right: string[]): boolean {
+/** Sorted-comparison of the same assignee set, for callers that must distinguish a
+ * real turn change from a redundant setTurn write. */
+export function sameAssignees(left: string[], right: string[]): boolean {
   const normalized = new Set(right.map((login) => login.toLowerCase()));
   return left.length === right.length && left.every((login) => normalized.has(login.toLowerCase()));
 }

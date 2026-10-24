@@ -552,6 +552,26 @@ test("unassigned review is reported, and unambiguous wrong assignments are repai
   expect(object(object(f.cards[1].content).assignees).nodes).toEqual([{ login: "peer" }]);
 });
 
+test("a reconciled Executing assignee change moves the card to the top", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog"), f.card(24, "Executing", "PullRequest")];
+  f.cards[0].progress = { text: "🤖🔨" };
+  const pr = f.cards[1];
+  pr.progress = { text: "🤖👍" }; // A ready turn wants the orchestrator as assignee.
+  const loop = f.loop();
+  await f.tick(loop);
+  expect(object(object(pr.content).assignees).nodes).toEqual([{ login: "peer" }]);
+  // The reconciled turn is activity: the Executing card moves to the top.
+  expect(f.orders).toEqual([{ itemId: "PVTI_24", afterId: null }]);
+  expect(f.cards.map((card) => object(card.content).number)).toEqual([24, 6]);
+  // The settled board repeats nothing, and the unchanged Backlog card never moves.
+  f.advance();
+  await f.tick(loop);
+  expect(f.orders).toEqual([{ itemId: "PVTI_24", afterId: null }]);
+  expect(f.cards.map((card) => object(card.content).number)).toEqual([24, 6]);
+  f.done();
+});
+
 test("a foreign peer's assignment never counts as this project's orchestrator turn", async () => {
   const f = setup();
   // issue #186: the peer project's orchestrator keeps its binding, not this turn.

@@ -90,6 +90,16 @@ test("scope-review advances both gates under verified owner autopilot and commen
     },
     ...boardReads(recording),
     mutations([undefined, { singleSelectOptionId: "executing" }]),
+    {
+      path: "/graphql",
+      json: { data: { updateProjectV2ItemPosition: { clientMutationId: null } } },
+      checkQuery(query, variables) {
+        expect(query).toContain("updateProjectV2ItemPosition");
+        expect(variables).toEqual({
+          input: { projectId: recording.id, itemId: card.id, afterId: null },
+        });
+      },
+    },
   ]);
   const file = join(f.root, "summary.md");
   writeFileSync(file, "Settled scope.");
