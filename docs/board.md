@@ -29,6 +29,17 @@ columns. An explicit issue summons may retain its own owner turn. See
 explicit housekeeping with validated Progress, not as a substitute for the
 [tracked owner-question commands](orchestrator-guide.md).
 
+`board set <issue|pr> Assignees owner|orchestrator|--clear` is that explicit
+housekeeping for the management assignee itself: it repairs a stale turn without a
+turn verb — for example clearing an owner left assigned to a linked issue or epic
+waiting in Executing. The verb refuses any value the card's Status and Progress do
+not imply (`👤` states hold the owner, worker-protocol states hold the
+orchestrator, working or no Progress hold none, and Spec/Owner review hold exactly
+one owner turn assignee), refuses before any write with the expected assignee
+named, and never touches worker assignees. Every change is journaled in the gateway
+write journal, so the session's own watcher stays quiet about it and turn
+bookkeeping remains the board's single source of truth.
+
 The owner moves Backlog → Scoping to start discussion, then Scoping → Spec review
 to agree conclusions. The orchestrator gets `🧭🔍` to rewrite the scope. After
 SCOPE REVIEW the owner gets `👤🔍`; Spec review → Executing approves the exact body.

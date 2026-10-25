@@ -29,6 +29,12 @@ export interface Operations {
   autopilotInherit: { input: { ref: string }; output: string };
   /** Null clears only Progress or Estimate; strings retain ordinary value validation. */
   boardSetIssue: { input: { ref: string; field: string; value: string | null }; output: string };
+  /** Orchestrator-only management-turn housekeeping: set or clear the single management
+   * assignee on a configured-repository issue or PR; worker assignees are untouched. */
+  boardSetAssignees: {
+    input: { ref: string; value: "owner" | "orchestrator" | null };
+    output: string;
+  };
   worker: { input: { args: string[] }; output: string };
   suggestModel: { input: { ref: string }; output: string };
   grade: { input: { ref: string; points?: number }; output: string };

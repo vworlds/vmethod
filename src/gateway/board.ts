@@ -4,7 +4,7 @@ import type { Config } from "../config.js";
 import { compatibility, readState } from "../board/readme.js";
 import { MigrationRunner } from "../board/runner.js";
 import { loadMigrations } from "../board/migrations.js";
-import { progressStates } from "../board/progress.js";
+import { progressStates, parseProgress } from "../board/progress.js";
 import type {
   BoardIO,
   Card,
@@ -16,6 +16,7 @@ import type {
 } from "../board/types.js";
 import { GitHubClient, type Dependencies } from "./client.js";
 import { object, type ObjectData, type PeopleFilter } from "./people.js";
+import { sameAssignees, setTurn, turnAssignees } from "./turn.js";
 import { ScopeReader } from "./scope.js";
 import { migrationIdentity, migrationHolderDead } from "./process-identity.js";
 import packageInfo from "../../package.json" with { type: "json" };
@@ -757,6 +758,74 @@ export class BoardService implements BoardIO {
       snapshot.id
     );
     return "Board field updated";
+  }
+
+  /** Orchestrator-only management-assignee housekeeping (#257): set or clear the single
+   * management (turn) assignee on a configured-repository issue or PR card. The result
+   * must agree with the card's Status and Progress under the same turn rules the
+   * watcher's reconcileTurn enforces (a 👤 Progress holds the owner turn, worker-protocol
+   * states hold the orchestrator, working or no Progress holds none, and Spec/Owner
+   * review columns hold exactly one turn assignee); a mismatch is refused before any
+   * write, naming the expected assignee. Worker assignees are never added or removed,
+   * and the REST assignment writes are journaled at the single GitHub boundary, so the
+   * session's own watcher attributes them to itself and reports nothing for them.
+   * Membership and turn fields are read from the issue side, never the eventually
+   * consistent project listing. */
+  async setAssignees(number: number, value: "owner" | "orchestrator" | null): Promise<string> {
+    if (!this.filter) {
+      throw new Error("Assignee housekeeping requires the authenticated people filter");
+    }
+    const repo = String(this.config.repo);
+    const snapshot = await this.snapshot();
+    compatibility(readState(snapshot.readme), this.boardVersion, this.report);
+    const item = object(await this.github.rest(`/repos/${repo}/issues/${number}`));
+    if (!Array.isArray(item.assignees)) {
+      throw new Error("Missing assignees metadata");
+    }
+    if (typeof item.node_id !== "string" || !item.node_id) {
+      throw new Error("Missing issue node id");
+    }
+    const node = await this.issueSideItem(item.node_id, snapshot.id);
+    if (!node) {
+      throw new Error("Item is not on the configured board");
+    }
+    const card = await this.decodeCard(node);
+    this.scope(card);
+    if (card.archived) {
+      throw new Error("Refusing assignee housekeeping on an archived board item");
+    }
+    const { people } = this.filter;
+    const state = parseProgress(card.values.Progress).state ?? "";
+    const expected = ["owner-review", "owner-question"].includes(state)
+      ? "owner"
+      : ["ready", "question", "blocked", "verifying", "design", "handoff"].includes(state)
+        ? "orchestrator"
+        : state === "working"
+          ? null
+          : ["Spec review", "Owner review"].includes(String(card.values.Status ?? ""))
+            ? "owner"
+            : null;
+    const describe = (role: "owner" | "orchestrator" | null): string =>
+      role ? `${role} (${turnAssignees(people, repo, [], role)[0]})` : "no management assignee";
+    if (value !== expected) {
+      throw new Error(
+        value === null
+          ? `Refusing to clear assignees: ${describe(expected)} holds the turn on #${number}`
+          : `Refusing ${value} assignee: expected ${describe(expected)} on #${number}`
+      );
+    }
+    const current = (item.assignees as ObjectData[]).map((person) => text(object(person).login));
+    // Only the management turn assignee changes: workers keep their own assignments,
+    // so the write adds or removes the management login over the kept non-management set.
+    const kept = turnAssignees(people, repo, current, null);
+    const next = value === null ? kept : [...kept, turnAssignees(people, repo, [], value)[0]];
+    this.github.writes.beginOperation("board set assignees", [{ repo, number }]);
+    await setTurn(this.github, repo, number, current, next);
+    return sameAssignees(current, next)
+      ? `Turn assignees already agree on #${number}`
+      : value === null
+        ? `Cleared the management assignee on #${number}`
+        : `Assigned the ${value} turn on #${number}`;
   }
   /** Best-effort ordering on GitHub's single manual order per project
    * (`updateProjectV2ItemPosition`; `afterId: null` is the top, and the item

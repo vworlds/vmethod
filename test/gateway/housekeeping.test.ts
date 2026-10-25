@@ -1,9 +1,11 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { stringify } from "yaml";
 import { actor, fixtureServer, graph, item } from "./helpers.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
 import { createGateway } from "../../src/gateway/server.js";
+import { object, type ObjectData } from "../../src/gateway/people.js";
 import issueResponse from "../fixtures/github/issue-response.json" with { type: "json" };
 import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import { WatchFake } from "./watch-fake.js";
@@ -824,7 +826,13 @@ test("issue close gates identity and posts the exact checked comment before clos
   f.done();
 }, 15000);
 
-test.each(["issueCreate", "issueClose", "issueEstimate", "boardSetIssue"] as const)(
+test.each([
+  "issueCreate",
+  "issueClose",
+  "issueEstimate",
+  "boardSetIssue",
+  "boardSetAssignees",
+] as const)(
   "%s denies workers before any network",
   async (operation) => {
     const f = fixtureServer([]);
@@ -833,6 +841,7 @@ test.each(["issueCreate", "issueClose", "issueEstimate", "boardSetIssue"] as con
       issueClose: { ref: "37" },
       issueEstimate: { ref: "37", points: 5 },
       boardSetIssue: { ref: "37", field: "Estimate", value: "5" },
+      boardSetAssignees: { ref: "37", value: null },
     };
     await expect(
       f.transport.call(operation, inputs[operation], { role: "worker", taskPr: 40 })
@@ -842,18 +851,17 @@ test.each(["issueCreate", "issueClose", "issueEstimate", "boardSetIssue"] as con
   15000
 );
 
-test.each(["issueClose", "issueEstimate", "boardSetIssue"] as const)(
+test.each(["issueClose", "issueEstimate", "boardSetIssue", "boardSetAssignees"] as const)(
   "%s rejects foreign references before networking",
   async (operation) => {
     const f = fixtureServer([]);
-    await expect(
-      f.transport.call(
-        operation,
-        operation === "issueEstimate"
-          ? { ref: "example/foreign#37", points: 5 }
-          : { ref: "example/foreign#37", field: "Estimate", value: "5" }
-      )
-    ).rejects.toThrow("configured repository");
+    const input =
+      operation === "issueEstimate"
+        ? { ref: "example/foreign#37", points: 5 }
+        : operation === "boardSetAssignees"
+          ? { ref: "example/foreign#37", value: "owner" as const }
+          : { ref: "example/foreign#37", field: "Estimate", value: "5" };
+    await expect(f.transport.call(operation, input)).rejects.toThrow("configured repository");
     f.done();
   },
   15000
@@ -1113,3 +1121,322 @@ test.each(["Estimate", "Status", "Progress"])(
   },
   15000
 );
+
+// --- board set Assignees (issue #257): journaled management-turn housekeeping ---
+
+function assigneeRecording(
+  scenario: {
+    status?: string;
+    progress?: string | null;
+    assignees?: { login: string }[];
+    number?: number;
+    kind?: "Issue" | "PullRequest";
+    archived?: boolean;
+  } = {}
+) {
+  const recording = structuredClone(boardRecording);
+  const card = object(recording.items.nodes[0]);
+  const content = object(card.content);
+  const repository = object(content.repository);
+  content.number = scenario.number ?? 39;
+  repository.nameWithOwner = "example/project";
+  if (scenario.kind) {
+    content.__typename = scenario.kind;
+  }
+  if (scenario.archived) {
+    card.isArchived = true;
+  }
+  content.assignees = { nodes: scenario.assignees ?? [] };
+  card.fieldValues = {
+    nodes: [
+      ...(scenario.status === undefined
+        ? []
+        : [{ name: scenario.status, field: { name: "Status" } }]),
+      ...(scenario.progress ? [{ text: scenario.progress, field: { name: "Progress" } }] : []),
+    ],
+    pageInfo: { hasNextPage: false, endCursor: "NA" },
+  };
+  return recording;
+}
+
+function assigneeIssue(number: number, recording: ObjectData, assignees: { login: string }[]) {
+  const nodes = object(recording.items).nodes;
+  const card = object((Array.isArray(nodes) ? nodes : [])[0]);
+  return {
+    path: `/repos/example/project/issues/${number}`,
+    method: "GET" as const,
+    json: { number, node_id: object(card.content).id, assignees },
+  };
+}
+
+function journalRecords(env: Record<string, string>): ObjectData[] {
+  const path = join(env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl");
+  return readFileSync(path, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as ObjectData);
+}
+
+test("board set Assignees --clear on an Executing linked issue removes the stale owner, journals the write and the watcher reports nothing", async () => {
+  const w = new WatchFake();
+  try {
+    w.task();
+    w.enableWrites = true;
+    const issue = w.card(6, "Executing");
+    object(issue.content).assignees = { nodes: [{ login: "owner" }] };
+    w.cards = [w.cards[0], issue];
+    writeFileSync(join(w.root, "vmethod.yaml"), stringify(w.config));
+    writeFileSync(join(w.root, "people.yaml"), stringify(w.watchPeople));
+    const gateway = createGateway(w.root, w.env, w.deps);
+    const loop = w.loop();
+    expect(await w.tick(loop)).toEqual([]);
+    w.advance();
+    expect(
+      await gateway.call("boardSetAssignees", { ref: "6", value: null }, { role: "orchestrator" })
+    ).toBe("Cleared the management assignee on #6");
+    expect(object(object(issue.content).assignees).nodes).toEqual([]);
+    const records = readFileSync(
+      join(w.env.XDG_STATE_HOME, "vmethod", "watch-test", "writes.jsonl"),
+      "utf8"
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as ObjectData);
+    expect(
+      records.some((record) => record.op === "board set assignees" && record.number === 6)
+    ).toBe(true);
+    expect(
+      records.some(
+        (record) =>
+          record.kind === "unassigned" && record.field === "Assignee" && record.value === "owner"
+      )
+    ).toBe(true);
+    expect(await w.tick(loop)).toEqual([]);
+    expect(w.reports).toEqual([]);
+  } finally {
+    w.done();
+  }
+}, 15000);
+
+test("board set Assignees refuses a worker-protocol item's owner set before any write", async () => {
+  const recording = assigneeRecording({
+    status: "Executing",
+    assignees: [{ login: "worker" }, { login: "owner" }],
+  });
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, [{ login: "worker" }, { login: "owner" }]),
+    membershipRead(recording),
+  ]);
+  await expect(
+    f.transport.call("boardSetAssignees", { ref: "39", value: "owner" })
+  ).rejects.toThrow("Refusing owner assignee: expected no management assignee on #39");
+  expect(existsSyncJournal(f.env)).toBe(false);
+  f.done();
+}, 15000);
+
+function existsSyncJournal(env: Record<string, string>): boolean {
+  return existsSync(join(env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"));
+}
+
+test("board set Assignees refuses a 👤❓ item's orchestrator set and names the expected owner", async () => {
+  const recording = assigneeRecording({
+    status: "Scoping",
+    progress: "👤❓ 🔁2️⃣",
+    assignees: [],
+  });
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, []),
+    membershipRead(recording),
+  ]);
+  await expect(
+    f.transport.call("boardSetAssignees", { ref: "39", value: "orchestrator" })
+  ).rejects.toThrow("Refusing orchestrator assignee: expected owner (owner) on #39");
+  expect(existsSyncJournal(f.env)).toBe(false);
+  f.done();
+}, 15000);
+
+test("board set Assignees refuses a 🤖👍 item's owner set and names the expected orchestrator", async () => {
+  const recording = assigneeRecording({
+    status: "Executing",
+    progress: "🤖👍",
+    assignees: [],
+  });
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, []),
+    membershipRead(recording),
+  ]);
+  await expect(
+    f.transport.call("boardSetAssignees", { ref: "39", value: "owner" })
+  ).rejects.toThrow("Refusing owner assignee: expected orchestrator (peer) on #39");
+  f.done();
+}, 15000);
+
+test("board set Assignees refuses to clear a Spec review card holding the owner turn", async () => {
+  const recording = assigneeRecording({
+    status: "Spec review",
+    assignees: [{ login: "owner" }],
+  });
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, [{ login: "owner" }]),
+    membershipRead(recording),
+  ]);
+  await expect(f.transport.call("boardSetAssignees", { ref: "39", value: null })).rejects.toThrow(
+    "Refusing to clear assignees: owner (owner) holds the turn on #39"
+  );
+  expect(existsSyncJournal(f.env)).toBe(false);
+  f.done();
+}, 15000);
+
+test("board set Assignees --clear on a working card removes the owner and keeps the worker", async () => {
+  const recording = assigneeRecording({
+    status: "Executing",
+    progress: "🤖🔨 🔁2️⃣",
+    assignees: [{ login: "worker" }, { login: "owner" }],
+  });
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, [{ login: "worker" }, { login: "owner" }]),
+    membershipRead(recording),
+    {
+      path: "/repos/example/project/issues/39/assignees",
+      method: "DELETE",
+      body: { assignees: ["owner"] },
+      json: { assignees: [{ login: "worker" }] },
+    },
+  ]);
+  expect(await f.transport.call("boardSetAssignees", { ref: "39", value: null })).toBe(
+    "Cleared the management assignee on #39"
+  );
+  const records = journalRecords(f.env);
+  expect(
+    records.filter(
+      (record) =>
+        record.kind === "unassigned" && record.field === "Assignee" && record.value === "owner"
+    )
+  ).toHaveLength(1);
+  expect(records.some((record) => record.op === "board set assignees")).toBe(true);
+  f.done();
+}, 15000);
+
+test("board set Assignees on an owner-review PR sets the owner through the CLI and journals the assignment", async () => {
+  const recording = assigneeRecording({
+    status: "Owner review",
+    kind: "PullRequest",
+    assignees: [{ login: "worker" }],
+  });
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, [{ login: "worker" }]),
+    membershipRead(recording),
+    {
+      path: "/repos/example/project/issues/39/assignees",
+      method: "POST",
+      body: { assignees: ["owner"] },
+      json: { assignees: [{ login: "worker" }, { login: "owner" }] },
+    },
+  ]);
+  expect(
+    await gatewayVerb(f.transport, "board", ["set", "39", "Assignees", "owner"], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).toBe("Assigned the owner turn on #39");
+  expect(
+    journalRecords(f.env).filter(
+      (record) =>
+        record.kind === "assigned" && record.field === "Assignee" && record.value === "owner"
+    )
+  ).toHaveLength(1);
+  f.done();
+}, 15000);
+
+test("board set Assignees on a 🤖👍 card sets the orchestrator while the worker keeps the assignment", async () => {
+  const recording = assigneeRecording({
+    status: "Executing",
+    progress: "🤖👍",
+    assignees: [{ login: "worker" }],
+  });
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, [{ login: "worker" }]),
+    membershipRead(recording),
+    {
+      path: "/repos/example/project/issues/39/assignees",
+      method: "POST",
+      body: { assignees: ["peer"] },
+      json: { assignees: [{ login: "worker" }, { login: "peer" }] },
+    },
+  ]);
+  expect(await f.transport.call("boardSetAssignees", { ref: "39", value: "orchestrator" })).toBe(
+    "Assigned the orchestrator turn on #39"
+  );
+  f.done();
+}, 15000);
+
+test("board set Assignees refuses an off-board item before any write", async () => {
+  const recording = assigneeRecording();
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, []),
+    membershipRead(recording, false),
+  ]);
+  await expect(f.transport.call("boardSetAssignees", { ref: "39", value: null })).rejects.toThrow(
+    "Item is not on the configured board"
+  );
+  expect(existsSyncJournal(f.env)).toBe(false);
+  f.done();
+}, 15000);
+
+test("board set Assignees refuses an archived card before any write", async () => {
+  const recording = assigneeRecording({
+    status: "Done",
+    archived: true,
+    assignees: [{ login: "owner" }],
+  });
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, [{ login: "owner" }]),
+    membershipRead(recording),
+  ]);
+  await expect(f.transport.call("boardSetAssignees", { ref: "39", value: null })).rejects.toThrow(
+    "Refusing assignee housekeeping on an archived board item"
+  );
+  expect(existsSyncJournal(f.env)).toBe(false);
+  f.done();
+}, 15000);
+
+test("board set Assignees agrees when the requested turn already holds and writes nothing", async () => {
+  const recording = assigneeRecording({
+    status: "Spec review",
+    progress: "👤🔍",
+    assignees: [{ login: "owner" }],
+  });
+  const f = fixtureServer([
+    ...boardReads(recording).slice(0, 2),
+    assigneeIssue(39, recording, [{ login: "owner" }]),
+    membershipRead(recording),
+  ]);
+  expect(await f.transport.call("boardSetAssignees", { ref: "39", value: "owner" })).toBe(
+    "Turn assignees already agree on #39"
+  );
+  const records = journalRecords(f.env);
+  expect(records).toHaveLength(1);
+  expect(records[0].kind).toBe("operation");
+  expect(records[0].op).toBe("board set assignees");
+  f.done();
+}, 15000);
+
+test("board set Assignees rejects an unknown value at the CLI without any request", async () => {
+  const f = fixtureServer([]);
+  await expect(
+    gatewayVerb(f.transport, "board", ["set", "39", "Assignees", "worker"], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).rejects.toThrow("Usage: board set <issue|pr> Assignees owner|orchestrator|--clear");
+  f.done();
+}, 15000);

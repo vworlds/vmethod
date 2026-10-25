@@ -152,6 +152,19 @@ async function existingVerb(
 ): Promise<string> {
   switch (verb) {
     case "board": {
+      if (args[0] === "set" && args[2] === "Assignees") {
+        if (args.length !== 4 || !["owner", "orchestrator", "--clear"].includes(args[3])) {
+          throw new Error("Usage: board set <issue|pr> Assignees owner|orchestrator|--clear");
+        }
+        return transport.call(
+          "boardSetAssignees",
+          {
+            ref: args[1],
+            value: args[3] === "--clear" ? null : (args[3] as "owner" | "orchestrator"),
+          },
+          ctx
+        );
+      }
       if (args[0] === "set") {
         if (args.length !== 4) {
           throw new Error("Usage: board set <issue> <field> <value>|--clear");
