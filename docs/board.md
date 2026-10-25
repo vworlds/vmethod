@@ -95,8 +95,13 @@ a thread comment identifying autopilot. Adding or removing the label on either t
 card takes effect at the next poll; removing it returns the current step to the
 owner without reverting completed work. A later owner addition can grant control
 again. The watcher's own cleanup of an unauthorized label is the exception: it does
-not revoke, and the task's remaining owner grant keeps the delegation. A copied
-task-PR label whose issue grant is live can be restored with `autopilot inherit`.
+not revoke, and the task's remaining owner grant keeps the delegation. Every poll
+judges a task group as a whole: a gateway write on any member (the PR or one of its
+linked issues) within the two-minute in-flight window leaves the whole group
+unjudged, because the copy's owner grant sits on another member's history; a copy
+whose grant is unreadable is skipped the same way. Unknown history removes nothing
+and never reports the task stopped. A copied task-PR label whose issue grant is live
+can be restored with `autopilot inherit`.
 The watcher reports these changes without making engineering decisions.
 
 The owner gate for expensive models applies unchanged. Releases, permissions and

@@ -39,7 +39,12 @@ import { workerWorktree } from "./worker-path.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
 import { ScopeReader, legacyScopeCutoff } from "./scope.js";
-import { AutopilotReader, autopilotStates, type AutopilotState } from "./autopilot.js";
+import {
+  AutopilotReader,
+  autopilotStates,
+  taskGroupNumbers,
+  type AutopilotState,
+} from "./autopilot.js";
 import { sameAssignees, setTurn, turnAssignees } from "./turn.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
@@ -2807,17 +2812,44 @@ export class EventLoop {
         break;
       }
     }
-    // A card whose open-task inheritance is in flight (journal operation within the
-    // two-minute window, #199) is not judged (#249): a poll between the copied label
-    // and its proof write never removes the label or reports its task stopped.
-    const targets = own.filter(
-      (card) => selected.has(card.number) && !this.writes.recentlyWrote(card.repo, card.number)
+    // The watcher judges whole task groups (#253): a verb write touching any
+    // member (a journal operation within the two-minute window, #199) keeps every
+    // member of that group unjudged this poll — judging the PR without a
+    // just-written member's history would read its valid inherited copy as
+    // unauthorized and stop the task. Reads cover every selected card first;
+    // only judging and cleaning are guarded.
+    const selectedCards = own.filter((card) => selected.has(card.number));
+    const reader = new AutopilotReader(this.host.github, this.host.filter, this.host.config);
+    const records = await reader.records(selectedCards.map((card) => card.contentId));
+    // Judged members always read their full task group (#253): a PR's body names
+    // its linked issues, and the owner grant a copy proof cites sits on one of
+    // them. Board cards absent from this poll stay unread; their group's copy
+    // then judges unknown, never unauthorized, so nothing is removed from
+    // incomplete evidence.
+    const byNumber = new Map(
+      cards.filter((card) => this.isOwn(card.repo)).map((card) => [card.number, card] as const)
     );
-    const records = await new AutopilotReader(
-      this.host.github,
-      this.host.filter,
-      this.host.config
-    ).records(targets.map((card) => card.contentId));
+    const known = new Set(records.map((record) => String(record.item.id)));
+    const missing = new Set<string>();
+    for (const { item } of records) {
+      if (item.__typename !== "PullRequest") {
+        continue;
+      }
+      for (const number of taskIssueNumbers(String(item.body)) ?? []) {
+        const member = byNumber.get(number);
+        if (member && !known.has(member.contentId)) {
+          missing.add(member.contentId);
+        }
+      }
+    }
+    if (missing.size) {
+      records.push(...(await reader.records([...missing])));
+    }
+    const targets = selectedCards.filter((card) =>
+      taskGroupNumbers(card.number, records).every(
+        (number) => !this.writes.recentlyWrote(card.repo, number)
+      )
+    );
     let states = autopilotStates(records, this.host.filter, String(this.host.config.repo));
     for (const card of targets) {
       if (!states.get(card.contentId)?.unauthorized) {
@@ -2863,6 +2895,14 @@ export class EventLoop {
         continue;
       }
       const name = `autopilot-${card.number}`;
+      // A copy whose source grant is missing from the read set reads unknown
+      // (#253): the card is skipped — markers, steps and stop reports stay
+      // untouched, since unknown history never removes a label or stops a task.
+      // An already recorded stop from earlier polls keeps being reported.
+      if (state.unknown) {
+        card.autopilotStopped = this.marked(`${name}-stop`);
+        continue;
+      }
       const old = this.readMarker(name);
       const value = state.active ? "on" : "off";
       if (old === "on" && !state.active) {

@@ -17,6 +17,9 @@ export interface AutopilotState {
   /** Historical delegation never substitutes for current authority at a new gate. */
   at(time: number): boolean;
   unauthorized: boolean;
+  /** A copy proof's source grant is missing from the read records (#253): the card
+   * is never unauthorized and the watcher leaves it unjudged this poll. */
+  unknown?: boolean;
 }
 
 const labelEvents = `__typename ... on LabeledEvent { id createdAt actor { ${actorFields} } label { name } } ... on UnlabeledEvent { id createdAt actor { ${actorFields} } label { name } }`;
@@ -203,8 +206,35 @@ export class AutopilotReader {
   }
 }
 
+/** Every card number of a task group among read records: a PR plus the issues its
+ * structured body relation links, transitively in both directions (#253). The
+ * watcher's guards and autopilotStates derive the same groups this way, so a
+ * judged member's group is always inside the read set by construction.
+ */
+export function taskGroupNumbers(number: number, records: { item: ObjectData }[]): number[] {
+  const group = new Set<number>([number]);
+  for (;;) {
+    const before = group.size;
+    for (const { item } of records) {
+      const issues =
+        item.__typename === "PullRequest" ? (taskIssueNumbers(String(item.body)) ?? []) : [];
+      if (group.has(Number(item.number)) || issues.some((issue) => group.has(issue))) {
+        group.add(Number(item.number));
+        issues.forEach((issue) => group.add(issue));
+      }
+    }
+    if (before === group.size) {
+      break;
+    }
+  }
+  return [...group];
+}
+
 /** Interpret recorded wire events. Owner removals win timestamp ties and revoke
  * the whole task, including an inherited PR label. Unknown history fails closed.
+ * A copy citing a source grant outside the read records reads unknown (#253):
+ * never unauthorized, and it grants nothing on its own; the watcher skips such a
+ * card instead of removing its label.
  */
 export function autopilotStates(
   records: { item: ObjectData; events: ObjectData[] }[],
@@ -243,6 +273,9 @@ export function autopilotStates(
       );
     const proof = copyProof(item, filter, repo);
     let authorized = false;
+    // An authenticated copy whose source grant is missing from the read records
+    // reads unknown (#253), never unauthorized; it grants nothing on its own.
+    let unknown = false;
     const decisions: Decision[] = [];
     for (const event of relevant.sort(
       (a, b) =>
@@ -253,18 +286,33 @@ export function autopilotStates(
       const owner = filter.identity(event.actor)?.role === "owner";
       const actor = filter.identity(event.actor);
       const source = owners.get(String(proof?.source));
-      const copied =
+      const copyActor =
         event.__typename === "LabeledEvent" &&
         event.id === proof?.event &&
         !!actor &&
-        filter.roleIn(actor, repo) === "orchestrator" &&
+        filter.roleIn(actor, repo) === "orchestrator";
+      const copied =
+        copyActor &&
         !!source &&
         (taskIssueNumbers(String(item.body)) ?? []).includes(source.number) &&
         source.at <= at;
       if (event.__typename === "LabeledEvent") {
-        authorized = owner || copied;
         if (owner) {
+          authorized = true;
+          unknown = false;
           decisions.push({ at, enabled: true, id: String(event.id) });
+        } else if (copied) {
+          authorized = true;
+          unknown = false;
+        } else if (copyActor && !source) {
+          // The copy event is authenticated but its source grant is not in the
+          // read records (#253): unknown, never unauthorized, granting nothing
+          // by itself — the group's readable owner grant keeps standing.
+          unknown = true;
+          authorized = false;
+        } else {
+          authorized = false;
+          unknown = false;
         }
       } else {
         // Removing a valid grant/copy is a stop, even if the remover is unknown.
@@ -272,37 +320,25 @@ export function autopilotStates(
           decisions.push({ at, enabled: false, id: String(event.id) });
         }
         authorized = false;
+        unknown = false;
       }
     }
     return {
       item,
-      valid: valid && present === authorized,
+      valid: valid && (present === authorized || unknown),
       present,
       authorized,
       decisions,
-      unauthorized: present && !authorized,
+      unauthorized: present && !authorized && !unknown,
+      unknown,
     };
   });
   const result = new Map<string, AutopilotState>();
   for (const entry of local) {
     // Relations are task metadata, never title/branch-number guesses. Include all
     // cards of a task so a safety-valve removal on either side stops its next step.
-    const group = new Set([Number(entry.item.number)]);
-    for (;;) {
-      const before = group.size;
-      for (const { item } of local) {
-        const issues =
-          item.__typename === "PullRequest" ? (taskIssueNumbers(String(item.body)) ?? []) : [];
-        if (group.has(Number(item.number)) || issues.some((issue) => group.has(issue))) {
-          group.add(Number(item.number));
-          issues.forEach((issue) => group.add(issue));
-        }
-      }
-      if (before === group.size) {
-        break;
-      }
-    }
-    const members = local.filter(({ item }) => group.has(Number(item.number)));
+    const group = taskGroupNumbers(Number(entry.item.number), local);
+    const members = local.filter(({ item }) => group.includes(Number(item.number)));
     const decisions = members
       .flatMap((member) => member.decisions)
       .sort((a, b) => b.at - a.at || Number(a.enabled) - Number(b.enabled));
@@ -317,6 +353,7 @@ export function autopilotStates(
       ...(active && latest ? { grant: latest.id } : {}),
       at,
       unauthorized: entry.unauthorized,
+      unknown: entry.unknown,
     });
   }
   return result;

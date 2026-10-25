@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
@@ -317,6 +317,47 @@ test("removal on either side stops the task; exact inherited event is the only n
   }
 });
 
+test("a copy citing a source grant outside the read records is unknown, never unauthorized", () => {
+  const f = setup();
+  try {
+    const body =
+      '<!-- vmethod-autopilot-copy {"event":"copy","source":"grant"} -->\n<!-- vmethod-task {"issues":[8]} -->';
+    const pr = issue({ __typename: "PullRequest", id: "pr", number: 27, body });
+    const copy = event(true, { id: "copy", actor: actor(2), createdAt: "2026-10-24T17:49:38Z" });
+    const states = autopilotStates([{ item: pr, events: [copy] }], f.filter, "example/project");
+    const alone = states.get("pr")!;
+    // The unreadable grant fails safe: no removal candidate, no active delegation
+    // read out of unverifiable history, and the record still validates.
+    expect(alone.unauthorized).toBe(false);
+    expect(alone.unknown).toBe(true);
+    expect(alone.active).toBe(false);
+    // With the group's owner grant in the read set the copy authorizes again.
+    const whole = autopilotStates(
+      [
+        { item: issue(), events: [event()] },
+        { item: pr, events: [copy] },
+      ],
+      f.filter,
+      "example/project"
+    );
+    expect(whole.get("pr")!.unauthorized).toBe(false);
+    expect(whole.get("pr")!.unknown).toBe(false);
+    expect(whole.get("pr")!.active).toBe(true);
+    expect(whole.get("issue")!.active).toBe(true);
+    // A claimed source with a non-orchestrator copy actor stays unauthorized.
+    const forged = event(true, { id: "copy", actor: actor(1), createdAt: "2026-10-24T17:49:38Z" });
+    const claimed = autopilotStates(
+      [{ item: pr, events: [forged] }],
+      f.filter,
+      "example/project"
+    ).get("pr")!;
+    expect(claimed.unauthorized).toBe(true);
+    expect(claimed.unknown).toBe(false);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
 /** A task issue with the owner's grant beside its task PR carrying the plain copy. */
 function taskCopy(body: string): {
   f: WatchFake;
@@ -411,21 +452,94 @@ test("watcher polls between the copied label and its proof write never remove th
     const loop = f.loop();
     const first = await f.once(loop);
     expect(writes).toEqual([]);
-    expect(
-      first.some(
-        (value) =>
-          value.kind === "autopilot" && value.line.includes("AUTOPILOT #8: owner-delegated")
-      )
-    ).toBe(true);
-    expect(first.some((value) => value.kind === "autopilot" && value.line.includes("#27"))).toBe(
-      false
-    );
+    // The guard judges whole task groups (#253): the in-flight PR keeps every
+    // member of its group unjudged this poll, including the issue's delegation.
+    expect(first.filter((value) => value.kind === "autopilot")).toEqual([]);
     // The proof lands and the window expires: the copied label survives, authorized.
     object(prCard.content).body = body.replace(
       "<!-- vmethod-task",
       `<!-- vmethod-autopilot-copy {"event":"copy","source":"grant"} -->\n\n<!-- vmethod-task`
     );
     f.advance(121_000);
+    const second = await f.once(loop);
+    expect(writes).toEqual([]);
+    expect(
+      second.some(
+        (value) =>
+          value.kind === "autopilot" && value.line.includes("AUTOPILOT #27: owner-delegated")
+      )
+    ).toBe(true);
+    expect(
+      second.some(
+        (value) =>
+          value.kind === "autopilot" && value.line.includes("AUTOPILOT #8: owner-delegated")
+      )
+    ).toBe(true);
+  } finally {
+    f.done();
+  }
+});
+
+test("watcher leaves a task group unjudged when only its issue was recently written", async () => {
+  const body =
+    'Task text\n\n<!-- vmethod-autopilot-copy {"event":"copy","source":"grant"} -->\n\n<!-- vmethod-task {"issues":[8]} -->\n';
+  const { f, writes } = taskCopy(body);
+  try {
+    mkdirSync(f.dir, { recursive: true });
+    // The #253 repro: an ordinary review round journals its operation for the PR
+    // card and every linked issue's writes, so the issue card is in flight while
+    // the task PR carries a valid copied label.
+    writeFileSync(
+      join(f.dir, "writes.jsonl"),
+      `${JSON.stringify({
+        at: f.iso(),
+        kind: "operation",
+        op: "review",
+        repo: "example/project",
+        number: 8,
+      })}\n`
+    );
+    const loop = f.loop();
+    const first = await f.once(loop);
+    // Nothing is judged or cleaned, and the task is not reported stopped.
+    expect(writes).toEqual([]);
+    expect(first.filter((value) => value.kind === "autopilot")).toEqual([]);
+    expect(first.some((value) => value.line.includes("stopped; owner's control"))).toBe(false);
+    // The window expires: the copied label survives, authorized by its source grant.
+    f.advance(121_000);
+    const second = await f.once(loop);
+    expect(writes).toEqual([]);
+    expect(
+      second.some(
+        (value) =>
+          value.kind === "autopilot" && value.line.includes("AUTOPILOT #27: owner-delegated")
+      )
+    ).toBe(true);
+  } finally {
+    f.done();
+  }
+});
+
+test("a copy whose source grant the poll cannot read removes nothing", async () => {
+  const body =
+    'Task text\n\n<!-- vmethod-autopilot-copy {"event":"copy","source":"grant"} -->\n\n<!-- vmethod-task {"issues":[8]} -->\n';
+  const { f, writes, prCard } = taskCopy(body);
+  // The issue card is not on the board read: its grant history stays unread, so
+  // the copy reads unknown, never unauthorized — no removal, no report, no marker.
+  f.cards = [prCard];
+  try {
+    mkdirSync(f.dir, { recursive: true });
+    const loop = f.loop();
+    const first = await f.once(loop);
+    expect(writes).toEqual([]);
+    expect(first.filter((value) => value.kind === "autopilot")).toEqual([]);
+    expect(existsSync(join(f.dir, "autopilot-27"))).toBe(false);
+    // Still nothing removed once the source grant becomes readable and the proof
+    // authorizes the copy again.
+    const issueCard = f.card(8, "Executing");
+    issueCard.content = { ...object(issueCard.content), ...issue(), id: "issue" };
+    f.cards = [issueCard, prCard];
+    f.advance();
     const second = await f.once(loop);
     expect(writes).toEqual([]);
     expect(
