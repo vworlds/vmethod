@@ -254,8 +254,7 @@ export class BoardService implements BoardIO {
   }
 
   async cards(projectId: string): Promise<Card[]> {
-    // ProjectV2.items excludes archived items. Read repository content-side
-    // memberships too, including closed issues/PRs, without one query per card.
+    // Everyday operations need only the cheap active-project listing.
     const values = await this.pages(async (cursor) => {
       const result = object(
         await this.github.graphql(
@@ -265,7 +264,18 @@ export class BoardService implements BoardIO {
       );
       return object(object(result.node).items);
     });
-    const merged = new Map(values.map((card) => [text(card.id), card]));
+    await this.completeConnections(values, "fieldValues");
+    const cards: Card[] = [];
+    for (const card of values) {
+      cards.push(await this.decodeCard(card));
+    }
+    return cards;
+  }
+
+  /** Migration-only full enumeration: archived issue/PR memberships cost a repository-history scan. */
+  async allCards(projectId: string): Promise<Card[]> {
+    const merged = new Map((await this.cards(projectId)).map((card) => [card.id, card]));
+    const memberships = new Map<string, ObjectData>();
     for (const repo of this.repositories()) {
       const [owner, name] = repo.split("/");
       for (const kind of ["issues", "pullRequests"] as const) {
@@ -283,19 +293,18 @@ export class BoardService implements BoardIO {
         for (const entry of content) {
           for (const card of nodes(entry.projectItems)) {
             if (object(card.project).id === projectId) {
-              merged.set(text(card.id), card);
+              memberships.set(text(card.id), card);
             }
           }
         }
       }
     }
-    const items = [...merged.values()];
+    const items = [...memberships.values()];
     await this.completeConnections(items, "fieldValues");
-    const cards: Card[] = [];
     for (const card of items) {
-      cards.push(await this.decodeCard(card));
+      merged.set(text(card.id), await this.decodeCard(card));
     }
-    return cards;
+    return [...merged.values()];
   }
 
   /** Page nested connections in bounded GraphQL batches, never per-item requests. */

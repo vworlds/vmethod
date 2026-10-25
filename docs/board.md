@@ -274,6 +274,11 @@ and field-value pages are batched too, not fetched with a request per card. Keep
 `board.repos` complete: archived content outside that list, and archived draft items
 without issue/PR content, cannot be discovered through this route.
 
+The expensive full read (`BoardIO.allCards`) is reserved for migration planning,
+dry runs, moves, verification and archived-move recovery. Everyday card lookups,
+workflow status, reviews, merges and card writes keep using `BoardIO.cards`, the
+cheap active-project listing; they do not scan repository history.
+
 Dry runs mark archived cards `(archived)` and show their moves. GitHub
 refuses field writes to archived items, so an explicit migration move journals its
 intent in the managed README block (`archived_move`) before unarchiving the card,

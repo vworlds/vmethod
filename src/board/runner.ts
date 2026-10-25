@@ -377,7 +377,7 @@ export class MigrationRunner {
 
   private async move(field: Field, from: string, to: string, rewrite = false): Promise<void> {
     const { snapshot } = await this.held();
-    const cards = (await this.io.cards(snapshot.id)).flatMap((card) => {
+    const cards = (await this.io.allCards(snapshot.id)).flatMap((card) => {
       const value = card.values[field.name];
       if (
         typeof value !== "string" ||
@@ -401,7 +401,7 @@ export class MigrationRunner {
     if (!cards.length) {
       return;
     }
-    const live = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
+    const live = new Map((await this.io.allCards(snapshot.id)).map((card) => [card.id, card]));
     if (
       cards.some(
         ({ id, value, archived }) =>
@@ -467,7 +467,7 @@ export class MigrationRunner {
         return;
       }
       const field = this.field(snapshot, intent.field);
-      const card = (await this.io.cards(snapshot.id)).find(({ id }) => id === intent.id);
+      const card = (await this.io.allCards(snapshot.id)).find(({ id }) => id === intent.id);
       if (!card) {
         throw new Error(`Archived move item missing: ${intent.id}`);
       }
@@ -486,7 +486,7 @@ export class MigrationRunner {
           await this.io.setArchived(snapshot.id, card.id, true);
         }
       }
-      const verified = (await this.io.cards(snapshot.id)).find(({ id }) => id === intent.id);
+      const verified = (await this.io.allCards(snapshot.id)).find(({ id }) => id === intent.id);
       if (!verified?.archived || (verified.values[field.name] ?? null) !== intent.value) {
         throw new Error(`Archived move verification failed for ${field.name} on ${intent.id}`);
       }
@@ -519,7 +519,7 @@ export class MigrationRunner {
       const expandedField = this.field((await this.held()).snapshot, field.name);
       const changed = plan.filter(({ from, value }) => from !== value);
       await this.moveCards(snapshot.id, expandedField, changed);
-      const live = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
+      const live = new Map((await this.io.allCards(snapshot.id)).map((card) => [card.id, card]));
       if (
         plan.some(
           ({ id, value, archived }) =>
@@ -589,7 +589,9 @@ export class MigrationRunner {
       if (!options.some((option) => option.name === op.option)) {
         return;
       }
-      if ((await this.io.cards(snapshot.id)).some((card) => card.values[op.field] === op.option)) {
+      if (
+        (await this.io.allCards(snapshot.id)).some((card) => card.values[op.field] === op.option)
+      ) {
         throw new Error(`Cannot remove occupied option ${op.option}`);
       }
       await this.preserveOptions(
@@ -640,7 +642,7 @@ export class MigrationRunner {
     renames: Record<string, string> = {}
   ): Promise<void> {
     const { snapshot } = await this.held();
-    const values = (await this.io.cards(snapshot.id)).map((card) => {
+    const values = (await this.io.allCards(snapshot.id)).map((card) => {
       const value = card.values[field.name];
       return {
         id: card.id,
@@ -670,7 +672,7 @@ export class MigrationRunner {
       await this.io.options(field, options, renames);
     }
     await this.held();
-    const verified = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
+    const verified = new Map((await this.io.allCards(snapshot.id)).map((card) => [card.id, card]));
     const mismatches = values.filter(
       ({ id, value }) =>
         !verified.has(id) || (verified.get(id)!.values[field.name] ?? null) !== value
@@ -683,7 +685,7 @@ export class MigrationRunner {
   }
 
   private async workflowPlan(projectId: string) {
-    const cards = await this.io.cards(projectId);
+    const cards = await this.io.allCards(projectId);
     if (!this.io.workflowEvidence) {
       throw new Error("Missing workflow migration evidence reader");
     }
@@ -742,7 +744,7 @@ export class MigrationRunner {
   private async previewOptions(pending: Migration[]): Promise<string[]> {
     const snapshot = await this.io.snapshot();
     const fields = structuredClone(snapshot.fields);
-    const cards = await this.io.cards(snapshot.id);
+    const cards = await this.io.allCards(snapshot.id);
     const output: string[] = [];
     const state = readState(snapshot.readme);
     if (state.optionUpdate) {

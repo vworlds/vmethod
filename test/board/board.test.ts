@@ -304,7 +304,35 @@ test("fake rejects both field updates and clears on archived cards", async () =>
   }
 });
 
-test("cards merges paged repository issue/PR archived memberships with active project items", async () => {
+test("ordinary Status writes and their card lookup never scan repository history", async () => {
+  const board = setup();
+  board.stamp(1);
+  board.fields
+    .find(({ name }) => name === "Status")!
+    .options.push({
+      id: "owner-review",
+      name: "Owner review",
+      color: "RED",
+      description: "",
+    });
+  const target = board.card("target");
+  const last = board.card("last-active");
+  last.values.Status = "Owner review";
+  const archived = board.card("archived");
+  archived.archived = true;
+  archived.values.Status = "Owner review";
+  await board
+    .service()
+    .set({ itemId: target.id, field: "Status", value: "Owner review", progress: null });
+  expect(target.values.Status).toBe("Owner review");
+  expect(board.cards.map(({ id }) => id)).toEqual([last.id, target.id, archived.id]);
+  expect(board.mutations).toContain("BoardPosition");
+  expect(board.requests).toContain("BoardCards");
+  expect(board.requests).not.toContain("BoardRepositoryCards");
+  expect(board.reports).toEqual([]);
+});
+
+test("allCards merges paged repository issue/PR archived memberships with active project items", async () => {
   const board = setup();
   board.config.board.repos.push("example/foreign");
   board.pageSize = 1;
@@ -325,7 +353,7 @@ test("cards merges paged repository issue/PR archived memberships with active pr
   for (let index = 0; index < 3; index++) {
     board.otherContent.push({ id: `untracked-${index}`, repo: "example/project", kind: "Issue" });
   }
-  const cards = await board.service().cards("project");
+  const cards = await board.service().allCards("project");
   expect(cards.map(({ id }) => id).sort()).toEqual([active.id, issue.id, pr.id].sort());
   expect(cards.find(({ id }) => id === issue.id)).toMatchObject({
     archived: true,
@@ -381,7 +409,7 @@ test.each(["repository", "membership", "cursor"])(
       }
       return fetch(input, init);
     };
-    await expect(board.service().cards("project")).rejects.toThrow(
+    await expect(board.service().allCards("project")).rejects.toThrow(
       failure === "cursor" ? "Invalid board pagination cursor" : "Missing board connection"
     );
     expect(board.mutations).toEqual([]);
@@ -394,7 +422,7 @@ test("archived value pagination batches continuations with at most 25 cards per 
   for (let index = 0; index < 27; index++) {
     board.card(`archived-${index}`).archived = true;
   }
-  const cards = await board.service().cards("project");
+  const cards = await board.service().allCards("project");
   expect(cards).toHaveLength(27);
   expect(cards.every((card) => card.archived && card.values.Progress === "🤖👍  🔁1️⃣2️⃣ 🔴 ")).toBe(
     true
@@ -776,14 +804,16 @@ test("board status and --fix ignore archived closed cards with unset Status", as
   archived.values.Status = null;
   const before = structuredClone(archived);
   const service = board.service();
-  expect((await service.cards("project")).find(({ id }) => id === archived.id)).toMatchObject({
+  expect((await service.allCards("project")).find(({ id }) => id === archived.id)).toMatchObject({
     archived: true,
     values: { Status: null },
   });
+  board.requests = [];
   expect((await service.status()).mismatches).toEqual([]);
   expect((await service.fixStatus()).mismatches).toEqual([]);
   expect(archived).toEqual(before);
   expect(board.mutations).toEqual([]);
+  expect(board.requests).not.toContain("BoardRepositoryCards");
 });
 
 test("board status reports empty Status cards and --fix reconciles them like the invariant", async () => {

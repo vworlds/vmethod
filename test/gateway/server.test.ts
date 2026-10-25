@@ -56,35 +56,6 @@ test.each(["owner", "worker", "unknown", "untrusted edit"])(
         path: "/graphql",
         json: { data: { node: { items: { nodes: [card], pageInfo: { hasNextPage: false } } } } },
       },
-      ...["issues", "pullRequests"].map((kind) => ({
-        path: "/graphql",
-        json: {
-          data: {
-            repository: {
-              [kind]: {
-                nodes:
-                  kind === "pullRequests"
-                    ? [
-                        {
-                          id: card.content.id,
-                          projectItems: {
-                            nodes: [{ ...card, project: { id: recordedBoard.id } }],
-                            pageInfo: { hasNextPage: false },
-                          },
-                        },
-                      ]
-                    : [],
-                pageInfo: { hasNextPage: false },
-              },
-            },
-          },
-        },
-        checkQuery(query: string, variables: Record<string, unknown>) {
-          expect(query).toContain(`${kind}(first:`);
-          expect(query).toContain("includeArchived: true");
-          expect(variables).toEqual({ owner: "example", name: "project", cursor: null });
-        },
-      })),
       graph({
         node: item({
           comments: {

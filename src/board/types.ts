@@ -118,8 +118,10 @@ export interface BoardIO {
     options: Omit<Option, "id">[],
     renames?: Record<string, string>
   ): Promise<void>;
-  /** Enumerate active project items and archived issue/PR items from board.repos, with live values/archive state. */
+  /** Cheap active-project listing for everyday operations and workflow status. */
   cards(projectId: string): Promise<Card[]>;
+  /** Migration-only full read: active items plus archived issue/PR items from board.repos, with live values/archive state. */
+  allCards(projectId: string): Promise<Card[]>;
   setCards(
     projectId: string,
     field: Field,
