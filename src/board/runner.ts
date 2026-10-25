@@ -744,7 +744,11 @@ export class MigrationRunner {
         }
         const previousOrder = field.options.map(({ name }) => name);
         const nextOrder = options.map(({ name }) => name);
-        if (JSON.stringify(previousOrder) !== JSON.stringify(nextOrder)) {
+        if (
+          previousOrder.length === nextOrder.length &&
+          previousOrder.every((name) => nextOrder.includes(name)) &&
+          JSON.stringify(previousOrder) !== JSON.stringify(nextOrder)
+        ) {
           output.push(
             `v${migration.version}: ${field.name} option order ${JSON.stringify(previousOrder)} → ${JSON.stringify(nextOrder)}`
           );
