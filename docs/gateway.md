@@ -99,6 +99,7 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod autopilot stop <issue|pr> <n>`
 - `vmethod autopilot inherit <pr>`
 - `vmethod board set <issue> <field> <value>|--clear`
+- `vmethod board set <issue|pr> Assignees owner|orchestrator|--clear`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package with `npm exec --no -- vmethod`, never a downloading fallback.
@@ -229,7 +230,30 @@ Status writes clear Progress first; the gateway client journals the
 successful mutations like other writes. No housekeeping command changes repository/board scope.
 The typed operations are `issueCreate({title, file, labels?, estimate?, status?})`,
 `issueClose({ref, comment?})`, `issueBlock({ref, blocker})`, `issueUnblock({ref, blocker})`,
-`issueEstimate({ref, points})` and `boardSetIssue({ref, field, value})` in `src/gateway/transport.ts`.
+`issueEstimate({ref, points})`, `boardSetIssue({ref, field, value})` and
+`boardSetAssignees({ref, value})` in `src/gateway/transport.ts`.
+
+`board set <issue|pr> Assignees owner|orchestrator|--clear` is the journaled
+management-assignee housekeeping for a change request that needs a direct turn fix
+without a review, ask or scope-review handover. The ref accepts issue or PR numbers
+in the configured repository only. The verb sets or clears the item's single
+management (turn) assignee; worker assignees are never added or removed, because
+they stay with the worker launcher. The requested value must agree with the card's
+Status and Progress under the same turn rules the watcher's reconciliation
+enforces: a 👤 Progress (`👤🔍`, `👤❓`) holds the owner turn; the worker-protocol
+states (`🤖👍`, `🤖❓`, `🤖🚫`, `🤖📐`, `🤖🤝`) and `🧭🔍` hold the orchestrator;
+`🤖🔨`, and no Progress at all, hold no management assignee — including linked
+issues and epics waiting in Executing; and the Spec review and Owner review
+columns hold exactly one turn assignee (the owner). A mismatch is refused before
+any write, naming the expected assignee, and off-board, archived and foreign-repo
+items are refused too. Assignments and removals go through `turnAssignees` and
+`setTurn` over a fresh assignee read, and the gateway journals the successful
+REST writes as one operation, so the session's own watcher attributes them to
+itself and emits no OWNER DONE, assignment notice or BOARD VIOLATION for them —
+this is what keeps housekeeping from being misread as another session's move.
+This is a deliberate-repair verb for cases such as a stale owner assignee left on
+an epic in Executing; anything that waits on the owner still goes through the
+tracked owner-question commands.
 
 ## Worker commands
 

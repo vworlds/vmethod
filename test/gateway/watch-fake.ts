@@ -747,6 +747,9 @@ export class WatchFake {
           ) {
             response = this.history;
           } else if (/^\/repos\/example\/project\/issues\/(?:6|7|8|24|27|37|39)$/.test(route)) {
+            const matched = this.cards.find(
+              (card) => object(card.content).number === Number(route.split("/").at(-1))
+            );
             response = {
               ...(this.issues.find((i) => i.number === Number(route.split("/").at(-1))) ?? {
                 title: "Card title",
@@ -754,13 +757,8 @@ export class WatchFake {
               }),
               ...(this.enableWrites
                 ? {
-                    assignees: object(
-                      object(
-                        this.cards.find(
-                          (card) => object(card.content).number === Number(route.split("/").at(-1))
-                        )?.content
-                      ).assignees
-                    ).nodes,
+                    assignees: object(object(matched?.content).assignees).nodes,
+                    node_id: object(matched?.content).id,
                   }
                 : {}),
             };

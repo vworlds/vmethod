@@ -811,6 +811,13 @@ class GatewayServer {
     return this.board.setIssueField(String(issue.id), field, value);
   };
 
+  /** Orchestrator-only management-turn housekeeping (#257): the board service validates
+   * the requested assignee against the card's Status and Progress and journals the writes. */
+  boardSetAssignees: Handlers["boardSetAssignees"] = async ({ ref, value }) => {
+    const number = this.localNumber(ref);
+    return this.board.setAssignees(number, value);
+  };
+
   /** Create an own-repository issue from checked content and ensure readable configured-board
    * membership. Optional estimate/status use the shared board field writer; estimates must
    * use the shared points scale and labels may repeat. Status defaults to the first workflow
@@ -2234,6 +2241,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     autopilotInherit: server.autopilotInherit,
     issueClose: server.issueClose,
     boardSetIssue: server.boardSetIssue,
+    boardSetAssignees: server.boardSetAssignees,
     worker: server.worker,
     grade: server.grade,
     suggestModel: server.suggestModel,
@@ -2280,6 +2288,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     autopilotInherit: ["orchestrator"],
     issueClose: ["orchestrator"],
     boardSetIssue: ["orchestrator"],
+    boardSetAssignees: ["orchestrator"],
     worker: ["orchestrator"],
     grade: ["orchestrator"],
     suggestModel: ["orchestrator"],
