@@ -295,7 +295,38 @@ export class WatchFake {
               return graph({
                 node: {
                   items: {
-                    nodes: this.cards.map((card) => this.boardCard(card)),
+                    nodes: this.cards
+                      .filter((card) => card.isArchived !== true)
+                      .map((card) => this.boardCard(card)),
+                    pageInfo: { hasNextPage: false },
+                  },
+                },
+              });
+            }
+            if (name === "BoardRepositoryCards") {
+              const repo = `${payload.variables.owner}/${payload.variables.name}`;
+              const kind = String(payload.query).includes("pullRequests(first:")
+                ? "PullRequest"
+                : "Issue";
+              const field = kind === "Issue" ? "issues" : "pullRequests";
+              return graph({
+                repository: {
+                  [field]: {
+                    nodes: this.cards
+                      .filter((card) => {
+                        const content = object(card.content);
+                        return (
+                          content.__typename === kind &&
+                          object(content.repository).nameWithOwner === repo
+                        );
+                      })
+                      .map((card) => ({
+                        id: object(card.content).id,
+                        projectItems: {
+                          nodes: [this.boardCard(card)],
+                          pageInfo: { hasNextPage: false },
+                        },
+                      })),
                     pageInfo: { hasNextPage: false },
                   },
                 },
@@ -783,6 +814,7 @@ export class WatchFake {
   boardCard(card: ObjectData): ObjectData {
     return {
       id: card.id,
+      isArchived: card.isArchived === true,
       project: { id: "project" },
       content: { ...object(card.content), closedAt: null },
       fieldValues: {

@@ -257,8 +257,19 @@ Migrations resume idempotently after interruption. A budget pause releases the l
 and records its position; a failed verification stops at the last verified version.
 Use explicit stale-lock recovery only after checking the holder. They never downgrade.
 
-Planning, dry runs, card moves and post-update checks include archived items, even
-on shared boards. Dry runs mark them `(archived)` and show their moves. GitHub
+Planning, dry runs, card moves and post-update checks include archived issues and
+PRs from every repository in `board.repos`, even on shared boards. GitHub's project
+`items` listing excludes archived items, so enumeration also pages through **every
+issue and PR, open or closed, in each configured repository**, reading their
+`projectItems(includeArchived: true)` memberships. It keeps only this project's
+memberships and merges them with the active listing by item ID. These batched,
+paged reads add cost proportional to repository history and repeat during migration
+verification and recovery; allow for the additional GraphQL budget. Nested membership
+and field-value pages are batched too, not fetched with a request per card. Keep
+`board.repos` complete: archived content outside that list, and archived draft items
+without issue/PR content, cannot be discovered through this route.
+
+Dry runs mark archived cards `(archived)` and show their moves. GitHub
 refuses field writes to archived items, so an explicit migration move journals its
 intent in the managed README block (`archived_move`) before unarchiving the card,
 setting its value and archiving it again. Both the value and archive state must

@@ -140,6 +140,14 @@ mutation encoding. Mutation response envelopes retain only the selected
 write recording**. The orchestrator owns live write smoke under amendment 1.
 Scratch captures remain ignored; no credentials or unfiltered text are committed.
 
+PR #258's board fakes also project content-side memberships into paged repository
+`issues`/`pullRequests` connections, and batch continuation nodes for memberships and
+field values. The item/content/value wire shapes remain the projections above;
+pagination cases add synthetic IDs and other-project memberships. The verified
+orchestrator's PR #258 REVIEW round 1 records the live observation that project
+`items` omits archives, while `projectItems(includeArchived: true)` returns them.
+The fake models that distinction; these are not new live-write recordings.
+
 ## Legacy task bodies (PR #44)
 
 `legacy-task-bodies.json` retains only branch names and the opening/closing body

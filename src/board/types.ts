@@ -118,7 +118,7 @@ export interface BoardIO {
     options: Omit<Option, "id">[],
     renames?: Record<string, string>
   ): Promise<void>;
-  /** Enumerate all project items, including archived items, with live values and archive state. */
+  /** Enumerate active project items and archived issue/PR items from board.repos, with live values/archive state. */
   cards(projectId: string): Promise<Card[]>;
   setCards(
     projectId: string,

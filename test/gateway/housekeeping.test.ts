@@ -55,6 +55,7 @@ test("scope-review advances both gates under verified owner autopilot and commen
     graph({ node: issue }),
     ...boardReads(recording).slice(0, 2),
     { path: "/graphql", json: { data: { node: { items: recording.items } } } },
+    ...boardRepositoryReads(recording),
     ...authority(),
     graph({
       node: item({ id: issue.id, assignees: { nodes: [], pageInfo: { hasNextPage: false } } }),
@@ -123,6 +124,7 @@ test("scope-review publishes the body hash and hands the issue card to the owner
     graph({ node: issue }),
     ...boardReads(recording).slice(0, 2),
     { path: "/graphql", json: { data: { node: { items: recording.items } } } },
+    ...boardRepositoryReads(recording),
     graph({
       node: item({
         id: issue.id,
@@ -891,6 +893,36 @@ test.each(["issueCreate", "issueClose"] as const)(
   },
   15000
 );
+
+function boardRepositoryReads(recording = structuredClone(boardRecording)) {
+  return ["issues", "pullRequests"].map((kind) => ({
+    path: "/graphql",
+    json: {
+      data: {
+        repository: {
+          [kind]: {
+            nodes:
+              kind === "issues"
+                ? recording.items.nodes.map((card) => ({
+                    id: card.content.id,
+                    projectItems: {
+                      nodes: [{ ...card, project: { id: recording.id } }],
+                      pageInfo: { hasNextPage: false },
+                    },
+                  }))
+                : [],
+            pageInfo: { hasNextPage: false },
+          },
+        },
+      },
+    },
+    checkQuery(query: string, variables: Record<string, unknown>) {
+      expect(query).toContain(`${kind}(first:`);
+      expect(query).toContain("includeArchived: true");
+      expect(variables).toEqual({ owner: "example", name: "project", cursor: null });
+    },
+  }));
+}
 
 function boardReads(recording = structuredClone(boardRecording)) {
   // Only repository scope is renamed to the offline test project's configured repository.

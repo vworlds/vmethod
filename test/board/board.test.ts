@@ -138,7 +138,8 @@ test.each([5, 7])(
       const card = board.card(`value-${index}`, index % 2 ? "example/foreign" : "example/project");
       card.kind = index % 2 ? "DraftIssue" : "Issue";
       card.values[fieldName] = name;
-      card.archived = true;
+      // Archived drafts have no issue/PR content-side enumeration route.
+      card.archived = card.kind !== "DraftIssue";
     });
     board.card("unset").values[fieldName] = null;
     const before = structuredClone(board.cards.map(({ id, values }) => ({ id, values })));
@@ -303,6 +304,107 @@ test("fake rejects both field updates and clears on archived cards", async () =>
   }
 });
 
+test("cards merges paged repository issue/PR archived memberships with active project items", async () => {
+  const board = setup();
+  board.config.board.repos.push("example/foreign");
+  board.pageSize = 1;
+  const active = board.card("active");
+  const issue = board.card("closed-issue");
+  issue.archived = true;
+  issue.closedAt = "2026-10-01T00:00:00Z";
+  const pr = board.card("closed-pr", "example/foreign");
+  pr.kind = "PullRequest";
+  pr.archived = true;
+  pr.closedAt = issue.closedAt;
+  // Memberships of other projects precede this project's archived items.
+  for (const card of [issue, pr]) {
+    board.otherMemberships.set(card.id, [
+      { id: `elsewhere-${card.id}`, project: { id: "other-project" }, isArchived: true },
+    ]);
+  }
+  for (let index = 0; index < 3; index++) {
+    board.otherContent.push({ id: `untracked-${index}`, repo: "example/project", kind: "Issue" });
+  }
+  const cards = await board.service().cards("project");
+  expect(cards.map(({ id }) => id).sort()).toEqual([active.id, issue.id, pr.id].sort());
+  expect(cards.find(({ id }) => id === issue.id)).toMatchObject({
+    archived: true,
+    kind: "Issue",
+    closedAt: issue.closedAt,
+    values: issue.values,
+  });
+  expect(cards.find(({ id }) => id === pr.id)).toMatchObject({
+    archived: true,
+    kind: "PullRequest",
+    repo: "example/foreign",
+    values: pr.values,
+  });
+  expect(board.requests).toContain("BoardRepositoryCards");
+  expect(board.requests).not.toContain("BoardItem");
+  expect(board.requests).not.toContain("BoardContentItems");
+  expect(board.requests).not.toContain("BoardValues");
+  expect(board.requests.filter((name) => name === "BoardRepositoryCards")).toHaveLength(8);
+  expect(board.connectionBatches.some((size) => size > 1)).toBe(true);
+  expect(board.connectionBatches.every((size) => size <= 25)).toBe(true);
+});
+
+test.each(["repository", "membership", "cursor"])(
+  "archived enumeration fails visibly on an incomplete %s response",
+  async (failure) => {
+    const board = setup();
+    const card = board.card();
+    card.archived = true;
+    const fetch = board.deps.fetch;
+    board.deps.fetch = async (input, init) => {
+      const query = init?.body ? String(JSON.parse(String(init.body)).query) : "";
+      if (query.startsWith("query BoardRepositoryCards(")) {
+        const connection = {
+          nodes: [],
+          pageInfo: { hasNextPage: failure === "cursor", endCursor: "repeated" },
+        };
+        return Response.json({
+          data: {
+            repository:
+              failure === "repository"
+                ? null
+                : {
+                    issues:
+                      failure === "membership"
+                        ? {
+                            nodes: [{ id: "content", projectItems: null }],
+                            pageInfo: { hasNextPage: false },
+                          }
+                        : connection,
+                  },
+          },
+        });
+      }
+      return fetch(input, init);
+    };
+    await expect(board.service().cards("project")).rejects.toThrow(
+      failure === "cursor" ? "Invalid board pagination cursor" : "Missing board connection"
+    );
+    expect(board.mutations).toEqual([]);
+  }
+);
+
+test("archived value pagination batches continuations with at most 25 cards per request", async () => {
+  const board = setup();
+  board.pageSize = 2;
+  for (let index = 0; index < 27; index++) {
+    board.card(`archived-${index}`).archived = true;
+  }
+  const cards = await board.service().cards("project");
+  expect(cards).toHaveLength(27);
+  expect(cards.every((card) => card.archived && card.values.Progress === "🤖👍  🔁1️⃣2️⃣ 🔴 ")).toBe(
+    true
+  );
+  expect(board.connectionBatches).toEqual([25, 2]);
+  expect(board.requests).not.toContain("BoardValues");
+  expect(board.requests).not.toContain("BoardItem");
+  expect(board.requests).not.toContain("BoardContentItems");
+});
+
 function archivedWorkflow() {
   const board = setup();
   board.stamp(1);
@@ -326,8 +428,10 @@ function archivedWorkflow() {
 
 test("archived legacy cards are previewed, remapped, verified and rearchived before contraction", async () => {
   const { board, service } = archivedWorkflow();
+  board.config.board.repos.push("example/foreign");
+  board.pinSelf("example/foreign", "dev");
   board.pageSize = 2;
-  const changed = ["Issue", "PullRequest", "DraftIssue"].map((kind, index) => {
+  const changed = ["Issue", "PullRequest"].map((kind, index) => {
     const card = board.card(`archived-${index}`, index ? "example/foreign" : "example/project");
     card.kind = kind;
     card.number = index + 1;
@@ -340,6 +444,7 @@ test("archived legacy cards are previewed, remapped, verified and rearchived bef
   unchanged.archived = true;
   unchanged.values.Status = "Done";
   const active = board.card("active");
+  active.kind = "DraftIssue";
   active.values.Status = "In progress";
   const dry = await service().migrate({ dryRun: true });
   changed.forEach((card) => {
@@ -353,8 +458,8 @@ test("archived legacy cards are previewed, remapped, verified and rearchived bef
   expect(active.values.Status).toBe("Executing");
   expect(active.archived).not.toBe(true);
   expect(unchanged).toMatchObject({ archived: true, values: { Status: "Done" } });
-  expect(board.mutations.filter((name) => name === "BoardUnarchive")).toHaveLength(3);
-  expect(board.mutations.filter((name) => name === "BoardArchive")).toHaveLength(3);
+  expect(board.mutations.filter((name) => name === "BoardUnarchive")).toHaveLength(2);
+  expect(board.mutations.filter((name) => name === "BoardArchive")).toHaveLength(2);
   expect(readState(board.readme)).toMatchObject({ version: 2 });
   expect(board.readme).not.toContain("archived_move:");
   expect(
@@ -609,12 +714,19 @@ test("Done cap ranks all repositories but archives only own cards outside the ne
     card.closedAt = `2026-10-${String(20 - i).padStart(2, "0")}T00:00:00Z`;
     card.values.Status = "Done";
   }
+  const archived = board.card("already-archived");
+  archived.values.Status = "Done";
+  archived.archived = true;
+  archived.closedAt = "2026-10-25T00:00:00Z";
   await board.service().capDone();
   expect(board.cards.find((card) => card.id === "done-6")?.archived).toBe(true);
   expect(board.cards.find((card) => card.id === "done-8")?.archived).toBe(true);
   expect(board.cards.map((card) => card.id)).toContain("done-7");
   expect(board.cards.map((card) => card.id)).toContain("done-9");
   expect(board.cards.map((card) => card.id)).toContain("done-4");
+  expect(board.mutations.filter((name) => name === "BoardArchive")).toHaveLength(2);
+  await board.service().capDone();
+  expect(board.mutations.filter((name) => name === "BoardArchive")).toHaveLength(2);
 });
 
 test("board status reports closed/open column mismatches and --fix reconciles them", async () => {
@@ -1479,7 +1591,8 @@ test("pagination covers fields, cards and card values without losing moves or Pr
   await board.service([baseline, expand]).migrate({});
   expect(board.cards.every((card) => card.values.Status === "Inbox")).toBe(true);
   expect(board.cards.every((card) => card.values.Progress === "🤖👍  🔁1️⃣2️⃣ 🔴 ")).toBe(true);
-  expect(board.requests).toContain("BoardValues");
+  expect(board.requests).toContain("BoardCardConnections");
+  expect(board.requests).not.toContain("BoardValues");
 });
 
 test("interruption after a successful batch replays only cards still on the old option", async () => {

@@ -60,6 +60,18 @@ function created(value: unknown): number {
   return timestamp;
 }
 
+function nextCursor(connection: ObjectData, seen: Set<string>): string | null {
+  const info = object(connection.pageInfo);
+  if (info.hasNextPage === false) {
+    return null;
+  }
+  if (info.hasNextPage !== true || typeof info.endCursor !== "string" || seen.has(info.endCursor)) {
+    throw new Error("Invalid board pagination cursor");
+  }
+  seen.add(info.endCursor);
+  return info.endCursor;
+}
+
 export class BoardService implements BoardIO {
   private readonly settings: ObjectData;
   private readonly runner: MigrationRunner;
@@ -130,19 +142,11 @@ export class BoardService implements BoardIO {
     for (;;) {
       const connection = await read(cursor);
       output.push(...nodes(connection));
-      const info = object(connection.pageInfo);
-      if (info.hasNextPage === false) {
+      const next = nextCursor(connection, seen);
+      if (next === null) {
         return output;
       }
-      if (
-        info.hasNextPage !== true ||
-        typeof info.endCursor !== "string" ||
-        seen.has(info.endCursor)
-      ) {
-        throw new Error("Invalid board pagination cursor");
-      }
-      cursor = info.endCursor;
-      seen.add(cursor);
+      cursor = next;
     }
   }
 
@@ -250,8 +254,8 @@ export class BoardService implements BoardIO {
   }
 
   async cards(projectId: string): Promise<Card[]> {
-    // The unfiltered ProjectV2.items connection includes archived items. Select
-    // isArchived as well so migration moves can temporarily unarchive them.
+    // ProjectV2.items excludes archived items. Read repository content-side
+    // memberships too, including closed issues/PRs, without one query per card.
     const values = await this.pages(async (cursor) => {
       const result = object(
         await this.github.graphql(
@@ -261,11 +265,103 @@ export class BoardService implements BoardIO {
       );
       return object(object(result.node).items);
     });
+    const merged = new Map(values.map((card) => [text(card.id), card]));
+    for (const repo of this.repositories()) {
+      const [owner, name] = repo.split("/");
+      for (const kind of ["issues", "pullRequests"] as const) {
+        const content = await this.pages(async (cursor) => {
+          const result = object(
+            await this.github.graphql(
+              `query BoardRepositoryCards($owner: String!, $name: String!, $cursor: String) { repository(owner: $owner, name: $name) { ${kind}(first: 25, after: $cursor) { nodes { id projectItems(first: 25, includeArchived: true) { nodes { id isArchived project { id } ${contentSelection} ${initialValues} } ${pageInfo} } } ${pageInfo} } } }`,
+              { owner, name, cursor }
+            )
+          );
+          const entries = object(object(result.repository)[kind]);
+          await this.completeConnections(nodes(entries), "projectItems");
+          return entries;
+        });
+        for (const entry of content) {
+          for (const card of nodes(entry.projectItems)) {
+            if (object(card.project).id === projectId) {
+              merged.set(text(card.id), card);
+            }
+          }
+        }
+      }
+    }
+    const items = [...merged.values()];
+    await this.completeConnections(items, "fieldValues");
     const cards: Card[] = [];
-    for (const card of values) {
+    for (const card of items) {
       cards.push(await this.decodeCard(card));
     }
     return cards;
+  }
+
+  /** Page nested connections in bounded GraphQL batches, never per-item requests. */
+  private async completeConnections(
+    entries: ObjectData[],
+    field: "projectItems" | "fieldValues"
+  ): Promise<void> {
+    const pending = entries.map((entry) => {
+      const connection = object(entry[field]);
+      const seen = new Set<string>();
+      return { entry, values: nodes(connection), seen, cursor: nextCursor(connection, seen) };
+    });
+    while (pending.some(({ cursor }) => cursor !== null)) {
+      const batch = pending.filter(({ cursor }) => cursor !== null).slice(0, 25);
+      const declarations: string[] = [];
+      const selections: string[] = [];
+      const variables: ObjectData = {};
+      batch.forEach(({ entry, cursor }, index) => {
+        declarations.push(`$id${index}: ID!`, `$cursor${index}: String!`);
+        variables[`id${index}`] = text(entry.id);
+        variables[`cursor${index}`] = cursor;
+        const connection =
+          field === "projectItems"
+            ? `projectItems(first: 25, after: $cursor${index}, includeArchived: true) { nodes { id isArchived project { id } ${contentSelection} ${initialValues} } ${pageInfo} }`
+            : `fieldValues(first: 100, after: $cursor${index}) { nodes { ${valueSelection} } ${pageInfo} }`;
+        const fragments =
+          field === "projectItems"
+            ? `... on Issue { ${connection} } ... on PullRequest { ${connection} }`
+            : `... on ProjectV2Item { ${connection} }`;
+        selections.push(`n${index}: node(id: $id${index}) { ${fragments} }`);
+      });
+      const data = object(
+        await this.github.graphql(
+          `query BoardCardConnections(${declarations.join(", ")}) { ${selections.join(" ")} }`,
+          variables
+        )
+      );
+      batch.forEach((entry, index) => {
+        const connection = object(object(data[`n${index}`])[field]);
+        entry.values.push(...nodes(connection));
+        entry.cursor = nextCursor(connection, entry.seen);
+      });
+    }
+    for (const { entry, values } of pending) {
+      entry[field] = { nodes: values, pageInfo: { hasNextPage: false, endCursor: null } };
+    }
+  }
+
+  private repositories(): string[] {
+    if (!Array.isArray(this.settings.repos)) {
+      throw new Error("Missing board repositories");
+    }
+    return [
+      ...new Set(
+        this.settings.repos.map((repo: unknown) => {
+          if (
+            typeof repo !== "string" ||
+            !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
+            repo.split("/")[0].toLowerCase() !== String(this.config.org).toLowerCase()
+          ) {
+            throw new Error("Invalid board repository scope");
+          }
+          return repo;
+        })
+      ),
+    ];
   }
 
   private async decodeCard(card: ObjectData): Promise<Card> {
@@ -463,6 +559,7 @@ export class BoardService implements BoardIO {
     const cards = (await this.cards(snapshot.id))
       .filter(
         (card) =>
+          !card.archived &&
           card.values.Status === "Done" &&
           card.closedAt &&
           Number.isFinite(Date.parse(card.closedAt))
@@ -782,17 +879,7 @@ export class BoardService implements BoardIO {
     return Buffer.from(result.content, "base64").toString("utf8");
   }
   async adoption(requires: string): Promise<void> {
-    if (!Array.isArray(this.settings.repos)) {
-      throw new Error("Missing board repositories");
-    }
-    for (const repo of this.settings.repos) {
-      if (
-        typeof repo !== "string" ||
-        !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
-        repo.split("/")[0].toLowerCase() !== String(this.config.org).toLowerCase()
-      ) {
-        throw new Error("Invalid board repository scope");
-      }
+    for (const repo of this.repositories()) {
       const metadata = object(await this.github.rest(`/repos/${repo}`));
       const doc = parseDocument(
         await this.file(repo, text(metadata.default_branch), "vmethod.yaml"),

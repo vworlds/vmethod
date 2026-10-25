@@ -34,9 +34,14 @@ export class FakeBoard {
     })),
   }));
   cards: Card[] = [];
+  /** Other project memberships before this board's item, to exercise nested paging/filtering. */
+  otherMemberships = new Map<string, ObjectData[]>();
+  /** Repository issues/PRs with no membership on this board. */
+  otherContent: { id: string; repo: string; kind: string }[] = [];
   reports: string[] = [];
   announcements: string[] = [];
   requests: string[] = [];
+  connectionBatches: number[] = [];
   mutations: string[] = [];
   unexpected: string[] = [];
   sleeps: number[] = [];
@@ -98,10 +103,20 @@ export class FakeBoard {
       }
       const name = definition.name.value;
       let selectsArchive = false;
+      let includesArchived = false;
       visit(document, {
         Field(node) {
           if (node.name.value === "isArchived") {
             selectsArchive = true;
+          }
+          if (node.name.value === "projectItems") {
+            includesArchived =
+              node.arguments?.some(
+                (arg) =>
+                  arg.name.value === "includeArchived" &&
+                  arg.value.kind === Kind.BOOLEAN &&
+                  arg.value.value
+              ) === true;
           }
         },
       });
@@ -249,24 +264,78 @@ export class FakeBoard {
           data = {
             node: {
               items: this.page(
-                this.cards.map((card) => ({
-                  id: card.id,
-                  ...(selectsArchive ? { isArchived: card.archived === true } : {}),
-                  fieldValues: this.values(card),
-                  content: {
-                    __typename: card.kind,
-                    id: card.contentId,
-                    number: card.number,
-                    closedAt: card.closedAt,
-                    repository: card.repo ? { nameWithOwner: card.repo } : null,
-                    assignees: connection(card.assignees.map((login) => ({ login }))),
-                  },
-                })),
+                this.cards
+                  .filter((card) => !card.archived)
+                  .map((card) => ({
+                    id: card.id,
+                    ...(selectsArchive ? { isArchived: card.archived === true } : {}),
+                    fieldValues: this.values(card),
+                    content: {
+                      __typename: card.kind,
+                      id: card.contentId,
+                      number: card.number,
+                      closedAt: card.closedAt,
+                      repository: card.repo ? { nameWithOwner: card.repo } : null,
+                      assignees: connection(card.assignees.map((login) => ({ login }))),
+                    },
+                  })),
                 variables.cursor
               ),
             },
           };
           break;
+        case "BoardRepositoryCards": {
+          const repo = `${variables.owner}/${variables.name}`;
+          expect(this.config.board.repos).toContain(repo);
+          const field = payload.query.includes("pullRequests(first:") ? "pullRequests" : "issues";
+          const kind = field === "issues" ? "Issue" : "PullRequest";
+          data = {
+            repository: {
+              [field]: this.page(
+                [
+                  ...this.cards
+                    .filter((card) => card.repo === repo && card.kind === kind)
+                    .map((card) => ({
+                      id: card.contentId ?? `content-${card.id}`,
+                      projectItems: this.page(this.memberships(card, includesArchived), null),
+                    })),
+                  ...this.otherContent
+                    .filter((entry) => entry.repo === repo && entry.kind === kind)
+                    .map(({ id }) => ({ id, projectItems: this.page([], null) })),
+                ],
+                variables.cursor
+              ),
+            },
+          };
+          break;
+        }
+        case "BoardCardConnections": {
+          data = {};
+          this.connectionBatches.push(
+            Object.keys(variables).filter((key) => key.startsWith("id")).length
+          );
+          const field = payload.query.includes("projectItems(first:")
+            ? "projectItems"
+            : "fieldValues";
+          for (const key of Object.keys(variables).filter((key) => key.startsWith("id"))) {
+            const index = key.slice(2);
+            const card = this.cards.find((card) =>
+              field === "projectItems"
+                ? (card.contentId ?? `content-${card.id}`) === variables[key]
+                : card.id === variables[key]
+            );
+            if (!card) {
+              return this.unknown(payload.query);
+            }
+            data[`n${index}`] = {
+              [field]:
+                field === "projectItems"
+                  ? this.page(this.memberships(card, includesArchived), variables[`cursor${index}`])
+                  : this.values(card, variables[`cursor${index}`]),
+            };
+          }
+          break;
+        }
         case "BoardItem": {
           const card = this.cards.find((card) => card.id === variables.id);
           data = {
@@ -402,20 +471,23 @@ export class FakeBoard {
             node: card
               ? {
                   projectItems: {
-                    nodes: [
-                      {
-                        id: card.id,
-                        isArchived: card.archived === true,
-                        project: { id: "project" },
-                        fieldValues: this.values(card),
-                        content: {
-                          __typename: card.kind,
-                          id: card.contentId,
-                          repository: { nameWithOwner: card.repo },
-                          assignees: connection(card.assignees.map((login) => ({ login }))),
-                        },
-                      },
-                    ],
+                    nodes:
+                      !card.archived || includesArchived
+                        ? [
+                            {
+                              id: card.id,
+                              isArchived: card.archived === true,
+                              project: { id: "project" },
+                              fieldValues: this.values(card),
+                              content: {
+                                __typename: card.kind,
+                                id: card.contentId,
+                                repository: { nameWithOwner: card.repo },
+                                assignees: connection(card.assignees.map((login) => ({ login }))),
+                              },
+                            },
+                          ]
+                        : [],
                     pageInfo: { hasNextPage: false },
                   },
                 }
@@ -500,6 +572,28 @@ export class FakeBoard {
       })),
       cursor
     );
+  }
+  private membership(card: Card) {
+    return {
+      id: card.id,
+      isArchived: card.archived === true,
+      project: { id: "project" },
+      fieldValues: this.values(card),
+      content: {
+        __typename: card.kind,
+        id: card.contentId,
+        number: card.number,
+        closedAt: card.closedAt,
+        repository: { nameWithOwner: card.repo },
+        assignees: connection(card.assignees.map((login) => ({ login }))),
+      },
+    };
+  }
+  private memberships(card: Card, includeArchived: boolean) {
+    return [
+      ...(this.otherMemberships.get(card.id) ?? []),
+      ...(!card.archived || includeArchived ? [this.membership(card)] : []),
+    ];
   }
   private error(message: string): Response {
     return Response.json({ errors: [{ message }] });
