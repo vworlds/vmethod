@@ -59,7 +59,7 @@ export interface BoardState {
   migrating?: string;
   aliases: Record<string, string>;
   completed?: string[];
-  /** Durable pre-write snapshot retained until every restored value has been verified. */
+  /** Legacy restore journal: read for compatibility, discarded on migration resume; never replayed. */
   optionUpdate?: {
     position: string;
     field: string;
@@ -92,6 +92,9 @@ export interface MigrationResult extends BoardStatus {
   message: string;
 }
 export interface BoardIO {
+  /** Process identity scoped to the machine/boot; unknown remote holders are never declared dead. */
+  lockIdentity?(): string | undefined;
+  lockDead?(identity: string): boolean;
   /** Batched authenticated v5 scope evidence and pinned owner turns for v6 remapping. */
   workflowEvidence?(
     cards: Card[]
@@ -102,8 +105,12 @@ export interface BoardIO {
   readme(projectId: string, readme: string): Promise<void>;
   createField(projectId: string, name: string, shape: FieldShape): Promise<string>;
   deleteField(id: string): Promise<void>;
-  /** Destructive API write: migration callers must journal/restore/verify all item values. */
-  options(field: Field, options: Omit<Option, "id">[]): Promise<void>;
+  /** Keep existing IDs (including explicit old-name → new-name renames); callers snapshot/check values. */
+  options(
+    field: Field,
+    options: Omit<Option, "id">[],
+    renames?: Record<string, string>
+  ): Promise<void>;
   cards(projectId: string): Promise<Card[]>;
   setCards(
     projectId: string,

@@ -201,6 +201,10 @@ try {
       throw new Error(`Usage: vmethod <${verbs.map((entry) => entry.name).join("|")}>`);
   }
 } catch (error) {
-  console.error((error as Error).message);
+  console.error(
+    verb === "board" && args[0] === "migrate"
+      ? JSON.stringify({ error: error instanceof Error ? error.message : String(error) })
+      : (error as Error).message
+  );
   process.exitCode = error instanceof MarkdownDependencyError ? 2 : 1;
 }

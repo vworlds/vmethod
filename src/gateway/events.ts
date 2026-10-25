@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { procStart } from "./process-identity.js";
 import { dirname, join, resolve } from "node:path";
 import manifest from "../../package.json" with { type: "json" };
 import { WatchDelivery } from "./watch-delivery.js";
@@ -182,17 +183,7 @@ export function eventDeps(deps: Dependencies): EventDeps {
 }
 
 /** Field 22 of /proc/<pid>/stat: clock ticks since boot. PIDs are reused; this is not. */
-export function procStart(stat: string | null): number | null {
-  if (stat === null) {
-    return null;
-  }
-  const fields = stat
-    .slice(stat.lastIndexOf(")") + 1)
-    .trim()
-    .split(/\s+/);
-  const value = Number(fields[19]);
-  return Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
+export { procStart } from "./process-identity.js";
 
 const key = (text: string): string => createHash("md5").update(text).digest("hex").slice(0, 16);
 

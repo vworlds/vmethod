@@ -61,7 +61,7 @@ function drift(snapshot: Snapshot, migration?: Migration): string[] {
 }
 
 function holderTime(lock?: string): number {
-  return lock ? Date.parse(lock.split(" since ")[1] ?? "") : NaN;
+  return lock ? Date.parse(lock.split(" since ")[1]?.split(" identity ")[0] ?? "") : NaN;
 }
 
 export class MigrationRunner {
@@ -149,21 +149,30 @@ export class MigrationRunner {
     const lock = snapshot.fields.find((field) => field.name === lockName);
     if (lock) {
       const since = holderTime(state.lock);
-      if (Number.isFinite(since) && this.io.now() - since <= 60 * minute) {
+      const identity = state.lock?.split(" identity ")[1];
+      const dead = identity !== undefined && this.io.lockDead?.(identity) === true;
+      if (!dead && Number.isFinite(since) && this.io.now() - since <= 60 * minute) {
         throw new Error("Migration lock held; stale locks require --steal");
       }
       // No holder line (or a stale one): only the field's own age can tell a
       // live acquirer, whose holder write is still in flight, from an orphan.
-      // A fresh field is never stealable, whatever --steal says.
-      if (this.io.now() - lock.createdAt < minute) {
+      // Without proof of death, a fresh field is never stealable.
+      if (!dead && this.io.now() - lock.createdAt < minute) {
         throw new Error("Migration lock being acquired");
       }
-      if (!steal) {
+      if (!dead && !steal) {
         throw new Error(
           Number.isFinite(since)
             ? "Migration lock held; stale locks require --steal"
             : "LOCK ORPHANED (no holder); use --steal"
         );
+      }
+      const current = await this.io.snapshot();
+      if (
+        readState(current.readme).lock !== state.lock ||
+        !current.fields.some(({ id, name }) => id === lock.id && name === lockName)
+      ) {
+        throw new Error("Migration lock changed during recovery; retry");
       }
       await this.io.deleteField(lock.id);
     }
@@ -193,6 +202,10 @@ export class MigrationRunner {
       throw new Error("Migration lock lost");
     }
     current.lock = `${this.run} ${login} since ${new Date(this.io.now()).toISOString()}`;
+    const identity = this.io.lockIdentity?.();
+    if (identity) {
+      current.lock += ` identity ${identity}`;
+    }
     await this.io.readme(snapshot.id, writeState(snapshot.readme, current, this.initialAppend));
   }
 
@@ -229,8 +242,7 @@ export class MigrationRunner {
         migration.up.some(
           (op, index) =>
             op.op === "workflow_columns" &&
-            !initial.state.completed?.includes(`${migration.version}/${index + 1}`) &&
-            initial.state.optionUpdate?.position !== `${migration.version}/${index + 1}`
+            !initial.state.completed?.includes(`${migration.version}/${index + 1}`)
         )
       )
         ? await this.workflowPlan((await this.io.snapshot()).id)
@@ -274,6 +286,7 @@ export class MigrationRunner {
     await this.update((current) => {
       current.migrating = `${from}→${this.boardVersion} by ${login} since ${new Date(this.io.now()).toISOString()}`;
       current.paused = undefined;
+      current.optionUpdate = undefined;
     });
     await this.io.announce(`[vmethod] board migration ${from}→${this.boardVersion}`);
     try {
@@ -296,14 +309,7 @@ export class MigrationRunner {
           if (this.io.budgetStopped()) {
             throw new BudgetPause("0 cards left (operation pending)");
           }
-          if (progress.optionUpdate) {
-            if (progress.optionUpdate.position !== this.position) {
-              throw new Error("Option restore journal position mismatch");
-            }
-            await this.restoreOptions();
-          } else {
-            await this.apply(op);
-          }
+          await this.apply(op);
           await this.update((current) => {
             current.completed = [...(current.completed ?? []), this.position];
             current.optionUpdate = undefined;
@@ -386,6 +392,13 @@ export class MigrationRunner {
       }
       await this.io.setCards(snapshot.id, field, cards.slice(index, index + batchSize));
     }
+    if (!cards.length) {
+      return;
+    }
+    const live = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
+    if (cards.some(({ id, value }) => live.get(id)?.values[field.name] !== value)) {
+      throw new Error(`Card move verification failed for ${field.name}`);
+    }
   }
 
   private async apply(op: Operation): Promise<void> {
@@ -407,12 +420,24 @@ export class MigrationRunner {
           expanded.push(option);
         }
       }
-      await this.preserveOptions(
-        field,
-        expanded,
-        plan.map(({ id, value }) => ({ id, value: value || null })),
-        final
-      );
+      await this.preserveOptions(field, expanded);
+      const expandedField = this.field((await this.held()).snapshot, field.name);
+      const changed = plan.filter(({ from, value }) => from !== value);
+      for (let index = 0; index < changed.length; index += batchSize) {
+        if (this.io.budgetStopped()) {
+          throw new BudgetPause(`${changed.length - index} cards left`);
+        }
+        await this.held();
+        if (this.io.budgetStopped()) {
+          throw new BudgetPause(`${changed.length - index} cards left`);
+        }
+        await this.io.setCards(snapshot.id, expandedField, changed.slice(index, index + batchSize));
+      }
+      const live = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
+      if (plan.some(({ id, value }) => (live.get(id)?.values.Status ?? "") !== value)) {
+        throw new Error("Workflow remap verification failed");
+      }
+      await this.preserveOptions(expandedField, final);
       return;
     }
     if (op.op === "add_progress_alias") {
@@ -457,17 +482,16 @@ export class MigrationRunner {
       description,
     }));
     if (op.op === "rename_option") {
-      if (!options.some((option) => option.name === op.to)) {
-        options.push({ name: op.to, color: "GRAY", description: "" });
+      const source = options.find((option) => option.name === op.from);
+      if (!source || op.from === op.to) {
+        return;
       }
-      const values = (await this.io.cards(snapshot.id)).map((card) => ({
-        id: card.id,
-        value:
-          card.values[field.name] === op.from
-            ? op.to
-            : ((card.values[field.name] as string | null) ?? null),
-      }));
-      await this.preserveOptions(field, options, values);
+      if (options.some((option) => option.name === op.to)) {
+        await this.move(field, op.from, op.to);
+      } else {
+        options.push({ ...source, name: op.to });
+        await this.preserveOptions(field, options, { [op.from]: op.to });
+      }
     } else if (op.op === "remove_option") {
       if (!options.some((option) => option.name === op.option)) {
         return;
@@ -482,11 +506,10 @@ export class MigrationRunner {
     } else {
       const option = options.find((entry) => entry.name === op.option);
       if (option) {
-        if (op.op === "add_option") {
-          return;
+        if (op.op === "set_option_meta") {
+          option.color = op.color ?? option.color;
+          option.description = op.description ?? option.description;
         }
-        option.color = op.color ?? option.color;
-        option.description = op.description ?? option.description;
       } else if (op.op === "set_option_meta") {
         throw new Error(`Missing option ${op.option}`);
       } else {
@@ -495,6 +518,12 @@ export class MigrationRunner {
           color: op.color ?? "GRAY",
           description: op.description ?? "",
         });
+      }
+      if (op.op === "add_option") {
+        const migration = this.migrations.find(
+          ({ version }) => String(version) === this.position.split("/")[0]
+        )!;
+        orderOptions(options, migration.expect.fields[op.field]?.options);
       }
       if (
         JSON.stringify(options) !==
@@ -511,88 +540,52 @@ export class MigrationRunner {
     }
   }
 
-  /** Journal names before the destructive API write; never rebuild them from cleared cards. */
+  /** Snapshot/check only: never write item values or persist a replayable snapshot. */
   private async preserveOptions(
     field: Field,
     options: Omit<Option, "id">[],
-    mapped?: { id: string; value: string | null }[],
-    finalOptions?: Omit<Option, "id">[]
+    renames: Record<string, string> = {}
   ): Promise<void> {
     const { snapshot } = await this.held();
-    const values =
-      mapped ??
-      (await this.io.cards(snapshot.id)).map((card) => ({
+    const values = (await this.io.cards(snapshot.id)).map((card) => {
+      const value = card.values[field.name];
+      return {
         id: card.id,
-        value: (card.values[field.name] as string | null) ?? null,
-      }));
+        value:
+          typeof value === "string"
+            ? Object.hasOwn(renames, value)
+              ? renames[value]
+              : value
+            : null,
+      };
+    });
     for (const entry of values) {
       if (entry.value !== null && !options.some((option) => option.name === entry.value)) {
         throw new Error(
-          `Cannot restore ${field.name} on ${entry.id}: option ${entry.value} disappears`
+          `Cannot preserve ${field.name} on ${entry.id}: option ${entry.value} disappears`
         );
       }
     }
-    await this.update((state) => {
-      state.optionUpdate = {
-        position: this.position,
-        field: field.name,
-        options,
-        values,
-        finalOptions,
-      };
-    });
-    await this.restoreOptions();
-  }
-
-  private async restoreOptions(): Promise<void> {
-    const { snapshot, state } = await this.held();
-    const journal = state.optionUpdate!;
-    let field = this.field(snapshot, journal.field);
     if (
       JSON.stringify(
         field.options.map(({ name, color, description }) => ({ name, color, description }))
-      ) !== JSON.stringify(journal.options)
+      ) !== JSON.stringify(options)
     ) {
       if (this.io.budgetStopped()) {
         throw new BudgetPause("option update pending");
       }
-      await this.io.options(field, journal.options);
-      field = this.field((await this.held()).snapshot, journal.field);
-    }
-    const live = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
-    const changed = journal.values.filter(
-      ({ id, value }) => !live.has(id) || (live.get(id)!.values[journal.field] ?? null) !== value
-    );
-    for (let index = 0; index < changed.length; index += batchSize) {
-      if (this.io.budgetStopped()) {
-        throw new BudgetPause(`${changed.length - index} cards left to restore ${journal.field}`);
-      }
-      await this.held();
-      if (this.io.budgetStopped()) {
-        throw new BudgetPause(`${changed.length - index} cards left to restore ${journal.field}`);
-      }
-      await this.io.setCards(snapshot.id, field, changed.slice(index, index + batchSize));
-    }
-    if (this.io.budgetStopped()) {
-      throw new BudgetPause(`verification pending for ${journal.field}`);
+      await this.io.options(field, options, renames);
     }
     await this.held();
     const verified = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
-    const mismatches = journal.values.filter(
+    const mismatches = values.filter(
       ({ id, value }) =>
-        !verified.has(id) || (verified.get(id)!.values[journal.field] ?? null) !== value
+        !verified.has(id) || (verified.get(id)!.values[field.name] ?? null) !== value
     );
     if (mismatches.length) {
       throw new Error(
-        `Option restore verification failed for ${journal.field}: ${mismatches.map(({ id, value }) => `${id} expected ${value ?? "(unset)"}, got ${verified.has(id) ? (verified.get(id)!.values[journal.field] ?? "(unset)") : "(missing item)"}`).join("; ")}`
+        `Option update verification failed for ${field.name}: ${mismatches.map(({ id, value }) => `${id} expected ${value ?? "(unset)"}, got ${verified.has(id) ? (verified.get(id)!.values[field.name] ?? "(unset)") : "(missing item)"}`).join("; ")}`
       );
-    }
-    if (journal.finalOptions) {
-      await this.update((current) => {
-        current.optionUpdate!.options = journal.finalOptions!;
-        current.optionUpdate!.finalOptions = undefined;
-      });
-      await this.restoreOptions();
     }
   }
 
@@ -652,26 +645,12 @@ export class MigrationRunner {
     const output: string[] = [];
     const state = readState(snapshot.readme);
     if (state.optionUpdate) {
-      const journal = state.optionUpdate;
-      for (const entry of journal.values) {
-        output.push(`resume restore ${journal.field} on ${entry.id}: ${entry.value ?? "(unset)"}`);
-        const card = cards.find(({ id }) => id === entry.id);
-        if (card) {
-          card.values[journal.field] = entry.value;
-        }
-      }
-      const field = fields.find(({ name }) => name === journal.field);
-      if (field) {
-        field.options = (journal.finalOptions ?? journal.options).map((option) => ({
-          ...option,
-          id: "preview",
-        }));
-      }
+      output.push("Discard legacy option restore journal; use current live values");
     }
     for (const migration of pending) {
       for (const [index, op] of migration.up.entries()) {
         const position = `${migration.version}/${index + 1}`;
-        if (state.completed?.includes(position) || state.optionUpdate?.position === position) {
+        if (state.completed?.includes(position)) {
           continue;
         }
         if (!("field" in op)) {
@@ -727,8 +706,9 @@ export class MigrationRunner {
             card.values.Status = plan.find(({ id }) => id === card.id)!.value || null;
           }
         } else if (op.op === "rename_option") {
-          if (!options.some(({ name }) => name === op.to)) {
-            options.push({ name: op.to, color: "GRAY", description: "" });
+          const source = options.find(({ name }) => name === op.from);
+          if (source && !options.some(({ name }) => name === op.to)) {
+            options.push({ ...source, name: op.to });
           }
           for (const card of cards) {
             if (card.values[field.name] === op.from) {
@@ -749,6 +729,9 @@ export class MigrationRunner {
               description: op.description ?? "",
             });
           }
+          if (op.op === "add_option") {
+            orderOptions(options, migration.expect.fields[op.field]?.options);
+          }
         }
         if (
           JSON.stringify(options) ===
@@ -758,6 +741,13 @@ export class MigrationRunner {
           op.op !== "rename_option"
         ) {
           continue;
+        }
+        const previousOrder = field.options.map(({ name }) => name);
+        const nextOrder = options.map(({ name }) => name);
+        if (JSON.stringify(previousOrder) !== JSON.stringify(nextOrder)) {
+          output.push(
+            `v${migration.version}: ${field.name} option order ${JSON.stringify(previousOrder)} → ${JSON.stringify(nextOrder)}`
+          );
         }
         for (const option of options) {
           const old = field.options.find(({ name }) => name === option.name);
@@ -771,11 +761,11 @@ export class MigrationRunner {
           const value = card.values[field.name] ?? null;
           if (value !== null && !options.some(({ name }) => name === value)) {
             throw new Error(
-              `Cannot restore ${field.name} on ${card.id}: option ${value} disappears`
+              `Cannot preserve ${field.name} on ${card.id}: option ${value} disappears`
             );
           }
           output.push(
-            `v${migration.version}: restore ${field.name} on ${card.id} (#${card.number ?? "unset"}): ${value ?? "(unset)"}`
+            `v${migration.version}: check ${field.name} on ${card.id} (#${card.number ?? "unset"}): ${value ?? "(unset)"}`
           );
         }
         field.options = options.map((option) => ({ ...option, id: "preview" }));
@@ -783,6 +773,15 @@ export class MigrationRunner {
     }
     return output;
   }
+}
+
+function orderOptions(options: Omit<Option, "id">[], expected?: (string | Omit<Option, "id">)[]) {
+  const order = (expected ?? []).map((entry) => (typeof entry === "string" ? entry : entry.name));
+  const rank = (name: string) => {
+    const index = order.indexOf(name);
+    return index < 0 ? order.length : index;
+  };
+  options.sort((a, b) => rank(a.name) - rank(b.name));
 }
 
 function describeOperation(op: Operation): string {

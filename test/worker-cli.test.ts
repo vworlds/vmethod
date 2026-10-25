@@ -52,6 +52,13 @@ function cliFixture(timeout = 3000) {
   return { root, cli, run };
 }
 
+test("board migrate failures print a JSON error and exit nonzero", () => {
+  const f = cliFixture();
+  const result = f.run(["board", "migrate"], [], { VMETHOD_ROLE: "orchestrator" });
+  expect(result.status).toBe(1);
+  expect(JSON.parse(result.stderr)).toEqual({ error: expect.any(String) });
+});
+
 test("annotation batch failures reach the real CLI with a summary and non-zero exit", () => {
   const f = cliFixture(10000);
   writeFileSync(join(f.root, "people.yaml"), stringify(people));

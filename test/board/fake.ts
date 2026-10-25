@@ -49,6 +49,7 @@ export class FakeBoard {
   failOrder = false;
   ignoreMoves = false;
   dropOptions = false;
+  corruptOptions = false;
   failExpect = false;
   budgetAfterBatch = false;
   low = false;
@@ -205,18 +206,25 @@ export class FakeBoard {
           if (!field || !Array.isArray(arg.singleSelectOptions)) {
             return this.unknown(payload.query);
           }
+          const previous = field.options;
           field.options = arg.singleSelectOptions.map((value) => {
             const option = object(value);
+            if (option.id !== undefined) {
+              expect(previous.some(({ id }) => id === option.id)).toBe(true);
+            }
             return {
-              id: `new-option-${++this.counter}`,
+              id: typeof option.id === "string" ? option.id : `new-option-${++this.counter}`,
               name: String(option.name),
               color: String(option.color),
               description: String(option.description),
             };
           });
-          // Observed in live v5/v6: API option-list writes regenerate IDs and clear values.
+          // GitHub retains values only for retained IDs; no ID creates a new option.
           for (const card of this.cards) {
-            card.values[field.name] = null;
+            const old = previous.find(({ name }) => name === card.values[field.name]);
+            card.values[field.name] = this.corruptOptions
+              ? null
+              : (field.options.find(({ id }) => id === old?.id)?.name ?? null);
           }
           if (this.dropOptions) {
             this.dropOptions = false;
@@ -299,6 +307,9 @@ export class FakeBoard {
             const field = this.fields.find((field) => field.id === input.fieldId);
             if (!card || !field) {
               return this.unknown(payload.query);
+            }
+            if (card.archived) {
+              return this.error("The item is archived and cannot be updated");
             }
             const value = object(input.value);
             if (!this.ignoreMoves) {

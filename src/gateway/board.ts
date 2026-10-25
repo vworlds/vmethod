@@ -17,6 +17,7 @@ import type {
 import { GitHubClient, type Dependencies } from "./client.js";
 import { object, type ObjectData, type PeopleFilter } from "./people.js";
 import { ScopeReader } from "./scope.js";
+import { migrationIdentity, migrationHolderDead } from "./process-identity.js";
 import packageInfo from "../../package.json" with { type: "json" };
 
 const fieldSelection =
@@ -77,6 +78,8 @@ export class BoardService implements BoardIO {
     this.runner = new MigrationRunner(this, migrations, boardVersion, packageInfo.version);
   }
   now = (): number => this.deps.now();
+  lockIdentity = migrationIdentity;
+  lockDead = migrationHolderDead;
   report = (message: string): void => this.deps.report(message);
   budgetStopped = (): boolean => this.github.budgetStopped();
   cleanup = <T>(action: () => Promise<T>): Promise<T> => this.github.usingReserve(action);
@@ -229,10 +232,20 @@ export class BoardService implements BoardIO {
       false
     );
   }
-  async options(field: Field, options: Omit<Option, "id">[]): Promise<void> {
+  async options(
+    field: Field,
+    options: Omit<Option, "id">[],
+    renames: Record<string, string> = {}
+  ): Promise<void> {
+    const singleSelectOptions = options.map((option) => {
+      const existing = field.options.find(
+        ({ name }) => (Object.hasOwn(renames, name) ? renames[name] : name) === option.name
+      );
+      return { ...option, ...(existing ? { id: existing.id } : {}) };
+    });
     await this.github.graphql(
       "mutation BoardOptions($input: UpdateProjectV2FieldInput!) { updateProjectV2Field(input: $input) { projectV2Field { ... on ProjectV2SingleSelectField { id } } } }",
-      { input: { fieldId: field.id, singleSelectOptions: options } }
+      { input: { fieldId: field.id, singleSelectOptions } }
     );
   }
 

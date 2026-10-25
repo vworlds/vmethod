@@ -253,11 +253,14 @@ and records its position; a failed verification stops at the last verified versi
 Use explicit stale-lock recovery only after checking the holder. They never downgrade.
 
 Do not run `board migrate` on rc.6: upgrade directly to its successor rc first.
-GitHub's API clears item values when updating a single-select option list. Option
-updates now persist a name-based restore journal in the managed README before any
-destructive write, restore mapped values in batches, and verify every item (including
-unset values) before advancing. Missing options and verification mismatches fail
-visibly and retain the journal for recovery. Dry runs list each item to restore and
+GitHub's API treats options without IDs as new options and clears values referencing
+removed IDs. Option updates pass every existing option's ID, including through renames.
+The runner snapshots values before each option-list write and checks every item
+(including archived and unset items) afterwards. Any mismatch fails visibly; it never
+automatically restores values or journals a snapshot for replay. On resume, legacy
+restore journals are discarded and current live values are used, so cards moved since
+a failed attempt cannot be reverted. Explicit workflow remaps still write changed
+cards in batches; unchanged cards are never rewritten. Dry runs list each item to check and
 each changed option's color and description. Migration 0007 applies the seven Status
 colors and descriptions through this same path. Already-lost values cannot be recovered
 without an earlier snapshot.
@@ -276,7 +279,12 @@ acquired: it is refused (`Migration lock being acquired`) and never stealable,
 so a concurrent run cannot mistake an in-flight acquisition for an orphan. A
 lock field with no holder line for a minute or more is an orphan
 (`LOCK ORPHANED (no holder)`), and `--steal` may take it. A lost create
-response never assumes ownership; it reports through the same age rule.
+response never assumes ownership; it reports through the same age rule. New holder
+lines record host, boot, PID and process start time. A provably dead same-host holder
+(including a reused PID) can be taken over immediately without `--steal`; live,
+remote, unreadable and legacy identities retain the age/explicit recovery rules.
+Every `board migrate` failure prints a JSON object with an `error` field to stderr
+and exits nonzero, leaving the last verified version and operation progress resumable.
 
 The README's `migrating: N→M by <login> since <time>` window is the authoritative
 quiet signal for watchers. Migrations do not stamp card Progress. A contract's
@@ -298,13 +306,15 @@ and optionally `requires` (an exact minimum package version). Field shapes use
 Use `{ name, color, description }` option objects for new migrations, including in
 `expect`; legacy name-only lists remain readable for append-only compatibility.
 Metadata in `expect` is verified as well as option order and names. Every option-list
-write must use the runner's journaled preservation path, including new operation types.
+write must use the runner's ID-preserving snapshot/check path, including new operation types.
 Operations are objects discriminated by `op`:
 
 - `add_field { field, type, options? }`
-- `add_option { field, option, color?, description? }`
-- `rename_option { field, from, to }`: add the destination and move cards; retain
-  the old option until a contract removes it.
+- `add_option { field, option, color?, description? }`: order options by the field's
+  `expect` list even if the option already exists; retain existing IDs and metadata.
+- `rename_option { field, from, to }`: carry the source ID to a new destination,
+  retaining an empty old option until contract; if the destination already exists,
+  explicitly move source cards to it instead.
 - `set_option_meta { field, option, color?, description? }`
 - `add_progress_alias { from, to }`: persist the expand alias in the managed block.
 - `rewrite_progress { from, to }`: requires an alias from an earlier migration.
