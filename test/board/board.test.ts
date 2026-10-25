@@ -288,6 +288,182 @@ test("restore journal round-trips option text without interpreting README marker
   expect(() => readState(malformed)).toThrow("Invalid option restore journal");
 });
 
+test("fake rejects both field updates and clears on archived cards", async () => {
+  const board = setup();
+  const card = board.card();
+  card.archived = true;
+  const service = board.service();
+  const field = board.fields.find(({ name }) => name === "Status")!;
+  for (const value of ["Done", null]) {
+    await expect(service.setCards("project", field, [{ id: card.id, value }])).rejects.toThrow(
+      "The item is archived and cannot be updated"
+    );
+    expect(card.values.Status).toBe("Backlog");
+    expect(card.archived).toBe(true);
+  }
+});
+
+function archivedWorkflow() {
+  const board = setup();
+  board.stamp(1);
+  board.pinSelf("example/project", "dev");
+  const migration: Migration = {
+    version: 2,
+    requires: "0.0.0-dev",
+    up: [{ op: "workflow_columns", field: "Status" }],
+    expect: {
+      ...baseline.expect,
+      fields: { ...baseline.expect.fields, Status: loadMigrations()[5].expect.fields.Status },
+    },
+  };
+  const service = () => {
+    const result = board.service([baseline, migration]);
+    result.workflowEvidence = async () => new Map();
+    return result;
+  };
+  return { board, service };
+}
+
+test("archived legacy cards are previewed, remapped, verified and rearchived before contraction", async () => {
+  const { board, service } = archivedWorkflow();
+  board.pageSize = 2;
+  const changed = ["Issue", "PullRequest", "DraftIssue"].map((kind, index) => {
+    const card = board.card(`archived-${index}`, index ? "example/foreign" : "example/project");
+    card.kind = kind;
+    card.number = index + 1;
+    card.archived = true;
+    card.values.Status = "In progress";
+    card.closedAt = "2026-10-01T00:00:00Z";
+    return card;
+  });
+  const unchanged = board.card("unchanged");
+  unchanged.archived = true;
+  unchanged.values.Status = "Done";
+  const active = board.card("active");
+  active.values.Status = "In progress";
+  const dry = await service().migrate({ dryRun: true });
+  changed.forEach((card) => {
+    expect(dry.message).toContain(
+      `#${card.number} (${card.kind}) (archived): In progress → Executing;`
+    );
+  });
+  expect(board.mutations).toEqual([]);
+  await service().migrate({});
+  expect(changed.every((card) => card.values.Status === "Executing" && card.archived)).toBe(true);
+  expect(active.values.Status).toBe("Executing");
+  expect(active.archived).not.toBe(true);
+  expect(unchanged).toMatchObject({ archived: true, values: { Status: "Done" } });
+  expect(board.mutations.filter((name) => name === "BoardUnarchive")).toHaveLength(3);
+  expect(board.mutations.filter((name) => name === "BoardArchive")).toHaveLength(3);
+  expect(readState(board.readme)).toMatchObject({ version: 2 });
+  expect(board.readme).not.toContain("archived_move:");
+  expect(
+    board.fields.find(({ name }) => name === "Status")!.options.map(({ name }) => name)
+  ).not.toContain("In progress");
+  const writes = board.mutations.length;
+  await service().migrate({});
+  expect(board.mutations).toHaveLength(writes);
+});
+
+test.each(["BoardUnarchive", "BoardSetCards", "BoardArchive"])(
+  "archived move resumes after process loss following %s, including a lost response",
+  async (stopAfter) => {
+    const { board, service } = archivedWorkflow();
+    const card = board.card();
+    card.archived = true;
+    card.values.Status = "In progress";
+    const fetch = board.deps.fetch;
+    let stopped = false;
+    board.deps.fetch = async (input, init) => {
+      if (stopped) {
+        throw new Error("Process transport lost");
+      }
+      const response = await fetch(input, init);
+      const query = init?.body ? String(JSON.parse(String(init.body)).query) : "";
+      if (query.startsWith(`mutation ${stopAfter}(`)) {
+        stopped = true;
+        throw new Error("Process transport lost");
+      }
+      return response;
+    };
+    await expect(service().migrate({})).rejects.toThrow();
+    expect(stopped).toBe(true);
+    expect(card.archived).toBe(stopAfter === "BoardArchive");
+    expect(readState(board.readme)).toMatchObject({
+      version: 1,
+      archivedMove: { position: "2/1", id: card.id, field: "Status", value: "Executing" },
+    });
+    board.deps.fetch = fetch;
+    const writes = board.mutations.length;
+    const dry = await service().migrate({ dryRun: true });
+    expect(dry.message).toContain("Resume 2/1: card (archived): Status");
+    expect(board.mutations).toHaveLength(writes);
+    board.clock += 61 * 60_000;
+    await service().migrate({ steal: true });
+    expect(card).toMatchObject({ archived: true, values: { Status: "Executing" } });
+    expect(readState(board.readme).version).toBe(2);
+    expect(board.readme).not.toContain("archived_move:");
+  }
+);
+
+test("archived move verification refuses a silently ignored write and retains recovery intent", async () => {
+  const { board, service } = archivedWorkflow();
+  const card = board.card();
+  card.archived = true;
+  card.values.Status = "In progress";
+  board.ignoreMoves = true;
+  await expect(service().migrate({})).rejects.toThrow("verification failed");
+  expect(card).toMatchObject({ archived: true, values: { Status: "In progress" } });
+  expect(readState(board.readme).version).toBe(1);
+  expect(
+    board.fields.find(({ name }) => name === "Status")!.options.map(({ name }) => name)
+  ).toContain("In progress");
+  board.ignoreMoves = false;
+  board.clock += 61 * 60_000;
+  await service().migrate({ steal: true });
+  expect(card).toMatchObject({ archived: true, values: { Status: "Executing" } });
+});
+
+test("a failed archived field write rearchives immediately and retains intent for retry", async () => {
+  const { board, service } = archivedWorkflow();
+  const card = board.card();
+  card.archived = true;
+  card.values.Status = "In progress";
+  board.failMove = true;
+  await expect(service().migrate({})).rejects.toThrow("Interrupted move");
+  expect(card).toMatchObject({ archived: true, values: { Status: "In progress" } });
+  expect(readState(board.readme)).toMatchObject({
+    version: 1,
+    archivedMove: { id: card.id, value: "Executing" },
+  });
+  board.clock += 61 * 60_000;
+  await service().migrate({ steal: true });
+  expect(card).toMatchObject({ archived: true, values: { Status: "Executing" } });
+});
+
+test("archive-state verification retains intent when rearchiving is silently ignored", async () => {
+  const { board, service } = archivedWorkflow();
+  const card = board.card();
+  card.archived = true;
+  card.values.Status = "In progress";
+  const runner = service();
+  const toggle = runner.setArchived.bind(runner);
+  runner.setArchived = async (project, id, archived) => {
+    if (!archived) {
+      await toggle(project, id, archived);
+    }
+  };
+  await expect(runner.migrate({})).rejects.toThrow("Archived move verification failed");
+  expect(card).toMatchObject({ archived: false, values: { Status: "Executing" } });
+  expect(readState(board.readme)).toMatchObject({
+    version: 1,
+    archivedMove: { id: card.id, value: "Executing" },
+  });
+  board.clock += 61 * 60_000;
+  await service().migrate({ steal: true });
+  expect(card.archived).toBe(true);
+});
+
 test.each(["none", "failure", "contract", "budget"])(
   "v6 remaps every legacy state with evidence and is resumable and idempotent (interrupt=%s)",
   async (interrupt) => {
@@ -342,7 +518,9 @@ test.each(["none", "failure", "contract", "budget"])(
     const dry = await service.migrate({ dryRun: true });
     expect(board.mutations).toEqual([]);
     cases.forEach(([kind, from, to], index) =>
-      expect(dry.message).toContain(`#${index + 1} (${kind}): ${from} → ${to};`)
+      expect(dry.message).toContain(
+        `#${index + 1} (${kind})${from === to ? " (archived)" : ""}: ${from} → ${to};`
+      )
     );
     expect(dry.message).toContain("valid authenticated scope approval");
     expect(dry.message).toContain("authenticated SCOPE REVIEW pending");
@@ -432,8 +610,8 @@ test("Done cap ranks all repositories but archives only own cards outside the ne
     card.values.Status = "Done";
   }
   await board.service().capDone();
-  expect(board.cards.map((card) => card.id)).not.toContain("done-6");
-  expect(board.cards.map((card) => card.id)).not.toContain("done-8");
+  expect(board.cards.find((card) => card.id === "done-6")?.archived).toBe(true);
+  expect(board.cards.find((card) => card.id === "done-8")?.archived).toBe(true);
   expect(board.cards.map((card) => card.id)).toContain("done-7");
   expect(board.cards.map((card) => card.id)).toContain("done-9");
   expect(board.cards.map((card) => card.id)).toContain("done-4");
@@ -598,6 +776,91 @@ const contract: Migration = {
     },
   },
 };
+
+test("archived rename-to-existing and Progress rewrite preserve archive state and suffix through contract", async () => {
+  const board = setup();
+  board.stamp(1);
+  board.pinSelf("example/project", "dev");
+  const migrations = [baseline, expand, { ...contract, requires: "0.0.0-dev" }];
+  const card = board.card();
+  card.archived = true;
+  const progress = card.values.Progress as string;
+  const dry = await board.service(migrations).migrate({ dryRun: true });
+  expect(dry.message).toContain("card (archived): Status Backlog → Inbox");
+  expect(dry.message).toContain(
+    `card (archived): Progress ${progress} → ✅${progress.slice("🤖👍".length)}`
+  );
+  expect(board.mutations).toEqual([]);
+  await board.service(migrations).migrate({});
+  expect(card).toMatchObject({
+    archived: true,
+    values: { Status: "Inbox", Progress: "✅" + progress.slice("🤖👍".length) },
+  });
+  expect(board.mutations.filter((name) => name === "BoardUnarchive")).toHaveLength(2);
+  expect(board.mutations.filter((name) => name === "BoardArchive")).toHaveLength(2);
+  expect(readState(board.readme).version).toBe(3);
+});
+
+test("archived transaction finishes using reserve before a budget pause and resumes without steal", async () => {
+  const { board, service } = archivedWorkflow();
+  const card = board.card();
+  card.archived = true;
+  card.values.Status = "In progress";
+  board.budgetAfterBatch = true;
+  const paused = await service().migrate({});
+  expect(paused.message).toContain("BUDGET:");
+  expect(paused.state).toMatchObject({ version: 1, paused: "2/1" });
+  expect(paused.state.lock).toBeUndefined();
+  expect(card).toMatchObject({ archived: true, values: { Status: "Executing" } });
+  expect(board.sleeps).toEqual([]);
+  expect(board.readme).not.toContain("archived_move:");
+  board.low = false;
+  await service().migrate({});
+  expect(readState(board.readme).version).toBe(2);
+  expect(card.archived).toBe(true);
+});
+
+test("archived-only option loss fails verification rather than advancing the version", async () => {
+  const board = setup();
+  board.stamp(1);
+  const card = board.card();
+  card.archived = true;
+  board.corruptOptions = true;
+  await expect(board.service([baseline, expand]).migrate({})).rejects.toThrow(
+    "Option update verification failed for Status: card expected Backlog, got (unset)"
+  );
+  expect(readState(board.readme).version).toBe(1);
+  expect(card.archived).toBe(true);
+  expect(board.mutations).not.toContain("BoardSetCards");
+});
+
+test("archived move intent round-trips external text safely and rejects invalid journals", () => {
+  const state = {
+    version: 1,
+    minCompatible: 0,
+    aliases: {},
+    archivedMove: {
+      position: "2/1",
+      id: "card",
+      field: "Progress",
+      value: "<!-- vmethod-board -->\n<!-- /vmethod-board -->",
+    },
+  };
+  expect(readState(writeState("Human notes\n", state, true))).toMatchObject(state);
+  for (const patch of [
+    { position: "bad" },
+    { id: "" },
+    { field: "" },
+    { value: {} },
+    { value: undefined },
+  ]) {
+    const text = writeState("", state, true).replace(
+      /^archived_move: .*$/m,
+      `archived_move: ${JSON.stringify({ ...state.archivedMove, ...patch }).replaceAll("<", "\\u003c")}`
+    );
+    expect(() => readState(text)).toThrow("Invalid archived move journal");
+  }
+});
 
 test("baseline is accepted as-is, stamps from zero, and preserves human README and exact Progress", async () => {
   const board = setup();
@@ -916,7 +1179,8 @@ test("card writes enforce content repo scope, Status+Progress, PR Estimate polic
     board.service().set({ itemId: card.id, field: "Estimate", value: 5 })
   ).rejects.toThrow("Never");
   await board.service().archive(card.id);
-  expect(board.cards).toEqual([foreign]);
+  expect(board.cards).toEqual([card, foreign]);
+  expect(card.archived).toBe(true);
 });
 
 /** A v6 board's fields: the migration's expected shapes are the fake's option source. */

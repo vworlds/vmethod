@@ -250,6 +250,8 @@ export class BoardService implements BoardIO {
   }
 
   async cards(projectId: string): Promise<Card[]> {
+    // The unfiltered ProjectV2.items connection includes archived items. Select
+    // isArchived as well so migration moves can temporarily unarchive them.
     const values = await this.pages(async (cursor) => {
       const result = object(
         await this.github.graphql(
@@ -317,13 +319,12 @@ export class BoardService implements BoardIO {
     );
   }
 
-  async setArchived(itemId: string, archived: boolean): Promise<void> {
-    const snapshot = await this.snapshot();
+  async setArchived(projectId: string, itemId: string, archived: boolean): Promise<void> {
     await this.github.graphql(
       archived
         ? "mutation BoardArchive($input: ArchiveProjectV2ItemInput!) { archiveProjectV2Item(input: $input) { item { id } } }"
         : "mutation BoardUnarchive($input: UnarchiveProjectV2ItemInput!) { unarchiveProjectV2Item(input: $input) { item { id } } }",
-      { input: { projectId: snapshot.id, itemId } }
+      { input: { projectId, itemId } }
     );
   }
 
@@ -740,10 +741,7 @@ export class BoardService implements BoardIO {
     this.scope(await this.item(itemId));
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
-    await this.github.graphql(
-      "mutation BoardArchive($input: ArchiveProjectV2ItemInput!) { archiveProjectV2Item(input: $input) { item { id } } }",
-      { input: { projectId: snapshot.id, itemId } }
-    );
+    await this.setArchived(snapshot.id, itemId, true);
     return "Board card archived";
   }
 

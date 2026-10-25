@@ -57,6 +57,25 @@ export function readState(text: string): BoardState {
   }
   const completed: unknown = JSON.parse(entries.get("completed") ?? "[]");
   const optionUpdate: unknown = JSON.parse(entries.get("option_update") ?? "null");
+  const archivedMove: unknown = JSON.parse(entries.get("archived_move") ?? "null");
+  if (archivedMove !== null) {
+    const journal = archivedMove as NonNullable<BoardState["archivedMove"]>;
+    if (
+      !journal ||
+      typeof journal !== "object" ||
+      typeof journal.position !== "string" ||
+      !/^\d+\/\d+$/.test(journal.position) ||
+      typeof journal.field !== "string" ||
+      !journal.field ||
+      typeof journal.id !== "string" ||
+      !journal.id ||
+      (journal.value !== null &&
+        typeof journal.value !== "string" &&
+        !(typeof journal.value === "number" && Number.isFinite(journal.value)))
+    ) {
+      throw new Error("Invalid archived move journal");
+    }
+  }
   if (
     !Array.isArray(completed) ||
     completed.some((entry) => typeof entry !== "string" || !/^\d+\/\d+$/.test(entry))
@@ -107,6 +126,7 @@ export function readState(text: string): BoardState {
     aliases: aliases as Record<string, string>,
     completed: completed as string[],
     optionUpdate: (optionUpdate ?? undefined) as BoardState["optionUpdate"],
+    archivedMove: (archivedMove ?? undefined) as BoardState["archivedMove"],
   };
 }
 
@@ -135,6 +155,9 @@ export function writeState(text: string, state: BoardState, firstAppend = false)
   if (state.optionUpdate) {
     // Option names/descriptions are external data, not managed-block delimiters.
     lines.push(`option_update: ${JSON.stringify(state.optionUpdate).replaceAll("<", "\\u003c")}`);
+  }
+  if (state.archivedMove) {
+    lines.push(`archived_move: ${JSON.stringify(state.archivedMove).replaceAll("<", "\\u003c")}`);
   }
   const block = `\n${lines.join("\n")}\n`;
   return range

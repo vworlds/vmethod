@@ -1,6 +1,6 @@
 import { expect } from "vitest";
 import { fixture } from "../helpers.js";
-import { Kind, parse } from "graphql";
+import { Kind, parse, visit } from "graphql";
 import { BoardService } from "../../src/gateway/board.js";
 import { GitHubClient, type Dependencies } from "../../src/gateway/client.js";
 import { readState, writeState } from "../../src/board/readme.js";
@@ -97,6 +97,14 @@ export class FakeBoard {
         return this.unknown(payload.query);
       }
       const name = definition.name.value;
+      let selectsArchive = false;
+      visit(document, {
+        Field(node) {
+          if (node.name.value === "isArchived") {
+            selectsArchive = true;
+          }
+        },
+      });
       this.requests.push(name);
       if (definition.operation === "mutation") {
         this.mutations.push(name);
@@ -243,7 +251,7 @@ export class FakeBoard {
               items: this.page(
                 this.cards.map((card) => ({
                   id: card.id,
-                  isArchived: card.archived === true,
+                  ...(selectsArchive ? { isArchived: card.archived === true } : {}),
                   fieldValues: this.values(card),
                   content: {
                     __typename: card.kind,
@@ -265,6 +273,7 @@ export class FakeBoard {
             node: card
               ? {
                   id: card.id,
+                  ...(selectsArchive ? { isArchived: card.archived === true } : {}),
                   project: { id: "project" },
                   fieldValues: this.values(card),
                   content: {
@@ -396,7 +405,7 @@ export class FakeBoard {
                     nodes: [
                       {
                         id: card.id,
-                        isArchived: false,
+                        isArchived: card.archived === true,
                         project: { id: "project" },
                         fieldValues: this.values(card),
                         content: {

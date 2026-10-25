@@ -290,6 +290,9 @@ export class MigrationRunner {
     });
     await this.io.announce(`[vmethod] board migration ${from}→${this.boardVersion}`);
     try {
+      // Finish durable intent before replanning: the live value may already be
+      // changed, and the card may currently be unarchived after process loss.
+      await this.finishArchivedMove();
       for (const migration of this.migrations.filter((entry) => entry.version > from)) {
         await this.held();
         if (migration.requires) {
@@ -388,6 +391,28 @@ export class MigrationRunner {
         },
       ];
     });
+    await this.moveCards(snapshot.id, field, cards);
+    if (!cards.length) {
+      return;
+    }
+    const live = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
+    if (
+      cards.some(
+        ({ id, value, archived }) =>
+          !live.has(id) ||
+          live.get(id)?.values[field.name] !== value ||
+          (live.get(id)?.archived === true) !== archived
+      )
+    ) {
+      throw new Error(`Card move verification failed for ${field.name}`);
+    }
+  }
+
+  private async moveCards(
+    projectId: string,
+    field: Field,
+    cards: { id: string; value: string | number | null; archived?: boolean }[]
+  ): Promise<void> {
     for (let index = 0; index < cards.length; index += batchSize) {
       if (this.io.budgetStopped()) {
         throw new BudgetPause(`${cards.length - index} cards left`);
@@ -399,29 +424,70 @@ export class MigrationRunner {
       const batch = cards.slice(index, index + batchSize);
       for (const card of batch) {
         if (card.archived) {
-          await this.io.setArchived(card.id, false);
+          if (this.io.budgetStopped()) {
+            throw new BudgetPause(`${cards.length - index} cards left`);
+          }
+          await this.update((state) => {
+            state.archivedMove = {
+              position: this.position,
+              field: field.name,
+              id: card.id,
+              value: card.value,
+            };
+          });
+          await this.finishArchivedMove();
         }
       }
-      await this.io.setCards(snapshot.id, field, batch);
-      for (const card of batch) {
-        if (card.archived) {
-          await this.io.setArchived(card.id, true);
+      const active = batch.filter((card) => !card.archived);
+      if (active.length) {
+        if (this.io.budgetStopped()) {
+          throw new BudgetPause(`${cards.length - index} cards left`);
         }
+        await this.io.setCards(projectId, field, active);
       }
     }
-    if (!cards.length) {
-      return;
+    if (this.io.budgetStopped()) {
+      throw new BudgetPause("0 cards left (move verification pending)");
     }
-    const live = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
-    if (
-      cards.some(
-        ({ id, value, archived }) =>
-          live.get(id)?.values[field.name] !== value ||
-          (live.get(id)?.archived === true) !== archived
-      )
-    ) {
-      throw new Error(`Card move verification failed for ${field.name}`);
-    }
+  }
+
+  private async finishArchivedMove(): Promise<void> {
+    // A bounded in-flight transaction must finish even if its writes reach the
+    // reserve. Do not start another archived card until the budget allows it.
+    await this.io.cleanup(async () => {
+      const { snapshot, state } = await this.held();
+      const intent = state.archivedMove;
+      if (!intent) {
+        return;
+      }
+      const field = this.field(snapshot, intent.field);
+      const card = (await this.io.cards(snapshot.id)).find(({ id }) => id === intent.id);
+      if (!card) {
+        throw new Error(`Archived move item missing: ${intent.id}`);
+      }
+      let needsArchive = !card.archived;
+      try {
+        if ((card.values[field.name] ?? null) !== intent.value) {
+          needsArchive = true;
+          if (card.archived) {
+            await this.io.setArchived(snapshot.id, card.id, false);
+          }
+          await this.io.setCards(snapshot.id, field, [{ id: card.id, value: intent.value }]);
+        }
+      } finally {
+        if (needsArchive) {
+          await this.held();
+          await this.io.setArchived(snapshot.id, card.id, true);
+        }
+      }
+      const verified = (await this.io.cards(snapshot.id)).find(({ id }) => id === intent.id);
+      if (!verified?.archived || (verified.values[field.name] ?? null) !== intent.value) {
+        throw new Error(`Archived move verification failed for ${field.name} on ${intent.id}`);
+      }
+      await this.update((current) => {
+        current.archivedMove = undefined;
+      });
+    });
   }
 
   private async apply(op: Operation): Promise<void> {
@@ -446,18 +512,16 @@ export class MigrationRunner {
       await this.preserveOptions(field, expanded);
       const expandedField = this.field((await this.held()).snapshot, field.name);
       const changed = plan.filter(({ from, value }) => from !== value);
-      for (let index = 0; index < changed.length; index += batchSize) {
-        if (this.io.budgetStopped()) {
-          throw new BudgetPause(`${changed.length - index} cards left`);
-        }
-        await this.held();
-        if (this.io.budgetStopped()) {
-          throw new BudgetPause(`${changed.length - index} cards left`);
-        }
-        await this.io.setCards(snapshot.id, expandedField, changed.slice(index, index + batchSize));
-      }
+      await this.moveCards(snapshot.id, expandedField, changed);
       const live = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
-      if (plan.some(({ id, value }) => (live.get(id)?.values.Status ?? "") !== value)) {
+      if (
+        plan.some(
+          ({ id, value, archived }) =>
+            !live.has(id) ||
+            (live.get(id)?.values.Status ?? "") !== value ||
+            (live.get(id)?.archived === true) !== (archived === true)
+        )
+      ) {
         throw new Error("Workflow remap verification failed");
       }
       await this.preserveOptions(expandedField, final);
@@ -678,11 +742,40 @@ export class MigrationRunner {
     if (state.optionUpdate) {
       output.push("Discard legacy option restore journal; use current live values");
     }
+    if (state.archivedMove) {
+      const intent = state.archivedMove;
+      const card = cards.find(({ id }) => id === intent.id);
+      if (!card) {
+        throw new Error(`Archived move item missing: ${intent.id}`);
+      }
+      output.push(
+        `Resume ${intent.position}: ${intent.id} (archived): ${intent.field} ${card.values[intent.field] ?? "(unset)"} → ${intent.value ?? "(unset)"}; rearchive and verify`
+      );
+      card.values[intent.field] = intent.value;
+      card.archived = true;
+    }
     for (const migration of pending) {
       for (const [index, op] of migration.up.entries()) {
         const position = `${migration.version}/${index + 1}`;
         if (state.completed?.includes(position)) {
           continue;
+        }
+        if (op.op === "rewrite_progress") {
+          for (const card of cards) {
+            const value = card.values.Progress;
+            if (
+              typeof value === "string" &&
+              value.startsWith(op.from) &&
+              /^(?:\s|🔁|🔴|$)/u.test(value.slice(op.from.length)) &&
+              op.from !== op.to
+            ) {
+              const next = op.to + value.slice(op.from.length);
+              output.push(
+                `v${migration.version}: ${card.id}${card.archived ? " (archived)" : ""}: Progress ${value} → ${next}`
+              );
+              card.values.Progress = next;
+            }
+          }
         }
         if (!("field" in op)) {
           continue;
@@ -743,6 +836,9 @@ export class MigrationRunner {
           }
           for (const card of cards) {
             if (card.values[field.name] === op.from) {
+              output.push(
+                `v${migration.version}: ${card.id}${card.archived ? " (archived)" : ""}: ${field.name} ${op.from} → ${op.to}`
+              );
               card.values[field.name] = op.to;
             }
           }
@@ -800,7 +896,7 @@ export class MigrationRunner {
             );
           }
           output.push(
-            `v${migration.version}: check ${field.name} on ${card.id} (#${card.number ?? "unset"}): ${value ?? "(unset)"}`
+            `v${migration.version}: check ${field.name} on ${card.id} (#${card.number ?? "unset"})${card.archived ? " (archived)" : ""}: ${value ?? "(unset)"}`
           );
         }
         field.options = options.map((option) => ({ ...option, id: "preview" }));

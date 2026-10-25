@@ -59,6 +59,13 @@ export interface BoardState {
   migrating?: string;
   aliases: Record<string, string>;
   completed?: string[];
+  /** Durable explicit move intent, written before unarchiving; cleared only after value/archive verification. */
+  archivedMove?: {
+    position: string;
+    field: string;
+    id: string;
+    value: string | number | null;
+  };
   /** Legacy restore journal: read for compatibility, discarded on migration resume; never replayed. */
   optionUpdate?: {
     position: string;
@@ -111,13 +118,15 @@ export interface BoardIO {
     options: Omit<Option, "id">[],
     renames?: Record<string, string>
   ): Promise<void>;
+  /** Enumerate all project items, including archived items, with live values and archive state. */
   cards(projectId: string): Promise<Card[]>;
   setCards(
     projectId: string,
     field: Field,
     cards: { id: string; value: string | number | null }[]
   ): Promise<void>;
-  setArchived(itemId: string, archived: boolean): Promise<void>;
+  /** Low-level archive toggle; migration callers journal intent before temporarily unarchiving. */
+  setArchived(projectId: string, itemId: string, archived: boolean): Promise<void>;
   budgetStopped(): boolean;
   cleanup<T>(action: () => Promise<T>): Promise<T>;
   announce(message: string): Promise<void>;

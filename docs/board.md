@@ -257,6 +257,22 @@ Migrations resume idempotently after interruption. A budget pause releases the l
 and records its position; a failed verification stops at the last verified version.
 Use explicit stale-lock recovery only after checking the holder. They never downgrade.
 
+Planning, dry runs, card moves and post-update checks include archived items, even
+on shared boards. Dry runs mark them `(archived)` and show their moves. GitHub
+refuses field writes to archived items, so an explicit migration move journals its
+intent in the managed README block (`archived_move`) before unarchiving the card,
+setting its value and archiving it again. Both the value and archive state must
+verify before the journal is cleared. Unchanged archived cards need no item writes;
+ID-preserving option renames and metadata changes also leave them archived.
+
+If a move fails, the runner attempts to rearchive immediately and retains the
+intent. If the process dies or the transport is unavailable, resume the migration
+with the normal lock-recovery rules: it finishes the pending move and restores
+the archive state **before replanning**, even if the field value already changed.
+An in-flight archived move may use the request reserve to finish safely; budget
+pauses happen between cards, not between unarchiving and rearchiving. This narrow
+explicit-move journal is not an option-value snapshot or a general restore mechanism.
+
 Do not run `board migrate` on rc.6: upgrade directly to its successor rc first.
 GitHub's API treats options without IDs as new options and clears values referencing
 removed IDs. Option updates pass every existing option's ID, including through renames.
@@ -265,7 +281,8 @@ The runner snapshots values before each option-list write and checks every item
 automatically restores values or journals a snapshot for replay. On resume, legacy
 restore journals are discarded and current live values are used, so cards moved since
 a failed attempt cannot be reverted. Explicit workflow remaps still write changed
-cards in batches; unchanged cards are never rewritten. Dry runs list each item to check and
+cards in batches (archived cards use the journaled sequence above); unchanged cards
+are never rewritten. Dry runs list each item to check and
 each changed option's color and description. Migration 0007 applies the seven Status
 colors and descriptions through this same path. Already-lost values cannot be recovered
 without an earlier snapshot.
