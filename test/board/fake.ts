@@ -243,6 +243,7 @@ export class FakeBoard {
               items: this.page(
                 this.cards.map((card) => ({
                   id: card.id,
+                  isArchived: card.archived === true,
                   fieldValues: this.values(card),
                   content: {
                     __typename: card.kind,
@@ -361,8 +362,22 @@ export class FakeBoard {
         }
         case "BoardArchive": {
           expect(arg.projectId).toBe("project");
-          this.cards = this.cards.filter((card) => card.id !== arg.itemId);
+          const card = this.cards.find((entry) => entry.id === arg.itemId);
+          if (!card) {
+            return this.unknown(payload.query);
+          }
+          card.archived = true;
           data = { archiveProjectV2Item: { item: { id: arg.itemId } } };
+          break;
+        }
+        case "BoardUnarchive": {
+          expect(arg.projectId).toBe("project");
+          const card = this.cards.find((entry) => entry.id === arg.itemId);
+          if (!card) {
+            return this.unknown(payload.query);
+          }
+          card.archived = false;
+          data = { unarchiveProjectV2Item: { item: { id: arg.itemId } } };
           break;
         }
         case "BoardContent": {

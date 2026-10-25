@@ -117,6 +117,7 @@ export interface BoardIO {
     field: Field,
     cards: { id: string; value: string | number | null }[]
   ): Promise<void>;
+  setArchived(itemId: string, archived: boolean): Promise<void>;
   budgetStopped(): boolean;
   cleanup<T>(action: () => Promise<T>): Promise<T>;
   announce(message: string): Promise<void>;

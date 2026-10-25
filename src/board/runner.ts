@@ -264,7 +264,7 @@ export class MigrationRunner {
               ),
               ...remaps.map(
                 (card) =>
-                  `#${card.number ?? card.id} (${card.kind}): ${card.from} → ${card.value}; ${card.evidence}`
+                  `#${card.number ?? card.id} (${card.kind})${card.archived ? " (archived)" : ""}: ${card.from} → ${card.value}; ${card.evidence}`
               ),
               ...(await this.previewOptions(initial.pending)),
             ].join("; ")
@@ -380,7 +380,13 @@ export class MigrationRunner {
       ) {
         return [];
       }
-      return [{ id: card.id, value: rewrite ? to + value.slice(from.length) : to }];
+      return [
+        {
+          id: card.id,
+          value: rewrite ? to + value.slice(from.length) : to,
+          archived: card.archived === true,
+        },
+      ];
     });
     for (let index = 0; index < cards.length; index += batchSize) {
       if (this.io.budgetStopped()) {
@@ -390,13 +396,30 @@ export class MigrationRunner {
       if (this.io.budgetStopped()) {
         throw new BudgetPause(`${cards.length - index} cards left`);
       }
-      await this.io.setCards(snapshot.id, field, cards.slice(index, index + batchSize));
+      const batch = cards.slice(index, index + batchSize);
+      for (const card of batch) {
+        if (card.archived) {
+          await this.io.setArchived(card.id, false);
+        }
+      }
+      await this.io.setCards(snapshot.id, field, batch);
+      for (const card of batch) {
+        if (card.archived) {
+          await this.io.setArchived(card.id, true);
+        }
+      }
     }
     if (!cards.length) {
       return;
     }
     const live = new Map((await this.io.cards(snapshot.id)).map((card) => [card.id, card]));
-    if (cards.some(({ id, value }) => live.get(id)?.values[field.name] !== value)) {
+    if (
+      cards.some(
+        ({ id, value, archived }) =>
+          live.get(id)?.values[field.name] !== value ||
+          (live.get(id)?.archived === true) !== archived
+      )
+    ) {
       throw new Error(`Card move verification failed for ${field.name}`);
     }
   }
@@ -634,7 +657,15 @@ export class MigrationRunner {
       if (value && !workflowColumns.includes(value)) {
         throw new Error(`Cannot map unknown Status ${from} on ${card.id}`);
       }
-      return { id: card.id, number: card.number, kind: card.kind, from, value, evidence: reason };
+      return {
+        id: card.id,
+        number: card.number,
+        kind: card.kind,
+        archived: card.archived,
+        from,
+        value,
+        evidence: reason,
+      };
     });
   }
 

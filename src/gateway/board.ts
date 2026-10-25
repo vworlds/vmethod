@@ -253,7 +253,7 @@ export class BoardService implements BoardIO {
     const values = await this.pages(async (cursor) => {
       const result = object(
         await this.github.graphql(
-          `query BoardCards($id: ID!, $cursor: String) { node(id: $id) { ... on ProjectV2 { items(first: 100, after: $cursor) { nodes { id ${contentSelection} ${initialValues} } ${pageInfo} } } } }`,
+          `query BoardCards($id: ID!, $cursor: String) { node(id: $id) { ... on ProjectV2 { items(first: 100, after: $cursor) { nodes { id isArchived ${contentSelection} ${initialValues} } ${pageInfo} } } } }`,
           { id: projectId, cursor }
         )
       );
@@ -314,6 +314,16 @@ export class BoardService implements BoardIO {
     await this.setChanges(
       projectId,
       cards.map((card) => ({ ...card, field }))
+    );
+  }
+
+  async setArchived(itemId: string, archived: boolean): Promise<void> {
+    const snapshot = await this.snapshot();
+    await this.github.graphql(
+      archived
+        ? "mutation BoardArchive($input: ArchiveProjectV2ItemInput!) { archiveProjectV2Item(input: $input) { item { id } } }"
+        : "mutation BoardUnarchive($input: UnarchiveProjectV2ItemInput!) { unarchiveProjectV2Item(input: $input) { item { id } } }",
+      { input: { projectId: snapshot.id, itemId } }
     );
   }
 
