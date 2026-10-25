@@ -85,7 +85,13 @@ export class MigrationRunner {
     const snapshot = await this.io.snapshot();
     const state = readState(snapshot.readme);
     const mismatches = (await this.io.cards(snapshot.id)).flatMap((card) => {
-      if (!["Issue", "PullRequest"].includes(card.kind) || card.number === undefined) {
+      // Archived cards are outside the active workflow. Migrations still read
+      // and preserve their values, but status repair must never write to them.
+      if (
+        card.archived ||
+        !["Issue", "PullRequest"].includes(card.kind) ||
+        card.number === undefined
+      ) {
         return [];
       }
       const closed = Boolean(card.closedAt);

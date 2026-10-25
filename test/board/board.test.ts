@@ -766,6 +766,26 @@ test("board status reports closed/open column mismatches and --fix reconciles th
   expect(draft.values.Status).toBe("Done");
 });
 
+test("board status and --fix ignore archived closed cards with unset Status", async () => {
+  const board = setup();
+  board.stamp(1);
+  const archived = board.card("archived-closed");
+  archived.number = 196;
+  archived.closedAt = "2026-10-18T12:07:00Z";
+  archived.archived = true;
+  archived.values.Status = null;
+  const before = structuredClone(archived);
+  const service = board.service();
+  expect((await service.cards("project")).find(({ id }) => id === archived.id)).toMatchObject({
+    archived: true,
+    values: { Status: null },
+  });
+  expect((await service.status()).mismatches).toEqual([]);
+  expect((await service.fixStatus()).mismatches).toEqual([]);
+  expect(archived).toEqual(before);
+  expect(board.mutations).toEqual([]);
+});
+
 test("board status reports empty Status cards and --fix reconciles them like the invariant", async () => {
   const board = setup();
   board.stamp(1);

@@ -257,6 +257,11 @@ Migrations resume idempotently after interruption. A budget pause releases the l
 and records its position; a failed verification stops at the last verified version.
 Use explicit stale-lock recovery only after checking the holder. They never downgrade.
 
+`board status` mismatch detection and `board status --fix` consider only active
+cards. Archived cards are out of the workflow, including closed cards whose Status
+was previously lost; status repair never writes to them. Migration planning and
+value-preservation checks still include archived issues and PRs as described below.
+
 Planning, dry runs, card moves and post-update checks include archived issues and
 PRs from every repository in `board.repos`, even on shared boards. GitHub's project
 `items` listing excludes archived items, so enumeration also pages through **every
