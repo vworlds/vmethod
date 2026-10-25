@@ -1338,7 +1338,9 @@ class GatewayServer {
   /** The verifiable owner gate (#218): a `gate: owner` family honorably launches or
    * switches only when the task issue or task PR carries the owner's
    * `APPROVE MODEL <family>` comment, posted after the issue body's last edit and
-   * verified by identity, not display name. */
+   * verified by identity, not display name. #242 adds the card path: the owner's own
+   * Model value on the issue's or task PR's board card counts through the value's
+   * recorded creator, while a value written by anyone else never counts. */
   private async modelApproval(
     family: string,
     task: { pr?: number; issue?: number }
@@ -1370,6 +1372,10 @@ class GatewayServer {
       ) {
         return true;
       }
+      // The comment path failed: the owner may have approved by setting the card.
+      if (await this.ownerCardModel(item, "Issue", family, link)) {
+        return true;
+      }
     }
     if (task.pr !== undefined) {
       const { item, link, person } = await this.thread(String(task.pr), "pr");
@@ -1385,8 +1391,46 @@ class GatewayServer {
       ) {
         return true;
       }
+      if (await this.ownerCardModel(item, "PullRequest", family, link)) {
+        return true;
+      }
     }
     return false;
+  }
+
+  /** The card path of the owner gate (#242): the task card's Model value on the
+   * configured board counts as an approval when the value's recorded `creator` —
+   * GitHub tracks who set each project field value — is the pinned owner, and the
+   * single-select name or text is the family. A Model value written by anyone else,
+   * including `open-task` writing the task PR card's Model, never counts. */
+  private async ownerCardModel(
+    item: ObjectData,
+    type: "Issue" | "PullRequest",
+    family: string,
+    link: string
+  ): Promise<boolean> {
+    const fields = `projectItems(first: 100) { nodes { id isArchived project { number owner { ... on Organization { login } ... on User { login } } } fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldSingleSelectValue { name creator { ${actorFields} } field { ... on ProjectV2SingleSelectField { name } } } ... on ProjectV2ItemFieldTextValue { text creator { ${actorFields} } field { ... on ProjectV2Field { name } } } } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }`;
+    const data = await this.node(String(item.id), fields, type);
+    if (!this.filter.accept(data, repoOf(data).owner, link)) {
+      throw new Error("Task identity changed during read");
+    }
+    if (object(object(data.projectItems).pageInfo).hasNextPage === true) {
+      throw new Error("Too many project memberships; refusing incomplete metadata");
+    }
+    const card = object(this.projectCard(data).fieldValues);
+    if (object(card.pageInfo).hasNextPage === true) {
+      throw new Error("Incomplete project field values");
+    }
+    const values = card.nodes;
+    if (!Array.isArray(values)) {
+      return false;
+    }
+    const model = object(values.find((v) => object(object(v).field).name === "Model"));
+    if (String(model.name ?? model.text ?? "").trim() !== family) {
+      return false;
+    }
+    const person = this.filter.identity(model.creator);
+    return person !== undefined && this.filter.roleIn(person, String(this.config.repo)) === "owner";
   }
 
   /**

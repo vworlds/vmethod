@@ -20,7 +20,7 @@ import sessionCapture from "../fixtures/usage/opencode-session.json" with { type
 import recordedClosedPulls from "../fixtures/github/diagnostic-pulls-closed.json" with { type: "json" };
 import recordedCompare from "../fixtures/github/diagnostic-compare.json" with { type: "json" };
 import type { Dependencies } from "../../src/gateway/client.js";
-import { object } from "../../src/gateway/people.js";
+import { object, type ObjectData } from "../../src/gateway/people.js";
 import { validProject } from "../helpers.js";
 import { actor, item, people } from "./helpers.js";
 import { WatchFake } from "./watch-fake.js";
@@ -50,6 +50,8 @@ function fixture(prefix?: string, legacy = false) {
       { family: "glm", model: "fake/glm", kind: "opencode", gate: "none", tier: "cheap" },
       { family: "sol", model: "fake/sol", kind: "opencode", gate: "none", tier: "standard" },
       { family: "sonnet", model: "claude-fake", kind: "claude", gate: "none", tier: "standard" },
+      // Owner-gated expensive family for the #242 card-Model gate tests.
+      { family: "astra", model: "fake/astra", kind: "opencode", gate: "owner", tier: "expensive" },
     ])
   );
   const projects = (id: string, field: string, value: unknown) => ({
@@ -83,6 +85,8 @@ function fixture(prefix?: string, legacy = false) {
     headRepository: { nameWithOwner: "example/project" },
     closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } },
     projectItems: prProjects,
+    // The model gate (#218/#242) needs the body-edit bound on both threads.
+    createdAt: "2026-01-01T00:00:00Z",
   });
   const issue = item({
     id: "ISSUE9",
@@ -92,6 +96,7 @@ function fixture(prefix?: string, legacy = false) {
     labels: { nodes: [{ name: "tooling" }] },
     blockedBy: { nodes: [], pageInfo: { hasNextPage: false } },
     projectItems: projects("CARD9", "Estimate", 13),
+    createdAt: "2026-01-01T00:00:00Z",
   });
   const comments: ReturnType<typeof item>[] = [];
   const mutations: Record<string, unknown>[] = [];
@@ -226,7 +231,7 @@ function fixture(prefix?: string, legacy = false) {
                       name: "Model",
                       dataType: "SINGLE_SELECT",
                       createdAt: recordedFields.node.fields.nodes[0].createdAt,
-                      options: ["glm", "sol", "sonnet"].map((name) => ({
+                      options: ["glm", "sol", "sonnet", "astra"].map((name) => ({
                         id: `O_${name}`,
                         name,
                         color: "GRAY",
@@ -601,6 +606,55 @@ test("worker start never falls back to a Model line in the PR body", async () =>
   expect(f.requests.some((request) => request.includes("opencode.invalid"))).toBe(false);
   f.done();
 });
+
+test.each([
+  {
+    case: "passes when the owner set it themselves",
+    creator: actor(0),
+    authorized: true,
+  },
+  {
+    case: "refuses the orchestrator's own write",
+    creator: actor(2),
+    authorized: false,
+  },
+  {
+    case: "refuses a value written by an unpinned account",
+    creator: { login: "imposter", databaseId: 4242, __typename: "User" },
+    authorized: false,
+  },
+])(
+  "worker start honors the task PR card's Model creator (#242): $case",
+  async ({ creator, authorized }) => {
+    const f = fixture();
+    // The task PR card's Model value with its recorded creator (#242): the card read
+    // in the gate returns this fieldValues node through the PR31 node fake.
+    const card = (object(f.pr.projectItems).nodes as ObjectData[])[0];
+    (object(card.fieldValues).nodes as ObjectData[]) = [
+      { field: { name: "Model" }, name: "astra", creator },
+    ];
+    if (authorized) {
+      const result = await f.transport.call(
+        "worker",
+        { args: ["start", "31", "--owner-approved"] },
+        f.ctx
+      );
+      expect(result).toContain("Started ses_test for #31 on astra");
+      // The opencode-kind family launches through the session create, not a claude process.
+      expect(f.requests).toContain("POST https://opencode.invalid/api/session");
+      // The launch resynchronizes the card's Model through the board write.
+      expect(JSON.stringify(f.mutations)).toContain("O_astra");
+    } else {
+      await expect(
+        f.transport.call("worker", { args: ["start", "31", "--owner-approved"] }, f.ctx)
+      ).rejects.toThrow("APPROVE MODEL astra");
+      expect(f.deps.processes!.launch).not.toHaveBeenCalled();
+      expect(f.mutations).toEqual([]);
+      expect(f.requests.every((request) => !request.includes("opencode.invalid"))).toBe(true);
+    }
+    f.done();
+  }
+);
 
 test.each(["closed", "foreign", "unknown-author", "open", "ambiguous"])(
   "worktrees CLI maps only same-repository closed tasks and preserves live sessions: %s",
