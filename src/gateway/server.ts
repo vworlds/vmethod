@@ -176,7 +176,9 @@ class GatewayServer {
         await workerAccess(this.root, directory, this.config, this.deps);
         return directory;
       },
-      setModel: (pr, family) => this.setWorkerField(pr, "pr", "Model", family),
+      setModel: async (pr, family) => {
+        await this.setWorkerField(pr, "pr", "Model", family);
+      },
       modelComment: async (pr, body) => {
         await checkMarkdown(this.root, body);
         guardClosingKeywords(body);
@@ -472,17 +474,29 @@ class GatewayServer {
     kind: "pr" | "issue",
     field: "Estimate" | "Model" | "Cost",
     value: number | string | null
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const item = await this.richThread(ref, kind);
     const card = this.projectCard(item);
     if (typeof card.id !== "string") {
       throw new Error("Task has no card on configured board");
     }
+    if (card.isArchived === true) {
+      // #267: GitHub refuses item writes on archived cards, so grade must never
+      // attempt them: an unchanged value needs no item write (docs/board.md),
+      // and a changed value goes through the verified unarchive, set and archive
+      // sequence. The card stays archived and the value stays correct; grade
+      // reports whichever outcome the card took.
+      const cardName = kind === "pr" ? "PR" : "issue";
+      if (this.projectValue(item, field) === value) {
+        return value === null
+          ? `${field} unchanged on the archived ${cardName} card`
+          : `${field} unchanged on the archived ${cardName} card (already ${value})`;
+      }
+      await this.board.setArchivedCard({ itemId: card.id, field, value });
+      return `${field} set on the archived ${cardName} card via unarchive/archive`;
+    }
     if (field === "Cost" && this.projectValue(item, field) === value) {
       return;
-    }
-    if (field === "Cost" && card.isArchived === true) {
-      throw new Error("The item is archived and cannot be updated");
     }
     await this.board.set({ itemId: card.id, field, value });
   }

@@ -144,9 +144,12 @@ export interface WorkerHooks {
   setModel(pr: number, family: string): Promise<void>;
   /** Post a model-switch audit note without handing back the protocol turn. */
   modelComment(pr: number, text: string): Promise<void>;
-  setEstimate(issue: number, points: number): Promise<void>;
-  /** Grade-time per-PR cost; null clears the board field rather than inventing zero. */
-  setCost?(pr: number, cost: string | null): Promise<void>;
+  /** Writes the final Estimate on the linked issue's card, returning one archived-card
+   * outcome note for the grade summary (unchanged skip or the unarchive/archive write). */
+  setEstimate(issue: number, points: number): Promise<string | undefined>;
+  /** Grade-time per-PR cost; null clears the board field rather than inventing zero.
+   * Returns one archived-card outcome note for the grade summary like setEstimate. */
+  setCost?(pr: number, cost: string | null): Promise<string | undefined>;
   /** Post the validated GRADE summary on the originating issue. */
   gradeComment?(issue: number, text: string): Promise<void>;
   /** Submit locally staged grades through the same privacy and rolling-PR pipeline. */
@@ -1862,17 +1865,25 @@ export class WorkerService {
           "Delivery already graded with a different record; reconcile before regrading"
         );
       }
-      await this.hooks.setEstimate(meta.issue, points);
+      const estimateNote = await this.hooks.setEstimate(meta.issue, points);
       if (!prior) {
         mkdirSync(join(this.root, ".vmethod"), { recursive: true });
         appendFileSync(file, JSON.stringify(record) + "\n");
       }
       session.finalized = true;
       this.save(session);
-      await this.hooks.setCost?.(pr, boardCost(record.usd, record.costCoverage === "partial"));
+      const costNote = await this.hooks.setCost?.(
+        pr,
+        boardCost(record.usd, record.costCoverage === "partial")
+      );
       let summary = `Graded PR #${pr}: issue #${meta.issue} Estimate ${points}; USD ${record.usd === null ? "unknown" : `${record.costCoverage === "partial" ? "≥ " : ""}$${record.usd.toFixed(6)}`}`;
       if (storedFallback) {
         summary += "; usage from the last stored poll (session unresolvable)";
+      }
+      for (const note of [estimateNote, costNote]) {
+        if (note) {
+          summary += `; ${note}`;
+        }
       }
       if (!session.gradePosted) {
         await this.hooks.gradeComment?.(meta.issue, `[orchestrator] GRADE\n\n${summary}`);

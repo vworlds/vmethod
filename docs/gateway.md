@@ -391,6 +391,17 @@ Only a record with nothing stored refuses with
 forwarding opencode's raw 404; without a stored poll its cost, usage and learning
 record cannot be graded.
 
+Grade also survives a card the project workflow archived after the delivery
+finished, which GitHub would otherwise refuse on the field write: the grade
+reads the card's archive state first and never writes an archived item. An
+already correct value is skipped and the GRADE output reports the card as
+unchanged; a changed Estimate or Cost goes through the same verified
+unarchive, set and archive sequence the [migration archived moves](board.md#migrations-what-adopters-see)
+use, so the card stays archived and the value stays correct. Grade reports
+which card and outcome applied (for example `Estimate set on the archived issue
+card via unarchive/archive`), and the record, GRADE post and learning submission
+complete either way.
+
 Records under `$XDG_STATE_HOME/vmethod/<stateName>/workers/<pr>.json` hold session
 identity, repository, issue, worktree, opening Estimate and timestamped model
 segments. Writes use a per-PR exclusive lock and atomic rename. A lock left after

@@ -101,6 +101,27 @@ function fixture(prefix?: string, legacy = false) {
   const comments: ReturnType<typeof item>[] = [];
   const mutations: Record<string, unknown>[] = [];
   const requests: string[] = [];
+  // Live board card state for the query BoardItem and archived-write responses (#267).
+  // Seeded to agree with the canned thread views: CARD31 carries Model glm, CARD9
+  // the opening Estimate 13.
+  const cards: Record<
+    string,
+    { archived: boolean; values: Record<string, string | number | null> }
+  > = {
+    CARD31: { archived: false, values: { Model: "glm" } },
+    CARD9: { archived: false, values: { Estimate: 13 } },
+  };
+  const fieldNames: Record<string, string> = {
+    F_MODEL: "Model",
+    F_ESTIMATE: "Estimate",
+    F_COST: "Cost",
+  };
+  const optionNames: Record<string, string> = {
+    O_glm: "glm",
+    O_sol: "sol",
+    O_sonnet: "sonnet",
+    O_astra: "astra",
+  };
   const gradePosts: unknown[] = [];
   const modelPosts: unknown[] = [];
   const unexpected: string[] = [];
@@ -258,10 +279,12 @@ function fixture(prefix?: string, legacy = false) {
           });
         }
         if (query.includes("query BoardItem")) {
+          const state = cards[String(variables.id)];
           return Response.json({
             data: {
               node: {
                 id: variables.id,
+                isArchived: state.archived,
                 project: { id: "PVT" },
                 content: {
                   __typename: variables.id === "CARD31" ? "PullRequest" : "Issue",
@@ -269,14 +292,53 @@ function fixture(prefix?: string, legacy = false) {
                   repository: { nameWithOwner: "example/project" },
                   assignees: { nodes: [] },
                 },
-                fieldValues: { nodes: [], pageInfo: { hasNextPage: false } },
+                fieldValues: {
+                  nodes: Object.entries(state.values).map(([name, value]) => ({
+                    field: { name },
+                    ...(typeof value === "number" ? { number: value } : { text: value }),
+                  })),
+                  pageInfo: { hasNextPage: false },
+                },
               },
             },
           });
         }
         if (query.includes("mutation BoardSetCards")) {
           mutations.push(variables);
+          for (const value of Object.values(variables)) {
+            const input = object(value);
+            const name = fieldNames[String(input.fieldId)];
+            const state = cards[String(input.itemId)];
+            if (!state || !name) {
+              unexpected.push(`BoardSetCards ${String(input.itemId)} ${String(input.fieldId)}`);
+              return Response.json({ message: "Unknown card" }, { status: 400 });
+            }
+            const written = object(input.value);
+            let applied: string | number | null = null;
+            if (typeof written.number === "number") {
+              applied = written.number;
+            } else if (typeof written.text === "string") {
+              applied = written.text;
+            } else if (typeof written.singleSelectOptionId === "string") {
+              applied = optionNames[written.singleSelectOptionId] ?? null;
+            }
+            state.values[name] = applied;
+          }
           return Response.json({ data: { m0: { projectV2Item: { id: "updated" } } } });
+        }
+        if (query.includes("mutation BoardUnarchive")) {
+          mutations.push(variables);
+          cards[String(object(variables.input).itemId)].archived = false;
+          return Response.json({
+            data: { unarchiveProjectV2Item: { item: { id: object(variables.input).itemId } } },
+          });
+        }
+        if (query.includes("mutation BoardArchive")) {
+          mutations.push(variables);
+          cards[String(object(variables.input).itemId)].archived = true;
+          return Response.json({
+            data: { archiveProjectV2Item: { item: { id: object(variables.input).itemId } } },
+          });
         }
         if (query.includes("repository(owner:")) {
           return Response.json({
@@ -364,6 +426,14 @@ function fixture(prefix?: string, legacy = false) {
     env,
     transport,
     ctx,
+    cardArchived: (id: string) => cards[id].archived,
+    cardValue: (id: string, name: string) => cards[id].values[name],
+    setCardArchived: (id: "CARD31" | "CARD9", archived: boolean) => {
+      cards[id].archived = archived;
+      // The rich thread reads carry the same archive state as the item reads.
+      const source: ObjectData = (id === "CARD31" ? pr : issue) as ObjectData;
+      (object(source.projectItems).nodes as ObjectData[])[0].isArchived = archived;
+    },
     setProgress: (name: string) => {
       prProjects.nodes[0].fieldValues.nodes.push({ field: { name: "Progress" }, name });
     },
@@ -1021,6 +1091,87 @@ test("gateway grades a delivery with Estimate on the linked issue and Cost only 
   expect(f.gradePosts).toEqual([
     { body: "[orchestrator] GRADE\n\nGraded PR #31: issue #9 Estimate 20; USD unknown" },
   ]);
+  f.done();
+});
+
+test("grade writes the Estimate on an archived issue card by unarchive/archive and leaves it archived", async () => {
+  const f = fixture();
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  // The project workflow archived the Done card before the grade.
+  f.setCardArchived("CARD9", true);
+  f.pr.state = "MERGED";
+  f.pr.merged = true;
+  const result = await f.transport.call("grade", { ref: "31", points: 20 }, f.ctx);
+  // GitHub refuses a direct archived-item write; the sequence unarchives first.
+  expect(f.mutations[1]).toMatchObject({ input: { itemId: "CARD9" } });
+  expect(f.mutations[2]).toMatchObject({
+    m0: { itemId: "CARD9", fieldId: "F_ESTIMATE", value: { number: 20 } },
+  });
+  // The grade rearchives after a verified value, so the card stays archived.
+  expect(f.mutations[3]).toMatchObject({ input: { itemId: "CARD9" } });
+  // Nothing else wrote the board: the Cost clear on the active PR card completes the list.
+  expect(f.mutations).toHaveLength(5);
+  // The acceptance case: the grade succeeds and submits the record.
+  expect(result).toContain("Estimate set on the archived issue card via unarchive/archive");
+  expect(result).toContain("No new learnings to submit");
+  expect(f.gradePosts).toEqual([
+    {
+      body:
+        "[orchestrator] GRADE\n\nGraded PR #31: issue #9 Estimate 20; USD unknown; " +
+        "Estimate set on the archived issue card via unarchive/archive",
+    },
+  ]);
+  const log = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(log).toMatchObject({ pr: 31, points_open: 8, points_final: 20 });
+  // ... and leaves the card archived.
+  expect(f.cardArchived("CARD9")).toBe(true);
+  expect(f.cardValue("CARD9", "Estimate")).toBe(20);
+  f.done();
+});
+
+test("grade reports and skips an unchanged Estimate on an archived issue card", async () => {
+  const f = fixture();
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  f.setCardArchived("CARD9", true);
+  f.pr.state = "MERGED";
+  f.pr.merged = true;
+  // Default points are the issue's current Estimate: already correct, no item write.
+  expect(await f.transport.call("grade", { ref: "31" }, f.ctx)).toContain(
+    "Estimate unchanged on the archived issue card (already 13)"
+  );
+  expect(f.mutations.filter((mutation) => JSON.stringify(mutation).includes("F_ESTIMATE"))).toEqual(
+    []
+  );
+  const unarchive = f.mutations.filter((mutation) =>
+    JSON.stringify(mutation).includes("Unarchive")
+  );
+  expect(unarchive).toEqual([]);
+  expect(f.cardArchived("CARD9")).toBe(true);
+  expect(f.cardValue("CARD9", "Estimate")).toBe(13);
+  // The delivery's record and learning submission still completed.
+  const log = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(log).toMatchObject({ pr: 31, points_final: 13 });
+  f.done();
+});
+
+test("grade completes the Cost write on an archived PR card by unarchive/archive", async () => {
+  const f = fixture();
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  f.setCardArchived("CARD31", true);
+  f.pr.state = "MERGED";
+  f.pr.merged = true;
+  expect(await f.transport.call("grade", { ref: "31", points: 20 }, f.ctx)).toContain(
+    "Cost set on the archived PR card via unarchive/archive"
+  );
+  const estimate = f.mutations.filter((mutation) =>
+    JSON.stringify(mutation).includes("F_ESTIMATE")
+  );
+  expect(estimate).toHaveLength(1);
+  const cleared = f.mutations.filter((mutation) => JSON.stringify(mutation).includes("F_COST"));
+  expect(cleared).toHaveLength(1);
+  // The card stays archived with its value written.
+  expect(f.cardArchived("CARD31")).toBe(true);
+  expect(f.cardValue("CARD31", "Cost")).toBeNull();
   f.done();
 });
 

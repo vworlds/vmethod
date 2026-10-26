@@ -634,6 +634,38 @@ export class BoardService implements BoardIO {
     );
     return "Board field updated";
   }
+  /** #267: grade writes through an archived card without touching it while archived.
+   * Unarchive, reuse the active-card set() guards and write unchanged, re-archive
+   * before returning (also on a failed write so the card never stays unarchived),
+   * then verify both the value and the archive state; the verified unarchive, set
+   * and archive sequence from the #258 archived moves. */
+  async setArchivedCard(input: {
+    itemId: string;
+    field: "Status" | "Estimate" | "Model" | "Progress" | "Cost";
+    value: string | number | null;
+    progress?: string | null;
+  }): Promise<string> {
+    const card = await this.item(input.itemId);
+    if (!card.archived) {
+      throw new Error(`Card ${input.itemId} is not archived`);
+    }
+    this.scope(card);
+    // The compatibility gate precedes every unarchive, as archive() and set() do.
+    const snapshot = await this.snapshot();
+    compatibility(readState(snapshot.readme), this.boardVersion, this.report);
+    await this.setArchived(snapshot.id, input.itemId, false);
+    let result: string;
+    try {
+      result = await this.set(input);
+    } finally {
+      await this.setArchived(snapshot.id, input.itemId, true);
+    }
+    const verified = await this.item(input.itemId);
+    if (!verified.archived || (verified.values[input.field] ?? null) !== input.value) {
+      throw new Error(`Archived write verification failed for ${input.field} on ${input.itemId}`);
+    }
+    return result;
+  }
   /** Set a single-select/number field or validated Progress by issue content ID.
    * A null value clears only Progress or Estimate through the native field-clear mutation.
    * Estimates must use the shared points scale. Cost is refused. Status writes clear Progress;

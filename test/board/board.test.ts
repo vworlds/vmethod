@@ -304,6 +304,70 @@ test("fake rejects both field updates and clears on archived cards", async () =>
   }
 });
 
+test("setArchivedCard unarchives, writes through the normal guards and rearchives, verified", async () => {
+  const board = setup();
+  const card = board.card();
+  card.archived = true;
+  card.values.Status = "Done";
+  await expect(
+    board.service().setArchivedCard({ itemId: card.id, field: "Estimate", value: 5 })
+  ).resolves.toBe("Board field updated");
+  // The value is correct and the card never stays unarchived.
+  expect(card.values.Estimate).toBe(5);
+  expect(card.archived).toBe(true);
+  expect(board.mutations).toEqual(["BoardUnarchive", "BoardSetCards", "BoardArchive"]);
+  // A cleared archived value verifies the same way.
+  await expect(
+    board.service().setArchivedCard({ itemId: card.id, field: "Estimate", value: null })
+  ).resolves.toBe("Board field updated");
+  expect(card.values.Estimate).toBeNull();
+  expect(card.archived).toBe(true);
+  expect(board.mutations).toEqual([
+    "BoardUnarchive",
+    "BoardSetCards",
+    "BoardArchive",
+    "BoardUnarchive",
+    "BoardSetCards",
+    "BoardArchive",
+  ]);
+});
+
+test("setArchivedCard rearchives after a failed write and after every guard refusal", async () => {
+  const board = setup();
+  const card = board.card();
+  card.archived = true;
+  board.failBatch = board.batches + 1;
+  await expect(
+    board.service().setArchivedCard({ itemId: card.id, field: "Estimate", value: 5 })
+  ).rejects.toThrow("Interrupted move");
+  expect(card.values.Estimate).toBe(13);
+  expect(card.archived).toBe(true);
+  expect(board.mutations).toEqual(["BoardUnarchive", "BoardSetCards", "BoardArchive"]);
+  // A stale value after the mutations fails verification with the card archived.
+  const second = board.card("second");
+  second.archived = true;
+  board.ignoreMoves = true;
+  await expect(
+    board.service().setArchivedCard({ itemId: second.id, field: "Estimate", value: 5 })
+  ).rejects.toThrow("Archived write verification failed for Estimate on second");
+  expect(second.values.Estimate).toBe(13);
+  expect(second.archived).toBe(true);
+});
+
+test("setArchivedCard refuses an unarchived or foreign card before any write", async () => {
+  const board = setup();
+  const card = board.card();
+  await expect(
+    board.service().setArchivedCard({ itemId: card.id, field: "Estimate", value: 5 })
+  ).rejects.toThrow(`Card ${card.id} is not archived`);
+  const foreign = board.card("foreign", "other/project");
+  foreign.archived = true;
+  await expect(
+    board.service().setArchivedCard({ itemId: foreign.id, field: "Estimate", value: 5 })
+  ).rejects.toThrow("Refusing write to a foreign repository card");
+  expect(board.mutations).toEqual([]);
+});
+
 test("ordinary Status writes and their card lookup never scan repository history", async () => {
   const board = setup();
   board.stamp(1);

@@ -297,13 +297,17 @@ setting its value and archiving it again. Both the value and archive state must
 verify before the journal is cleared. Unchanged archived cards need no item writes;
 ID-preserving option renames and metadata changes also leave them archived.
 
-If a move fails, the runner attempts to rearchive immediately and retains the
+if a move fails, the runner attempts to rearchive immediately and retains the
 intent. If the process dies or the transport is unavailable, resume the migration
 with the normal lock-recovery rules: it finishes the pending move and restores
 the archive state **before replanning**, even if the field value already changed.
 An in-flight archived move may use the request reserve to finish safely; budget
 pauses happen between cards, not between unarchiving and rearchiving. This narrow
 explicit-move journal is not an option-value snapshot or a general restore mechanism.
+Non-migration writes can face the same archive state: grade writes an already correct
+archived value without a write, and a changed value through the same verified
+unarchive, set and archive sequence ([grade](gateway.md#worker-management-orchestrator-only)),
+without the migration journal.
 
 Do not run `board migrate` on rc.6: upgrade directly to its successor rc first.
 GitHub's API treats options without IDs as new options and clears values referencing

@@ -195,8 +195,8 @@ function fixture(
       meta.model = family;
     }),
     modelComment: vi.fn(async () => {}),
-    setEstimate: vi.fn(async () => {}),
-    setCost: vi.fn(async () => {}),
+    setEstimate: vi.fn(async () => undefined),
+    setCost: vi.fn(async () => undefined),
     gradeComment: vi.fn(async () => {}),
     submitLearnings: vi.fn(async () => "Learning submission complete"),
     workerIdentity: vi.fn(async () => ({ GH_TOKEN: "worker-token", PATH: "fake-path" })),
@@ -404,6 +404,35 @@ test("merge-time usage capture stores tokens so a later grade reads them after t
   expect(value.costCoverage).toBe("partial");
   expect(value.segments[0]).toMatchObject({ usd: value.usd, outcome: "merged" });
   expect(vi.mocked(f.hooks.gradeComment!).mock.calls[0]?.[1] ?? "").toContain("USD ≥ $0.000326");
+  f.done();
+});
+
+test("grade appends the archived-card field notes to the summary in hook order", async () => {
+  const f = fixture(
+    [...start, ...usagePoll({ input: 12, output: 30, cached: 8 })],
+    true,
+    "owner",
+    false,
+    false,
+    "auto-9-task"
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.captureUsage(31);
+  rmSync(f.directory, { recursive: true, force: true });
+  f.meta.state = "MERGED";
+  f.meta.merged = true;
+  f.meta.closedAt = "1970-01-01T00:00:20.000Z";
+  f.meta.headOid = "c".repeat(40);
+  f.hooks.setEstimate = vi.fn(
+    async () => "Estimate unchanged on the archived issue card (already 13)"
+  );
+  f.hooks.setCost = vi.fn(async () => "Cost set on the archived PR card via unarchive/archive");
+  const summary = await f.service.grade(31, 13);
+  expect(vi.mocked(f.hooks.gradeComment!).mock.calls[0]?.[1] ?? "").toContain(
+    "; Estimate unchanged on the archived issue card (already 13)" +
+      "; Cost set on the archived PR card via unarchive/archive"
+  );
+  expect(summary).toContain("; Estimate unchanged on the archived issue card (already 13)");
   f.done();
 });
 
