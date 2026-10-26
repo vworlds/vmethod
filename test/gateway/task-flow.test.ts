@@ -27,6 +27,8 @@ import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { scopeIssue, scopeComment, scopeMove } from "./scope-fixture.js";
 import packageInfo from "../../package.json" with { type: "json" };
+import { ConflictService, type ConflictHooks } from "../../src/gateway/conflicts.js";
+import { proc } from "./watch-fake.js";
 
 const holdBanner = "> ⛔ ON HOLD. Wait for [orchestrator] GO.";
 
@@ -1265,6 +1267,88 @@ test("review owner over an active conflict record is refused before any write", 
         write.path.endsWith("/assignees")
     )
   ).toEqual([]);
+  f.done();
+});
+
+test("review owner is allowed after a starting record closes on a moved healthy head", async () => {
+  const f = fixture();
+  const directory = join(
+    String(f.env.XDG_STATE_HOME),
+    "vmethod",
+    String(f.config.stateName),
+    "conflicts"
+  );
+  mkdirSync(directory, { recursive: true });
+  const record = join(directory, "27.json");
+  writeFileSync(
+    record,
+    JSON.stringify({ phase: "starting", head: "a".repeat(40), files: ["x.ts"] })
+  );
+  const base = "b".repeat(40);
+  const hooks = new Proxy(
+    {
+      lifecycle: async () => "open",
+      snapshot: async () => ({
+        head: sha,
+        base: "dev",
+        baseSha: base,
+        branch: "task",
+        conflict: false,
+        green: true,
+        stale: false,
+        runs: [],
+      }),
+      status: async () => "stopped",
+    },
+    {
+      get(target, key) {
+        if (!(key in target)) {
+          throw new Error(`Unexpected conflict hook ${String(key)}`);
+        }
+        return Reflect.get(target, key);
+      },
+    }
+  ) as unknown as ConflictHooks;
+  const conflicts = new ConflictService(
+    f.root,
+    f.config,
+    f.env,
+    {
+      ...f.deps,
+      pid: process.pid,
+      readProc: () => proc(42),
+      exec: async (file, args) => {
+        if (file === "/bin/sh") {
+          expect(args.slice(-3)).toEqual(["merge-preview", sha, base]);
+          return `${"c".repeat(40)}\0\0`;
+        }
+        expect(file).toBe("git");
+        if (args.includes("fetch")) {
+          return "";
+        }
+        if (args.join(" ") === "rev-parse refs/remotes/origin/dev") {
+          return base;
+        }
+        if (args.join(" ") === "rev-parse refs/remotes/origin/task") {
+          return sha;
+        }
+        throw new Error(`Unexpected conflict git ${args.join(" ")}`);
+      },
+    },
+    hooks
+  );
+  f.host.conflictPending = async () => conflicts.pending(27);
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Handover.\n");
+  await expect(f.flow().review({ ref: "27", outcome: "owner", file })).rejects.toThrow(
+    "active conflict record"
+  );
+  expect(await conflicts.resolve(27)).toBe("conflict on #27 resolved outside the fixer");
+  expect(existsSync(record)).toBe(false);
+  await f.flow().review({ ref: "27", outcome: "owner", file });
+  expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toMatch(
+    /^\[orchestrator\] OWNER REVIEW/
+  );
   f.done();
 });
 
@@ -3477,6 +3561,27 @@ test("conflict escalation on an owner-approved card keeps Approved and reports i
   expect(String(note)).toContain("Owner approval kept: the card stays Approved.");
   expect(f.touched).toEqual([expect.objectContaining({ field: "Progress", value: "🤖🚫" })]);
   expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+  f.done();
+});
+
+test("Approved conflict dispatch, escalation and restore write neither Status nor Model", async () => {
+  const f = fixture();
+  f.set({
+    boardValues: { Status: "Approved", Model: "sol", Progress: "🧭🔍" },
+    assignees: ["owner"],
+  });
+  const flow = f.flow();
+  const prior = await flow.cardPrior("27");
+  await flow.cardConflict("27");
+  await flow.escalateConflict("27", "merge verify hook failed", ["src/conflict.ts"]);
+  expect(await flow.cardRestore("27", prior)).toBe("approval-kept");
+  expect(f.touched.filter((write) => ["Status", "Model"].includes(String(write.field)))).toEqual(
+    []
+  );
+  expect(f.touched.map((write) => write.value)).toEqual(["💥", "🤖🚫", "🧭🔍"]);
+  expect(String(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body)).toContain(
+    "Owner approval kept: the card stays Approved."
+  );
   f.done();
 });
 
