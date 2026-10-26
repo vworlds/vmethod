@@ -54,6 +54,20 @@ without changing columns. The worker stays paused until an explicitly attested o
 agreement is quoted in the hand-back, or the owner unassigns themself. A plain owner
 comment does not release the pause. See [the summons procedure](orchestrator-guide.md#owner-summons-inside-executing).
 
+## Blocked cards
+
+Use blocked-by relations to record dependencies, including issues in another
+repository. In Scoping, Spec review, Executing and Approved, an open blocker
+pauses watcher turn reminders and assignment reconciliation. Leave the existing
+assignee and Progress in place: the watcher neither repairs them nor reports a
+BOARD VIOLATION while the card waits. It also leaves a waiting epic in Executing.
+
+The quiet digest reports `WAITING #n on <repo>#m`. Comments and owner summons
+still notify normally; you do not need to mute the card. Once the last blocker
+closes, `UNBLOCKED #n: <repo>#m closed` wakes the orchestrator once and turn timing
+starts again. Removing a relation resumes tracking without claiming a closure.
+See [watch](gateway.md#watching-and-muting) for incomplete dependency reads.
+
 ## Card order
 
 GitHub keeps one manual order per project: `updateProjectV2ItemPosition` moves an

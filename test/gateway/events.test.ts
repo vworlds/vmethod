@@ -37,6 +37,158 @@ import { WriteJournal } from "../../src/gateway/write-journal.js";
 import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
 import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
 
+// Issue.blockedBy connection shape verified live by the orchestrator on PR 280.
+function blockers(
+  card: ReturnType<WatchFake["card"]>,
+  states: string[],
+  totalCount = states.length
+) {
+  object(card.content).blockedBy = {
+    totalCount,
+    nodes: states.map((state, index) => ({
+      number: 403 + index,
+      state,
+      repository: { nameWithOwner: "example/other" },
+    })),
+  };
+}
+
+test.each(["Scoping", "Spec review", "Executing", "Approved"])(
+  "open cross-repository blockers preserve %s turns and report WAITING without stalls",
+  async (column) => {
+    const f = setup();
+    const card = f.card(6, column);
+    card.progress = { text: "🧭🔍" };
+    blockers(card, ["OPEN"]);
+    f.cards = [card];
+    const loop = f.loop();
+    await f.once(loop);
+    f.advance(61 * 60_000);
+    const events = await f.once(loop);
+    expect(events.filter((e) => ["orchestrator-turn", "board-violation"].includes(e.kind))).toEqual(
+      []
+    );
+    expect(f.marker("quiet")).toContain("WAITING #6 on example/other#403");
+    expect(object(card.progress).text).toBe("🧭🔍");
+    expect(object(object(card.content).assignees).nodes).toEqual([]);
+    expect(f.writes).toEqual([]);
+    expect(f.requests.filter((request) => request.includes("dependencies/blocked_by"))).toEqual([]);
+    expect(f.reports).toEqual([]);
+  }
+);
+
+test("only the last blocker closing emits UNBLOCKED once and restarts the stall clock", async () => {
+  const f = setup();
+  const card = f.card(6, "Scoping");
+  card.progress = { text: "🧭🔍" };
+  object(card.content).assignees = { nodes: [{ login: "peer" }] };
+  blockers(card, ["OPEN", "OPEN"]);
+  f.cards = [card];
+  let loop = f.loop();
+  await f.once(loop);
+  f.advance(60 * 60_000);
+  blockers(card, ["CLOSED", "OPEN"]);
+  expect((await f.once(loop)).filter((e) => e.kind === "unblocked")).toEqual([]);
+  loop.close();
+  loop = f.loop();
+  blockers(card, ["CLOSED", "CLOSED"]);
+  const events = await f.once(loop);
+  expect(events.filter((e) => e.kind === "unblocked").map((e) => e.line)).toEqual([
+    expect.stringContaining("UNBLOCKED #6: example/other#404 closed"),
+  ]);
+  expect(events.some((e) => e.kind === "orchestrator-turn")).toBe(false);
+  await f.ack(loop, events);
+  loop.close();
+  loop = f.loop();
+  f.advance(30 * 60_000 - 1);
+  expect(
+    (await f.once(loop)).filter((e) => ["unblocked", "orchestrator-turn"].includes(e.kind))
+  ).toEqual([]);
+  f.advance(1);
+  expect((await f.once(loop)).filter((e) => e.kind === "orchestrator-turn")).toHaveLength(1);
+  expect(f.reports).toEqual([]);
+});
+
+test("an incomplete blocker page stays waiting until a complete read proves closure", async () => {
+  const f = setup();
+  const card = f.card(6, "Scoping");
+  card.progress = { text: "🧭🔍" };
+  blockers(card, ["OPEN"]);
+  f.cards = [card];
+  const loop = f.loop();
+  await f.once(loop);
+  blockers(card, ["CLOSED"], 101);
+  f.advance(60 * 60_000);
+  expect(
+    (await f.once(loop)).filter((e) =>
+      ["unblocked", "orchestrator-turn", "board-violation"].includes(e.kind)
+    )
+  ).toEqual([]);
+  expect(object(object(card.content).assignees).nodes).toEqual([]);
+  blockers(card, ["CLOSED"]);
+  expect((await f.once(loop)).filter((e) => e.kind === "unblocked")).toHaveLength(1);
+});
+
+test.each(["comment", "👤❓", "👤🔍"])("waiting cards still notify for %s", async (signal) => {
+  const f = setup();
+  const card = f.card(24, "Executing");
+  card.progress = { text: signal === "comment" ? "🧭🔍" : signal };
+  object(card.content).assignees = { nodes: [{ login: signal === "comment" ? "peer" : "owner" }] };
+  blockers(card, ["OPEN"]);
+  f.cards = [card];
+  const loop = f.loop();
+  await f.once(loop);
+  f.advance();
+  f.comment(
+    signal === "comment"
+      ? "New discussion while blocked"
+      : "[orchestrator] OWNER QUESTION\n\nPlease decide.",
+    signal === "comment" ? 0 : 2
+  );
+  const events = await f.once(loop);
+  expect(events.some((e) => e.kind === "comment")).toBe(true);
+  expect(events.flatMap((e) => e.quiet ?? [])).toContain("WAITING #24 on example/other#403");
+  expect(object(card.progress).text).toBe(signal === "comment" ? "🧭🔍" : signal);
+  expect(f.reports).toEqual([]);
+});
+
+test("removing a blocker resumes tracking without inventing a closure notice", async () => {
+  const f = setup();
+  const card = f.card(6, "Scoping");
+  card.progress = { text: "🧭🔍" };
+  object(card.content).assignees = { nodes: [{ login: "peer" }] };
+  blockers(card, ["OPEN"]);
+  f.cards = [card];
+  const loop = f.loop();
+  await f.once(loop);
+  f.advance(60 * 60_000);
+  blockers(card, []);
+  const events = await f.once(loop);
+  expect(events.filter((e) => ["unblocked", "orchestrator-turn"].includes(e.kind))).toEqual([]);
+  expect(f.marker("quiet")).not.toContain("WAITING #6");
+  f.advance(30 * 60_000);
+  expect((await f.once(loop)).filter((e) => e.kind === "orchestrator-turn")).toHaveLength(1);
+});
+
+test("waiting epic keeps its turn even when all sub-issues are Done", async () => {
+  const f = setup();
+  const epic = f.card(6, "Executing");
+  const child = f.card(7, "Done");
+  epic.progress = { text: "🧭🔍" };
+  object(epic.content).assignees = { nodes: [{ login: "peer" }] };
+  object(epic.content).subIssues = {
+    nodes: [{ id: object(child.content).id }],
+    pageInfo: { hasNextPage: false },
+  };
+  blockers(epic, ["OPEN"]);
+  f.cards = [epic, child];
+  await f.once(f.loop());
+  expect(object(epic.status).name).toBe("Executing");
+  expect(object(epic.progress).text).toBe("🧭🔍");
+  expect(object(object(epic.content).assignees).nodes).toEqual([{ login: "peer" }]);
+  expect(f.writes).toEqual([]);
+});
+
 test.each(["Executing", "Done", "missing", "incomplete"])(
   "epic waits for every sub-issue's Done column (%s)",
   async (childStatus) => {

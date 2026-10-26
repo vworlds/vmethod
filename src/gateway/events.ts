@@ -2583,7 +2583,10 @@ export class EventLoop {
       if (!this.inScope(card.number) || this.muted(card.repo, card.number)) {
         continue;
       }
+      this.watchBlockers(card);
+      const waiting = this.waiting(card);
       if (
+        !waiting &&
         !migration &&
         card.kind === "ISSUE" &&
         card.column === "Executing" &&
@@ -2630,7 +2633,9 @@ export class EventLoop {
         this.mark(`owner-review-${card.number}@${key(card.ownerReview)}`);
       }
       const pendingProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
-      await this.applyProgress(card);
+      if (!waiting) {
+        await this.applyProgress(card);
+      }
       if (card.kind === "PR" && card.column === "Executing") {
         this.inprogress.push({
           number: card.number,
@@ -2644,8 +2649,11 @@ export class EventLoop {
       }
       currentCards.push(card);
       const columnProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
-      await this.applyProgress(card);
+      if (!waiting) {
+        await this.applyProgress(card);
+      }
       if (
+        !waiting &&
         card.autopilotStopped &&
         ["Spec review", "Owner review", "Approved"].includes(card.column)
       ) {
@@ -2655,16 +2663,12 @@ export class EventLoop {
         card.assignees = next;
         card.progress = "👤🔍";
       }
-      if (card.autopilotStopped) {
+      if (!waiting && card.autopilotStopped) {
         remove(join(this.dir, `autopilot-${card.number}-stop`));
       }
-      await this.reconcileTurn(
-        card,
-        pullsOk &&
-          !pendingProgress &&
-          !columnProgress &&
-          !card.blockedBy?.some((b) => b.state.toLowerCase() === "open")
-      );
+      if (!waiting) {
+        await this.reconcileTurn(card, pullsOk && !pendingProgress && !columnProgress);
+      }
       if (
         card.kind === "ISSUE" &&
         card.state === "OPEN" &&
@@ -2686,13 +2690,23 @@ export class EventLoop {
           );
         }
       }
-      if (card.column === "Scoping" && card.kind === "ISSUE" && card.state === "OPEN") {
+      if (!waiting && card.column === "Scoping" && card.kind === "ISSUE" && card.state === "OPEN") {
         ready.push(card);
       }
-      if (card.column === "Spec review" && card.kind === "ISSUE" && card.state === "OPEN") {
+      if (
+        !waiting &&
+        card.column === "Spec review" &&
+        card.kind === "ISSUE" &&
+        card.state === "OPEN"
+      ) {
         specReview.push(card);
       }
-      if (card.column === "Executing" && card.kind === "ISSUE" && card.state === "OPEN") {
+      if (
+        !waiting &&
+        card.column === "Executing" &&
+        card.kind === "ISSUE" &&
+        card.state === "OPEN"
+      ) {
         approved.push(card);
       }
     }
@@ -2755,12 +2769,67 @@ export class EventLoop {
     this.writeMarker("board-absences.json", JSON.stringify(nextAbsences));
   }
 
+  /** A partial relation page cannot prove that the last blocker has closed. */
+  private waiting(card: CardInfo): boolean {
+    return (
+      card.state === "OPEN" &&
+      ["Scoping", "Spec review", "Executing", "Approved"].includes(card.column) &&
+      ((card.blockerCount ?? 0) > (card.blockedBy?.length ?? 0) ||
+        !!card.blockedBy?.some((blocker) => blocker.state === "OPEN"))
+    );
+  }
+
+  /** Persist dependency transitions across restarts without extra GitHub reads. */
+  private watchBlockers(card: CardInfo): void {
+    const marker = `blockers-${card.id}.json`;
+    const previous = object(safeJson(this.readMarker(marker)));
+    const open = (card.blockedBy ?? []).filter((blocker) => blocker.state === "OPEN");
+    const incomplete = (card.blockerCount ?? 0) > (card.blockedBy?.length ?? 0);
+    const quietPath = join(this.dir, "quiet");
+    const quiet = readLines(quietPath);
+    const retained = quiet.filter((line) => !line.startsWith(`WAITING #${card.number} on `));
+    if (quiet.length !== retained.length) {
+      atomicWrite(quietPath, retained.length ? `${retained.join("\n")}\n` : "");
+    }
+    if (this.waiting(card)) {
+      const known = incomplete ? [...this.list(previous.open), ...open] : open;
+      const unique = new Map(
+        known.map((blocker) => [`${blocker.repo}#${blocker.number}`, blocker])
+      );
+      this.writeMarker(marker, JSON.stringify({ waiting: true, open: [...unique.values()] }));
+      const refs = open.map((blocker) => `${blocker.repo}#${blocker.number}`);
+      if (incomplete) {
+        refs.push("additional blockers (incomplete relation page)");
+      }
+      const line = `WAITING #${card.number} on ${refs.join(", ")}`;
+      this.quiet(line);
+    } else if (previous.waiting) {
+      const closed = this.list(previous.open).filter((old) =>
+        card.blockedBy?.some(
+          (blocker) =>
+            blocker.repo === old.repo && blocker.number === old.number && blocker.state === "CLOSED"
+        )
+      );
+      if (card.state === "OPEN" && !incomplete && !open.length && closed.length) {
+        this.emit(
+          `unblocked-${card.id}@${this.host.deps.now()}`,
+          "unblocked",
+          `UNBLOCKED #${card.number}: ${closed.map((blocker) => `${blocker.repo}#${blocker.number} closed`).join(", ")} ${this.threadUrl(card.repo, card.number, card.kind)}`
+        );
+      }
+      this.writeMarker(marker, JSON.stringify({ resumed: this.host.deps.now() }));
+    }
+  }
+
   /** Backstop unanswered worker protocol at five minutes; other turns settle for thirty. */
   private watchOrchestratorTurns(cards: CardInfo[]): void {
     const previous = object(safeJson(this.readMarker("orchestrator-turns.json")));
     const next: Record<string, { since: number; reminded?: number; request?: string }> = {};
     const now = this.host.deps.now();
     for (const card of cards) {
+      if (this.waiting(card)) {
+        continue;
+      }
       const protocol = object(safeJson(this.readMarker(`unhandled-worker-${card.number}`)));
       const unanswered =
         protocol.tag && !protocol.handled && Number.isFinite(Date.parse(str(protocol.at)));
@@ -2786,11 +2855,15 @@ export class EventLoop {
       }
       const old = object(previous[card.id]);
       const request = unanswered ? str(protocol.at) : undefined;
-      const since = unanswered
-        ? Date.parse(str(protocol.at))
-        : typeof old.since === "number" && old.since <= now
-          ? old.since
-          : now;
+      const resumed = object(safeJson(this.readMarker(`blockers-${card.id}.json`))).resumed;
+      const since = Math.max(
+        typeof resumed === "number" ? resumed : 0,
+        unanswered
+          ? Date.parse(str(protocol.at))
+          : typeof old.since === "number" && old.since <= now
+            ? old.since
+            : now
+      );
       const reminded =
         old.request === request && typeof old.reminded === "number" ? old.reminded : undefined;
       const turn = {
@@ -3133,6 +3206,9 @@ export class EventLoop {
     }
     const remember = () => atomicWrite(path, `${card.column}\n`);
     const progress = () => {
+      if (this.waiting(card)) {
+        return;
+      }
       if (card.column === "Approved") {
         this.queueProgress(card.number, { state: "verifying" });
       }
@@ -3184,6 +3260,7 @@ export class EventLoop {
             event.previousStatus === old
         );
       if (
+        !this.waiting(card) &&
         ownerMove &&
         (!queueMove || this.queueMoveCancelsTurn(card, current, events)) &&
         ((card.kind === "ISSUE" && ["Scoping", "Spec review", "Executing"].includes(card.column)) ||
@@ -3201,7 +3278,7 @@ export class EventLoop {
     }
     // Only an authenticated person's newer move cancels a turn, not a gateway
     // move or a question asked after the move but before this poll observed it.
-    if (queueMove && this.queueMoveCancelsTurn(card, current, events)) {
+    if (!this.waiting(card) && queueMove && this.queueMoveCancelsTurn(card, current, events)) {
       const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, null);
       await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
       card.assignees = next;
@@ -3630,7 +3707,13 @@ export class EventLoop {
       const issue = cards.find(
         (card) => this.isOwn(card.repo) && card.number === number && card.kind === "ISSUE"
       );
-      if (!issue || !this.inScope(number) || issue.scopePending || issue.column === "Executing") {
+      if (
+        !issue ||
+        !this.inScope(number) ||
+        issue.scopePending ||
+        issue.column === "Executing" ||
+        this.waiting(issue)
+      ) {
         continue;
       }
       const mirrored = ["owner-review", "owner-question"].includes(

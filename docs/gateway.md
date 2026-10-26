@@ -589,6 +589,18 @@ thread is not supported.
 the existing board poll, survives watcher restarts, and resets when the card leaves
 that turn or disappears. See the [orchestrator guide](orchestrator-guide.md) for
 answering owner questions without leaving the turn on you.
+
+For [blocked cards](board.md#blocked-cards) in Scoping, Spec review, Executing or
+Approved, the same board query batches `Issue.blockedBy` reads, including each
+blocker's repository and state. While any blocker is open, the quiet digest carries
+`WAITING #n on <repo>#m` instead of orchestrator-turn/stall reminders. Assignment
+and Progress reconciliation is paused, not comment delivery or owner summons.
+The last blocker closing emits `UNBLOCKED #n: <repo>#m closed` once, including
+across watcher restarts, and restarts turn timing from that observation. A removed
+relation resumes tracking without a closure notice. If `totalCount` exceeds the
+100 returned blockers, the card remains waiting and no UNBLOCKED check is made
+until a complete read is available; no per-card REST reads are added.
+
 Board closures reconcile Status, Progress and management turn assignees as described
 in [Board](board.md). Only external issue closures emit
 `CLOSED #n (<completed|not planned>) by <login>`: PR closures, own-account/journalled
