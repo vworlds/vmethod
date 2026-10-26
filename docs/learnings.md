@@ -275,9 +275,11 @@ fabricated zero. Cost is per PR: both collection paths write only that task PR's
 own segments to its card. See [PR Cost](board.md#cost), including legacy issue-card
 cleanup; there is no issue rollup. Board writes use `$0.00`; the log and
 GRADE text retain full precision. Merge cleanup stores the delivery's final usage
-in its worker record before removing the worktree; grading reads that stored usage
-without resolving the session, and only a record with nothing stored still resolves
-the session (see [task worktree cleanup](gateway.md#task-worktree-cleanup)).
+in its worker record before removing the worktree (#262): grade grades captured
+deliveries without resolving the session, refreshes live sessions otherwise, and
+falls back to the last stored poll — with a note in the GRADE output — when the
+session can no longer be resolved; only a record with nothing stored is refused
+(see [task worktree cleanup](gateway.md#task-worktree-cleanup)).
 
 **Migration:** old model-log records remain valid without the new fields; absent
 cost is unknown. Do not backfill zero or edit immutable submitted records. New

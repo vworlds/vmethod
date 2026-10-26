@@ -486,6 +486,90 @@ test.each([
   f.done();
 });
 
+test("grade without a captured flag refreshes a live session before grading from stale storage", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...usagePoll({ input: 12, output: 30, cached: 8 }),
+      ...usagePoll({ input: 120, output: 300, cached: 80 }),
+    ],
+    true,
+    "owner",
+    false,
+    false,
+    "auto-9-task"
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.watchStatus(31);
+  const saved = f.record();
+  expect(saved.segments[0].usage).toEqual({
+    tokens: { input: 12, output: 30, cached: 8 },
+    reportedUsd: 0,
+  });
+  f.meta.state = "MERGED";
+  f.meta.merged = true;
+  f.meta.closedAt = "1970-01-01T00:00:20.000Z";
+  f.meta.headOid = "c".repeat(40);
+  f.meta.diff = { files: 3, additions: 20, deletions: 4 };
+  await f.service.grade(31, 5);
+  const value = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+  // The grade's own live read refreshed the numbers before grading.
+  expect(value.tokens).toEqual({ input: 120, output: 300, cached: 80 });
+  expect(value.usd).toBeCloseTo((120 * 2 + 300 * 10 + 80 * 0.2) / 1e6, 10);
+  const gradePost = vi.mocked(f.hooks.gradeComment!).mock.calls[0]?.[1] ?? "";
+  expect(gradePost).not.toContain("last stored poll");
+  f.done();
+});
+
+test.each([
+  {
+    name: "the session's location is gone",
+    poll: [
+      { path: "/api/session/active", data: {} },
+      { path: "/api/session/ses_fake", data: { id: "ses_fake" } },
+      {
+        path: "/api/session/ses_fake/permission",
+        status: 404,
+        error: {
+          error: { message: "Location not found: /example/project/.worktrees/auto-9-task" },
+        },
+      },
+    ],
+  },
+  {
+    name: "opencode no longer knows the session",
+    poll: [
+      { path: "/api/session/active", data: {} },
+      {
+        path: "/api/session/ses_fake",
+        status: 404,
+        error: { error: { message: "no such session" } },
+      },
+    ],
+  },
+])("grade with a gone session grades from the last stored poll: $name", async ({ poll }) => {
+  const f = fixture([...start, ...poll], true, "owner", false, false, "auto-9-task");
+  await f.service.command(["start", "31"]);
+  const saved = f.record();
+  saved.segments[0].usage = { tokens: { input: 12, output: 30, cached: 8 }, reportedUsd: 0 };
+  saved.segments[0].usd = (12 * 2 + 30 * 10 + 8 * 0.2) / 1e6;
+  writeFileSync(join(f.root, "state/vmethod/example-state/workers/31.json"), JSON.stringify(saved));
+  rmSync(f.directory, { recursive: true, force: true });
+  f.meta.state = "MERGED";
+  f.meta.merged = true;
+  f.meta.closedAt = "1970-01-01T00:00:20.000Z";
+  f.meta.headOid = "c".repeat(40);
+  f.meta.diff = { files: 3, additions: 20, deletions: 4 };
+  await f.service.grade(31, 5);
+  const value = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(value.tokens).toEqual({ input: 12, output: 30, cached: 8 });
+  expect(value.usd).toBeCloseTo((12 * 2 + 30 * 10 + 8 * 0.2) / 1e6, 10);
+  expect(vi.mocked(f.hooks.gradeComment!).mock.calls[0]?.[1] ?? "").toContain(
+    "USD $0.000326; usage from the last stored poll (session unresolvable)"
+  );
+  f.done();
+});
+
 test("model switch refuses a reason outside the fixed list before contacting the backend", async () => {
   const f = fixture([...start]);
   await f.service.command(["start", "31"]);
@@ -1236,6 +1320,7 @@ test("watcher fully prices 221 requests across three pages, then polls and grade
       },
       { path: "/api/session/ses_fake/message?limit=200&cursor=oldest", data: [oldest] },
       ...poll(true),
+      ...poll(true),
     ],
     true
   );
@@ -1260,7 +1345,6 @@ test("watcher fully prices 221 requests across three pages, then polls and grade
     usd: expect.closeTo(16.685, 8),
   });
   f.meta.state = "CLOSED";
-  // Grade reads stored usage; it no longer re-resolves the session (#262).
   await f.service.grade(31, 3);
   expect(f.hooks.setCost).toHaveBeenCalledWith(31, "$16.69");
   expect(
@@ -1329,8 +1413,6 @@ test("Claude replacement snapshots usage and cumulative reported cost across fre
   await f.service.command(["start", "31", "--replace"]);
   const second = { ...claudeResults[0], session_id: f.record().id };
   writeFileSync(log, [first, second].map((result) => JSON.stringify(result)).join("\n") + "\n");
-  // Poll once so the stored record carries the final segment usage (#262).
-  await f.service.watchStatus(31);
   f.meta.state = "CLOSED";
   await f.service.grade(31, 3);
   const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
@@ -1344,7 +1426,10 @@ test("Claude replacement snapshots usage and cumulative reported cost across fre
 });
 
 test("status persists provider tokens and API dollars, grading uses only this PR even with another delivery on the same issue", async () => {
-  const f = fixture([...start, ...measuredStatus(), ...measuredStatus(2)], true);
+  const f = fixture(
+    [...start, ...measuredStatus(), ...measuredStatus(2), ...measuredStatus(2)],
+    true
+  );
   await f.service.command(["start", "31"]);
   expect(await f.service.command(["status", "31"])).toContain("$1.193840");
   const other = f.record();
@@ -1357,7 +1442,6 @@ test("status persists provider tokens and API dollars, grading uses only this PR
   });
   f.meta.state = "MERGED";
   f.meta.merged = true;
-  // Grade reads the stored usage instead of re-resolving the session (#262).
   await f.service.grade(31, 5);
   expect(f.hooks.setCost).toHaveBeenCalledWith(31, "≥ $2.39");
   expect(f.hooks.gradeComment).toHaveBeenCalledWith(9, expect.stringContaining("$2.387679"));
@@ -1402,8 +1486,6 @@ test("model switch snapshots cumulative baseline and grades each family's delta"
     "[orchestrator] NOTE: model switched to sol (owner-request); reason: orchestrator-judgement"
   );
   f.meta.state = "MERGED";
-  // Poll once so the stored record holds the post-switch usage (#262).
-  await f.service.watchStatus(31);
   await f.service.grade(31, 5);
   const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
   expect(record.segments.map((segment: { usd: number }) => segment.usd)).toEqual([
@@ -1470,8 +1552,6 @@ test.each([false, true])(
       );
     }
     f.meta.state = "CLOSED";
-    // Poll once so the stored record carries the post-switch usage (#262).
-    await f.service.watchStatus(31);
     await f.service.grade(31, 3);
     expect(f.record().segments.map((segment: { usd: number }) => segment.usd)).toEqual([
       expect.closeTo(1.215, 8),
@@ -1558,8 +1638,6 @@ test.each(["model", "time", "repeated model", "excess history", "cached excess"]
       JSON.stringify(record)
     );
     f.meta.state = "CLOSED";
-    // Poll once so the stored record carries the final segment usage (#262).
-    await f.service.watchStatus(31);
     await f.service.grade(31, 3);
     const saved = f.record();
     expect(saved.segments[0]).toEqual(legacy);
@@ -2620,6 +2698,7 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
       body: { model: { providerID: "fake", id: "sol" } },
     },
     { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+    ...usageStatus(),
   ]);
   await f.service.command(["start", "31"]);
   await expect(f.service.command(["model", "31", "sol"])).rejects.toThrow("--owner-approved");
@@ -2636,7 +2715,6 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
   expect(f.prompts).toHaveLength(1);
   f.meta.state = "MERGED";
   f.meta.merged = true;
-  // Grade reads the stored segment usage instead of re-resolving the session (#262).
   vi.mocked(f.hooks.submitLearnings!).mockRejectedValueOnce(new Error("Submission unavailable"));
   const stagedSummary = await f.service.grade(31, 20);
   expect(stagedSummary).toContain("Graded PR #31: issue #9 Estimate 20");

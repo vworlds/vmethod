@@ -1731,20 +1731,32 @@ export class WorkerService {
       if (!session || session.issue !== meta.issue || session.points_open === null) {
         throw new Error("Cannot grade: missing or mismatched delivery session history");
       }
-      if (!session.finalized && !this.storedUsage(session)) {
-        // #262: only a delivery without any stored usage still resolves the
-        // session; after merge cleanup it is gone and the raw 404 must not leak.
-        let status: WorkerSessionStatus;
-        try {
-          status = await this.status(session, false);
-        } catch (error) {
-          if (error instanceof OpencodeError && error.status === 404) {
-            throw this.gradeWithoutUsage(session, error, error.message);
+      let storedFallback = false;
+      let lastUnresolvable: OpencodeError | undefined;
+      if (!session.finalized) {
+        if (session.usageCaptured) {
+          // #262: the merge-time capture is the delivery's final snapshot; the
+          // session (and after cleanup its worktree) is never resolved again.
+        } else {
+          // Try the live refresh first; only a missing session falls back to
+          // the record's stored segment usage, with a note in the grade output.
+          let status: WorkerSessionStatus;
+          try {
+            status = await this.status(session, false);
+          } catch (error) {
+            if (error instanceof OpencodeError && error.status === 404) {
+              status = { reason: "session unknown", active: false };
+              lastUnresolvable = error;
+            } else {
+              throw error;
+            }
           }
-          throw error;
-        }
-        if (status.reason === "session unknown") {
-          throw this.gradeWithoutUsage(session);
+          if (status.reason === "session unknown") {
+            if (!this.storedUsage(session)) {
+              throw this.gradeWithoutUsage(session, lastUnresolvable, lastUnresolvable?.message);
+            }
+            storedFallback = true;
+          }
         }
       }
       points ??= meta.estimate;
@@ -1858,7 +1870,10 @@ export class WorkerService {
       session.finalized = true;
       this.save(session);
       await this.hooks.setCost?.(pr, boardCost(record.usd, record.costCoverage === "partial"));
-      const summary = `Graded PR #${pr}: issue #${meta.issue} Estimate ${points}; USD ${record.usd === null ? "unknown" : `${record.costCoverage === "partial" ? "≥ " : ""}$${record.usd.toFixed(6)}`}`;
+      let summary = `Graded PR #${pr}: issue #${meta.issue} Estimate ${points}; USD ${record.usd === null ? "unknown" : `${record.costCoverage === "partial" ? "≥ " : ""}$${record.usd.toFixed(6)}`}`;
+      if (storedFallback) {
+        summary += "; usage from the last stored poll (session unresolvable)";
+      }
       if (!session.gradePosted) {
         await this.hooks.gradeComment?.(meta.issue, `[orchestrator] GRADE\n\n${summary}`);
         session.gradePosted = true;
@@ -1880,9 +1895,9 @@ export class WorkerService {
       { cause }
     );
   }
-  /** Usage already persisted in the record by a poll or merge-time capture. */
+  /** Stored segment usage from an earlier poll; grade's fallback when the session is gone (#262). */
   private storedUsage(session: Session): boolean {
-    return Boolean(session.usageCaptured) || session.segments.some((segment) => segment.usage);
+    return session.segments.some((segment) => segment.usage);
   }
   async suggest(issue: number): Promise<string> {
     const meta = await this.hooks.issue(issue);

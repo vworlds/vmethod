@@ -378,13 +378,16 @@ the existing watcher poll updates the task PR card automatically, rounded to two
 formatted as `$0.00` on the board (the model log and GRADE text keep full precision). Configure family prices
 and migrate the board as described in [worker cost accounting](learnings.md#worker-cost-and-model-log-migration).
 
-Grade reads the stored segment usage from the worker record instead of resolving
-the session whenever the record already holds usage — including the merge-time
-capture described in [task worktree cleanup](#task-worktree-cleanup) (#262). Only
-a record with nothing stored still resolves the session, and when that session is
-missing the grade refuses with `Cannot grade #<pr>: no usage was stored …` instead
-of forwarding opencode's raw 404; the delivery's cost, usage and learning record
-are then not grader-recoverable.
+Grade reads the stored segment usage from the worker record without resolving
+the session when the delivery's merge-time capture exists (#262, see
+[task worktree cleanup](#task-worktree-cleanup)). Otherwise grade refreshes usage
+from the live session first; when the session can no longer be resolved (opencode
+404 or `session unknown`), grading falls back to the record's last stored poll and
+the GRADE output notes `usage from the last stored poll (session unresolvable)`.
+Only a record with nothing stored refuses with
+`Cannot grade #<pr>: no usage was stored …` naming the delivery instead of
+forwarding opencode's raw 404; without a stored poll its cost, usage and learning
+record cannot be graded.
 
 Records under `$XDG_STATE_HOME/vmethod/<stateName>/workers/<pr>.json` hold session
 identity, repository, issue, worktree, opening Estimate and timestamped model
