@@ -798,9 +798,13 @@ built in memory and sent only in a header. Neither client follows redirects.
 at or below reserve plus one schedule a pause until the header's reset time before
 the next request, reporting `BUDGET`. Only `x-ratelimit-*` headers drive pacing,
 never a GraphQL `rateLimit` field. Secondary 403/429 limits honor `retry-after`
-and report `BUDGET (secondary)` even when the primary budget looks healthy.
-Network errors and 5xx responses retry with reported exponential backoff. Terminal
-errors propagate with their HTTP method and endpoint; status-based recovery uses
+even when the primary budget looks healthy. Network errors and 5xx responses retry
+with exponential backoff. A transient retry notice (network failure, 5xx and
+secondary-rate-limit retries) is stderr-only logistics, never a watcher event: a
+watch poll self-heals without waking the orchestrator, and a retry that exhausts
+its limit still fails the step through the unchanged `watcher: <step> failed`
+report; CLI verbs keep reporting each retry on stderr (#273). Terminal errors
+propagate with their HTTP method and endpoint; status-based recovery uses
 `GitHubHttpError.status`, not diagnostic-text matching. Nonempty GraphQL errors
 reject even HTTP 200 with partial data.
 

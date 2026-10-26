@@ -113,6 +113,21 @@ export class GitHubClient {
     this.writes = new WriteJournal(config, env, deps.now);
   }
 
+  /**
+   * A transient retry notice is logistics, not a watcher event: inside a watch
+   * poll it goes to stderr only, so a self-healing retry never wakes the
+   * orchestrator; outside polls (CLI verbs) it reports as before (#273). A
+   * retry that ends in failure still throws and surfaces through the caller's
+   * existing step-failure report.
+   */
+  private note(message: string): void {
+    if (this.pollDepth) {
+      console.error(message);
+      return;
+    }
+    this.deps.report(message);
+  }
+
   private redact(text: string): string {
     return text.split(this.token).join("[redacted]");
   }
@@ -161,7 +176,7 @@ export class GitHubClient {
         if (!retry || attempt >= this.retries) {
           throw new Error("GitHub network request failed (retry limit reached)");
         }
-        this.deps.report("GitHub network failure; retrying");
+        this.note("GitHub network failure; retrying");
         await this.deps.sleep(1000 * 2 ** attempt);
         continue;
       }
@@ -202,7 +217,7 @@ export class GitHubClient {
         if (!Number.isFinite(delay)) {
           throw new Error("BUDGET (secondary): invalid retry-after");
         }
-        this.deps.report("BUDGET (secondary): honoring retry-after");
+        this.note("BUDGET (secondary): honoring retry-after");
         this.secondaryUntil = Math.max(this.secondaryUntil, this.deps.now() + Math.max(0, delay));
         this.pauseUntil = Math.max(this.pauseUntil, this.deps.now() + Math.max(0, delay));
         await response.body?.cancel();
@@ -215,7 +230,7 @@ export class GitHubClient {
         continue;
       }
       if (retry && response.status >= 500 && attempt < this.retries) {
-        this.deps.report(`GitHub HTTP ${response.status} on ${method} ${path}; retrying`);
+        this.note(`GitHub HTTP ${response.status} on ${method} ${path}; retrying`);
         await response.body?.cancel();
         await this.deps.sleep(1000 * 2 ** attempt);
         continue;

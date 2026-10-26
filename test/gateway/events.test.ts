@@ -2651,6 +2651,58 @@ test("repeated step failures are deduplicated, reminded hourly, and reported rec
   expect(failureLines()).toHaveLength(2);
 });
 
+test("a 504 on a watch poll retries to success with the notice on stderr only", async () => {
+  const f = setup();
+  f.config.gateway = { maxRetries: 1 };
+  const loop = f.loop();
+  const stderr: string[] = [];
+  const spy = vi.spyOn(console, "error").mockImplementation((line) => {
+    stderr.push(String(line));
+  });
+  const fetch = f.deps.fetch;
+  let failures = 1;
+  f.deps.fetch = async (input, init) => {
+    if (new URL(String(input)).pathname === "/user" && failures > 0) {
+      failures--;
+      return new Response("{}", { status: 504 });
+    }
+    return fetch(input, init);
+  };
+  try {
+    expect(await f.tick(loop)).toEqual([]);
+    expect(f.reports).toEqual([]);
+    expect(stderr).toEqual(["GitHub HTTP 504 on GET /user; retrying"]);
+  } finally {
+    spy.mockRestore();
+    f.deps.fetch = fetch;
+  }
+});
+
+test("a watch poll request that exhausts its retries keeps the step-failure report", async () => {
+  const f = setup();
+  f.config.gateway = { maxRetries: 1 };
+  const loop = f.loop();
+  const stderr: string[] = [];
+  const spy = vi.spyOn(console, "error").mockImplementation((line) => {
+    stderr.push(String(line));
+  });
+  const fetch = f.deps.fetch;
+  f.deps.fetch = async (input, init) => {
+    if (new URL(String(input)).pathname === "/user") {
+      return new Response("{}", { status: 504 });
+    }
+    return fetch(input, init);
+  };
+  try {
+    expect(await f.tick(loop)).toEqual([]);
+    expect(f.reports).toEqual(["watcher: own identity failed: GitHub HTTP 504 on GET /user"]);
+    expect(stderr).toEqual(["GitHub HTTP 504 on GET /user; retrying"]);
+  } finally {
+    spy.mockRestore();
+    f.deps.fetch = fetch;
+  }
+});
+
 test("a locked worker is skipped without an event or worker poll error", async () => {
   const f = setup();
   f.task();
