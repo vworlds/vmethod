@@ -810,11 +810,16 @@ built in memory and sent only in a header. Neither client follows redirects.
 at or below reserve plus one schedule a pause until the header's reset time before
 the next request, reporting `BUDGET`. Only `x-ratelimit-*` headers drive pacing,
 never a GraphQL `rateLimit` field. Secondary 403/429 limits honor `retry-after`
-and report `BUDGET (secondary)` even when the primary budget looks healthy.
-Network errors and 5xx responses retry with reported exponential backoff. Terminal
-errors propagate with their HTTP method and endpoint; status-based recovery uses
-`GitHubHttpError.status`, not diagnostic-text matching. Nonempty GraphQL errors
-reject even HTTP 200 with partial data.
+even when the primary budget looks healthy. Network errors and 5xx responses retry
+with exponential backoff. A transient retry notice (network failure, 5xx and
+secondary-rate-limit retries) is never a watcher event or console line: inside a
+watch poll the client appends one timestamped line to the bounded
+`watch-retries.log` in the watcher's state directory. Outside polls, CLI verbs
+keep reporting each retry on stderr, and retries that exhaust their limit still
+fail the step through the unchanged `watcher: <step> failed` report (#273).
+Terminal errors propagate with their HTTP method and endpoint; status-based
+recovery uses `GitHubHttpError.status`, not diagnostic-text matching. Nonempty
+GraphQL errors reject even HTTP 200 with partial data.
 
 Dropped records live in
 `$XDG_STATE_HOME/vmethod/<stateName>/dropped.jsonl`, defaulting to

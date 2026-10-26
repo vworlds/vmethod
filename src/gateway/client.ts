@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import {
   addTokens,
   opencodeUsage,
@@ -77,6 +78,9 @@ export class GitHubHttpError extends Error {
   }
 }
 
+/** The in-poll retry log keeps at most this many lines; the older half goes first. */
+const RETRY_LOG_LINES = 200;
+
 /** Credentials and unfiltered responses must never cross the operation seam. */
 export class GitHubClient {
   /** Session-local successful-write attribution; no credentials or response text. */
@@ -89,11 +93,20 @@ export class GitHubClient {
   private readonly budgets = new Map<string, ResourceBudget>();
   private secondaryUntil = 0;
   private pollDepth = 0;
+  /** The watcher state directory while a watch poll runs; set and cleared by polling(). */
+  private pollDir?: string;
+  private retryLogReported = new Set<string>();
 
-  async polling<T>(action: () => Promise<T>): Promise<T> {
+  async polling<T>(action: () => Promise<T>, stateDir?: string): Promise<T> {
     this.pollDepth++;
     try {
-      return await action();
+      const previous = this.pollDir;
+      this.pollDir = stateDir;
+      try {
+        return await action();
+      } finally {
+        this.pollDir = previous;
+      }
     } finally {
       this.pollDepth--;
     }
@@ -113,6 +126,51 @@ export class GitHubClient {
     this.reserve = budget?.reserve ?? 100;
     this.retries = budget?.maxRetries ?? 3;
     this.writes = new WriteJournal(config, env, deps.now);
+  }
+
+  /**
+   * A transient retry notice is not a watcher event: inside a watch poll it is
+   * appended as one timestamped line to the watcher's bounded
+   * `watch-retries.log` and reaches no console, because an orchestrator's
+   * monitor merges stderr into the wake stream and a self-healing retry costs a
+   * turn (#273). Outside polls CLI verbs keep the report. An unusable log never
+   * fails the retry, and the report channel names it once per signature.
+   */
+  private note(message: string): void {
+    if (this.pollDir === undefined) {
+      this.deps.report(message);
+      return;
+    }
+    try {
+      mkdirSync(this.pollDir, { recursive: true, mode: 0o700 });
+      const path = join(this.pollDir, "watch-retries.log");
+      // First notice creates the log; other read failures (for example EACCES
+      // or EISDIR) surface through the report below instead of failing the retry.
+      let lines: string[] = [];
+      try {
+        lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw error;
+        }
+      }
+      if (lines.length >= RETRY_LOG_LINES) {
+        const temporary = `${path}.tmp`;
+        writeFileSync(temporary, `${lines.slice(-Math.floor(RETRY_LOG_LINES / 2)).join("\n")}\n`, {
+          mode: 0o600,
+        });
+        renameSync(temporary, path);
+      }
+      appendFileSync(path, `${new Date(this.deps.now()).toISOString()} ${message}\n`, {
+        mode: 0o600,
+      });
+    } catch (error) {
+      const failure = `watcher: retry notice log unavailable: ${(error as Error).message}`;
+      if (!this.retryLogReported.has(failure)) {
+        this.retryLogReported.add(failure);
+        this.deps.report(failure);
+      }
+    }
   }
 
   private redact(text: string): string {
@@ -163,7 +221,7 @@ export class GitHubClient {
         if (!retry || attempt >= this.retries) {
           throw new Error("GitHub network request failed (retry limit reached)");
         }
-        this.deps.report("GitHub network failure; retrying");
+        this.note("GitHub network failure; retrying");
         await this.deps.sleep(1000 * 2 ** attempt);
         continue;
       }
@@ -204,7 +262,7 @@ export class GitHubClient {
         if (!Number.isFinite(delay)) {
           throw new Error("BUDGET (secondary): invalid retry-after");
         }
-        this.deps.report("BUDGET (secondary): honoring retry-after");
+        this.note("BUDGET (secondary): honoring retry-after");
         this.secondaryUntil = Math.max(this.secondaryUntil, this.deps.now() + Math.max(0, delay));
         this.pauseUntil = Math.max(this.pauseUntil, this.deps.now() + Math.max(0, delay));
         await response.body?.cancel();
@@ -217,7 +275,7 @@ export class GitHubClient {
         continue;
       }
       if (retry && response.status >= 500 && attempt < this.retries) {
-        this.deps.report(`GitHub HTTP ${response.status} on ${method} ${path}; retrying`);
+        this.note(`GitHub HTTP ${response.status} on ${method} ${path}; retrying`);
         await response.body?.cancel();
         await this.deps.sleep(1000 * 2 ** attempt);
         continue;

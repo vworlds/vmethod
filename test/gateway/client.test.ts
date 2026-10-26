@@ -1,4 +1,6 @@
 import { expect, test } from "vitest";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { getConfig } from "../../src/config.js";
 import { GitHubClient, OpencodeClient } from "../../src/gateway/client.js";
 import { setTurn } from "../../src/gateway/turn.js";
@@ -430,5 +432,37 @@ test("missing GraphQL data and malformed JSON fail without exposing response sni
   const client = new GitHubClient(getConfig(fixture.root, {}), fixture.env, fixture.deps);
   await expect(client.graphql("{ viewer { login } }")).rejects.toThrow("missing data");
   await expect(client.rest("/test")).rejects.toThrow("GitHub returned invalid JSON");
+  fixture.done();
+}, 15000);
+
+test("in-poll retry notices append one timestamped line to a bounded watcher retry log", async () => {
+  const fixture = fixtureServer([
+    { path: "/test", method: "GET", status: 504 },
+    { path: "/test", method: "GET", json: { ok: true } },
+    { path: "/next", method: "GET", status: 504 },
+    { path: "/next", method: "GET", json: { ok: true } },
+  ]);
+  const client = new GitHubClient(
+    { ...getConfig(fixture.root, {}), gateway: { maxRetries: 1 } },
+    fixture.env,
+    fixture.deps
+  );
+  const dir = join(fixture.root, "watch-state");
+  mkdirSync(dir, { recursive: true });
+  const prefilled = Array.from({ length: 199 }, (_, index) => `line-${index}`).join("\n");
+  writeFileSync(join(dir, "watch-retries.log"), `${prefilled}\n`);
+  await client.polling(async () => client.rest("/test"), dir);
+  await client.polling(async () => client.rest("/next"), dir);
+  const lines = readFileSync(join(dir, "watch-retries.log"), "utf8").split("\n").filter(Boolean);
+  expect(lines).toHaveLength(101);
+  expect(lines[0]).toBe("line-100");
+  expect(lines[98]).toBe("line-198");
+  expect(lines[99]).toBe(
+    `${new Date(Date.UTC(2026, 0, 1)).toISOString()} GitHub HTTP 504 on GET /test; retrying`
+  );
+  expect(lines[100]).toBe(
+    `${new Date(Date.UTC(2026, 0, 1) + 1000).toISOString()} GitHub HTTP 504 on GET /next; retrying`
+  );
+  expect(fixture.reports).toEqual([]);
   fixture.done();
 }, 15000);

@@ -1303,7 +1303,7 @@ export class EventLoop {
   }
 
   private async pollOnce(): Promise<void> {
-    await this.host.github.polling(() => this.runPoll());
+    await this.host.github.polling(() => this.runPoll(), this.dir);
   }
 
   private async runPoll(): Promise<void> {
