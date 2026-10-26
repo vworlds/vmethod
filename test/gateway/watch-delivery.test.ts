@@ -219,3 +219,78 @@ test.each(["worker", "peer", "owner", "unknown", "edited"])(
     }
   }
 );
+
+const CHAT_REMINDER = "REMINDER: chat = #n pointers only or warnings; discuss on GitHub.";
+
+test("deliveries less than 2h apart carry the chat-rule reminder once, then again 2h later", async () => {
+  const f = new WatchFake();
+  try {
+    const loop = f.loop();
+    await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true, watchStart: true });
+    f.advance();
+    f.comment("[worker] QUESTION\nFirst");
+    const first = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
+    expect(first.events).not.toHaveLength(0);
+    expect(first.reminder).toBe(CHAT_REMINDER);
+    await f.ack(loop, first.events);
+    f.advance(60 * 60_000);
+    f.comment("[worker] BLOCKED\nSecond");
+    const second = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
+    expect(second.events).not.toHaveLength(0);
+    expect(second.reminder).toBeUndefined();
+    await f.ack(loop, second.events);
+    f.advance(60 * 60_000);
+    f.comment("[worker] QUESTION\nThird");
+    const third = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
+    expect(third.events).not.toHaveLength(0);
+    expect(third.reminder).toBe(CHAT_REMINDER);
+    // The reminder is delivery metadata, never an event: record and replay hold
+    // events only, and replay never produces a fresh reminder line.
+    const replayed = await loop.nextEvents({ timeoutSeconds: 0, replay: "previous" });
+    expect(replayed.events).not.toHaveLength(0);
+    expect(replayed.reminder).toBeUndefined();
+    expect(f.reports).toEqual([]);
+  } finally {
+    f.done();
+  }
+});
+
+test("the chat-rule reminder never stands alone: an idle 2h+ window produces no output", async () => {
+  const f = new WatchFake();
+  try {
+    const loop = f.loop();
+    expect(await f.once(loop)).toEqual([]);
+    f.advance(3 * 60 * 60_000);
+    expect(await f.once(loop)).toEqual([]);
+    f.comment("[worker] QUESTION\nLate");
+    const late = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
+    expect(late.events).not.toHaveLength(0);
+    expect(late.reminder).toBe(CHAT_REMINDER);
+    expect(f.reports).toEqual([]);
+  } finally {
+    f.done();
+  }
+});
+
+test("a watcher restart inside the interval does not repeat the chat-rule reminder", async () => {
+  const f = new WatchFake();
+  try {
+    let loop = f.loop();
+    await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true, watchStart: true });
+    f.advance();
+    f.comment("[worker] QUESTION\nFirst");
+    const first = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
+    expect(first.reminder).toBe(CHAT_REMINDER);
+    await f.ack(loop, first.events);
+    loop.close();
+    loop = f.loop();
+    f.advance(30 * 60_000);
+    f.comment("[worker] BLOCKED\nAfter restart");
+    const again = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
+    expect(again.events).not.toHaveLength(0);
+    expect(again.reminder).toBeUndefined();
+    expect(f.reports).toEqual([]);
+  } finally {
+    f.done();
+  }
+});

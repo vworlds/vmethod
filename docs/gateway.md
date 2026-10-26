@@ -498,7 +498,7 @@ Run as an orchestrator (`VMETHOD_ROLE=orchestrator`):
 
 The CLI only prints server-produced `nextEvents` records; it never polls GitHub.
 `nextEvents` takes `{ timeoutSeconds, ack?, pollOnce?, watchStart?, guideSeen?, replay?, track?, only?, skip? }` and returns
-`{ events: [{ id, kind, line, quiet? }], notice? }`. A zero timeout applies acknowledgements
+`{ events: [{ id, kind, line, quiet? }], notice?, reminder? }`. A zero timeout applies acknowledgements
 without polling. The client acknowledges IDs **after stdout finishes writing**;
 `--once` delivers pending events or polls once without waiting for an event, then
 acknowledges any printed batch and exits, including when nothing is new. It uses
@@ -518,6 +518,16 @@ appear repeatedly in history. The watcher lock also protects replay and pruning.
 After printing the notice, the client sends `guideSeen: true`; only then does the
 server write `guide-seen-<version>`, suppressing later notices for that version in
 the state directory. A failed notice write leaves it unseen.
+
+A nonempty delivery carries one reminder line for the orchestrator, at most once
+every two hours, printed after the events: `REMINDER: chat = #n pointers only or
+warnings; discuss on GitHub.` The line never produces output on its own: a batch
+without events stays empty, so idle periods stay silent. Its last-show timestamp
+persists in the state directory (`chat-reminder`), so a watcher restart inside the
+window does not repeat it. The reminder is delivery metadata, not an event: it has
+no acknowledged ID, recordings and replay hold events only, and redelivered
+unacknowledged batches repeat their events without repeating the line inside its
+window (`nextEvents` returns it as `reminder`).
 
 The server watches the own repository's task PRs and board, plus issues, PRs,
 comments and assignments in `vmethod.repo` (default `vworlds/vmethod`; `off` disables

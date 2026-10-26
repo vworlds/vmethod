@@ -60,7 +60,7 @@ export async function watchClient(
   let first = true;
   let guideSeen = false;
   for (;;) {
-    const { events, notice } = await transport.call(
+    const { events, notice, reminder } = await transport.call(
       "nextEvents",
       {
         ...session,
@@ -86,6 +86,9 @@ export async function watchClient(
         ? `quiet since the last wake-up:\n${event.quiet.map((line) => `  ${line}\n`).join("")}`
         : "";
       await write(`${quiet}${event.line}\n`);
+    }
+    if (reminder) {
+      await write(`${reminder}\n`);
     }
     ack = events.map((event) => event.id);
     if (replay !== undefined) {

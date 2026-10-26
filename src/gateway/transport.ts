@@ -62,7 +62,8 @@ export interface Operations {
       guideSeen?: boolean;
       replay?: string;
     };
-    output: { events: WatchEvent[]; notice?: string };
+    /** A nonempty real delivery may carry the one-line chat-rule reminder, at most once every 2h. */
+    output: { events: WatchEvent[]; notice?: string; reminder?: string };
   };
   watchMute: { input: { ref: string }; output: string };
   watchUnmute: { input: { ref: string }; output: string };

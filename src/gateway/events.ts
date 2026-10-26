@@ -61,6 +61,10 @@ const MARKER_MARGIN_MS = 2 * 60_000;
 const MIGRATION_WINDOW_MS = 60 * 60_000;
 const HOLD_MAX_AGE_MS = 120_000;
 const GRADE_SETTLE_MS = 60_000;
+/** A delivery carries the chat-rule reminder at most once per interval. */
+const CHAT_REMINDER_EVERY_MS = 2 * 60 * 60_000;
+/** The reminder's state file stores the last show time; empty delivery stays silent. */
+const CHAT_REMINDER = "REMINDER: chat = #n pointers only or warnings; discuss on GitHub.";
 /** A board baseline is pruned only after this many consecutive successful polls missed it. */
 const BOARD_ABSENT_POLLS = 3;
 /** A board baseline is pruned only once its absence window spans at least this long. */
@@ -447,6 +451,7 @@ export class EventLoop {
   async nextEvents(input: WatchInput): Promise<{
     events: WatchEvent[];
     notice?: string;
+    reminder?: string;
   }> {
     if (this.reading) {
       throw new Error("watch: another reader is already waiting for this session");
@@ -454,6 +459,7 @@ export class EventLoop {
     this.reading = true;
     try {
       const result = await this.readEvents(input);
+      const reminder = input.replay === undefined ? this.chatReminder(result.events) : undefined;
       if (input.replay === undefined) {
         new WatchDelivery(this.dir, this.host.deps.now).append(result.events);
       }
@@ -475,9 +481,9 @@ export class EventLoop {
         }
         const canonical = selfHosted ? selfGuide : packageGuide;
         const notice = `vmethod ${VERSION} in use: read ${guide ?? `${canonical} (not found locally)`} (changes: https://github.com/vworlds/vmethod/releases/tag/v${VERSION})`;
-        return { ...result, notice };
+        return { ...result, ...(reminder ? { reminder } : {}), notice };
       }
-      return result;
+      return { ...result, ...(reminder ? { reminder } : {}) };
     } finally {
       this.reading = false;
     }
@@ -553,6 +559,23 @@ export class EventLoop {
       await this.host.deps.sleep(Math.min(this.nextSleep(), deadline - this.host.deps.now()));
     }
     return { events: this.buildBatch() };
+  }
+
+  /** The chat-rule reminder attaches to a delivery that already has events, at
+   * most once per interval; the timestamp persists across restarts in the state
+   * directory. It is delivery metadata, never an event: history, replay and
+   * acknowledgements carry events only.
+   */
+  private chatReminder(events: WatchEvent[]): string | undefined {
+    if (!events.length) {
+      return undefined;
+    }
+    const last = Date.parse(this.readMarker("chat-reminder"));
+    if (Number.isFinite(last) && this.host.deps.now() - last < CHAT_REMINDER_EVERY_MS) {
+      return undefined;
+    }
+    atomicWrite(join(this.dir, "chat-reminder"), new Date(this.host.deps.now()).toISOString());
+    return CHAT_REMINDER;
   }
 
   private nextSleep(): number {

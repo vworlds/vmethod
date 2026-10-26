@@ -1037,6 +1037,7 @@ export class WatchFake {
   }
   async once(loop: EventLoop): Promise<WatchEvent[]> {
     const events: WatchEvent[] = [];
+    let reminders = 0;
     const printed: string[] = [];
     await watchClient(
       {
@@ -1047,6 +1048,9 @@ export class WatchFake {
           const batch = await loop.nextEvents(input as Operations["nextEvents"]["input"]);
           if ((input as Operations["nextEvents"]["input"]).pollOnce) {
             events.push(...batch.events);
+            if (batch.reminder) {
+              reminders++;
+            }
           }
           return batch as never;
         },
@@ -1057,7 +1061,9 @@ export class WatchFake {
         printed.push(line);
       }
     );
-    expect(printed.filter((line) => !line.startsWith("vmethod "))).toHaveLength(events.length);
+    expect(printed.filter((line) => !line.startsWith("vmethod "))).toHaveLength(
+      events.length + reminders
+    );
     return events;
   }
   async ack(loop: EventLoop, events: { id: string }[]) {
