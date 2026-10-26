@@ -349,3 +349,47 @@ test("crash recovery deletes an orphan branch but preserves a concurrently advan
     ""
   );
 }, 15000);
+
+test("cleanup captures delivery usage before removal and retains the tree while capture fails", async () => {
+  const f = setup();
+  const order: string[] = [];
+  let captureSucceeds = true;
+  const capture = async (pr: number) => {
+    order.push(`capture#${pr}`);
+    return captureSucceeds;
+  };
+  const close = async () => {
+    order.push("close");
+    return true;
+  };
+  const service = new WorktreeService(
+    f.root,
+    f.config,
+    {},
+    f.deps,
+    async () => "stopped",
+    close,
+    capture
+  );
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args[0] === "worktree" && args[1] === "remove") {
+      order.push("remove");
+    }
+    return exec(file, args, options);
+  };
+  const tree = f.add(1);
+  expect(await service.cleanup(tree.task)).toBe(true);
+  expect(order).toEqual(["capture#1", "close", "remove"]);
+  expect(existsSync(tree.path)).toBe(false);
+  // A failed capture keeps the next tree and its session for retry, like safety skips.
+  captureSucceeds = false;
+  const retained = f.add(2);
+  expect(await service.cleanup(retained.task)).toBe(false);
+  expect(order).toEqual(["capture#1", "close", "remove", "capture#2"]);
+  expect(existsSync(retained.path)).toBe(true);
+  captureSucceeds = true;
+  expect(await service.cleanup(retained.task)).toBe(true);
+  expect(order.slice(-3)).toEqual(["capture#2", "close", "remove"]);
+  expect(existsSync(retained.path)).toBe(false);
+}, 15000);

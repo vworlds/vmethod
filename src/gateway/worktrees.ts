@@ -29,7 +29,8 @@ export class WorktreeService {
     private env: NodeJS.ProcessEnv,
     private deps: Dependencies,
     private status: (pr: number) => Promise<"live" | "stopped" | "unknown">,
-    private closeSession?: (pr: number) => Promise<boolean>
+    private closeSession?: (pr: number) => Promise<boolean>,
+    private captureUsage?: (pr: number) => Promise<boolean>
   ) {
     const branches = object(config.branches);
     this.main = resolve(String(branches.mainCheckout ?? root));
@@ -87,6 +88,11 @@ export class WorktreeService {
     validateBranch(task.branch);
     const path = resolve(this.parent, `${this.prefix}${task.branch}`);
     if (!(await this.eligible(task))) {
+      return false;
+    }
+    // Store the delivery's final usage before the files disappear (#262): a
+    // failed capture retains the tree for retry instead of losing grade data.
+    if (this.captureUsage && !(await this.captureUsage(task.pr))) {
       return false;
     }
     if (this.closeSession) {

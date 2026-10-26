@@ -1545,8 +1545,14 @@ export class TaskFlow {
       });
     }
     if (!pack) {
-      const worktrees = new WorktreeService(this.root, this.config, this.env, this.deps, (pr) =>
-        this.status(String(pr))
+      const worktrees = new WorktreeService(
+        this.root,
+        this.config,
+        this.env,
+        this.deps,
+        (pr) => this.status(String(pr)),
+        undefined,
+        this.deps.workers?.captureUsage
       );
       const task = { pr: this.number(ref), branch, base, head, state: "MERGED" };
       await step("session", async () => {
