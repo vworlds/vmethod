@@ -168,13 +168,15 @@ export function guardClosingKeywords(text: string): void {
 }
 
 /**
- * The file-posting verbs write the protocol header themselves: `review …
- * answer|changes|owner|ask|approve`, `ask` and `scope-review` prepend
- * `[orchestrator] <HEADING>` and worker `pr-comment` prepends `[worker] `. A body
- * whose first non-blank line is already a protocol header (`[orchestrator] …` or
- * `[worker] …`) would post the heading twice, and a parser could read the repeat
- * as a protocol line. The error names the line and the verb adding the header. A
- * header mentioned later in the text passes.
+ * The orchestrator file-posting verbs write the protocol header themselves:
+ * `review … answer|changes|owner|ask|approve`, `ask` and `scope-review` prepend
+ * `[orchestrator] <HEADING>`. A body whose first non-blank line is already a
+ * protocol header (`[orchestrator] …` or `[worker] …`, matched on the trimmed
+ * line with whitespace or end-of-line after the tag) would post the heading
+ * twice, and a parser could read the repeat as a protocol line. The error names
+ * the line and the verb adding the header. A header mentioned later in the text
+ * passes. (Worker `pr-comment` keeps a leading `[worker]` line instead and has
+ * its own contract in worker-verbs.)
  */
 export function guardProtocolHeader(text: string, verb: string): void {
   const first = text.split(/\r?\n/).find((line) => line.trim() !== "");

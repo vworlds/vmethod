@@ -153,6 +153,6 @@ test("protocol header guard accepts bodies that only mention a header later", ()
     "[worker]ACK\n",
     "",
   ]) {
-    expect(() => guardProtocolHeader(body, "pr-comment")).not.toThrow();
+    expect(() => guardProtocolHeader(body, "review")).not.toThrow();
   }
 });

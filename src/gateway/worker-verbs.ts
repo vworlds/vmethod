@@ -10,11 +10,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { configValue, getConfig } from "../config.js";
-import {
-  checkMarkdown,
-  guardProtocolHeader,
-  MarkdownDependencyError,
-} from "../gateway/markdown.js";
+import { checkMarkdown, MarkdownDependencyError } from "../gateway/markdown.js";
 import { assertLockfileInSync, lockfileCheckable, npmCiEnvironment } from "../gateway/lockfile.js";
 import type { CallContext, Transport } from "../gateway/transport.js";
 import { context } from "./transport.js";
@@ -77,14 +73,26 @@ export async function workerVerb(
       throw new Error("usage: pr-comment.sh <pr> <file>");
     }
     const body = readFileSync(args[1], "utf8");
-    // Before any local scratch state or post: this verb adds `[worker] ` itself.
-    guardProtocolHeader(body, "pr-comment");
+    // Before any local scratch state or post. `pr-comment` never duplicates the
+    // header: a body whose first non-blank line opens with `[worker]` posts as
+    // is, a bare body gets the header added, and `[orchestrator] …` is refused
+    // — a worker never posts orchestrator protocol.
+    const firstLine =
+      body
+        .split(/\r?\n/)
+        .find((line) => line.trim() !== "")
+        ?.trim() ?? "";
+    if (firstLine.startsWith("[orchestrator]")) {
+      throw new Error(
+        `First non-blank line is the protocol header ${JSON.stringify(firstLine)}; pr-comment adds the [worker] header itself and a worker never posts [orchestrator] protocol`
+      );
+    }
     const scratch = join(root, ".tmp");
     mkdirSync(scratch, { recursive: true });
     const directory = mkdtempSync(join(scratch, "pr-comment-"));
     const file = join(directory, "body.md");
     try {
-      writeFileSync(file, `[worker] ${body}`);
+      writeFileSync(file, firstLine.startsWith("[worker]") ? body : `[worker] ${body}`);
       return await transport.call("post", { ref: args[0], file }, ctx);
     } finally {
       rmSync(directory, { recursive: true, force: true });

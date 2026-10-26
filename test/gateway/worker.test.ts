@@ -277,13 +277,23 @@ test("removed wait-review worker verb cannot poll GitHub", async () => {
   f.done();
 });
 
-test("pr-comment checks Markdown before every post, guards closers and repeated protocol headers, preserves hostile file bodies and adds no footer", async () => {
+test("pr-comment checks Markdown before every post, guards closers, keeps a leading [worker] header as is, refuses an [orchestrator] header and adds no footer", async () => {
   const body = "ACK `$(touch OWNED)`\n\n```sh\nrm -rf / # data only\n```\n";
   const f = fixtureServer([
     graph({ repository: { issueOrPullRequest: item() } }),
     {
       path: "/repos/example/project/issues/3/comments",
       body: { body: `[worker] ${body}` },
+    },
+    graph({ repository: { issueOrPullRequest: item() } }),
+    {
+      path: "/repos/example/project/issues/3/comments",
+      body: { body: "[worker] ACK already prefixed\n" },
+    },
+    graph({ repository: { issueOrPullRequest: item() } }),
+    {
+      path: "/repos/example/project/issues/3/comments",
+      body: { body: "\n\n[worker] ACK after leading blanks\n" },
     },
   ]);
   const deps = { exec: f.deps.exec, report: f.deps.report };
@@ -305,15 +315,19 @@ test("pr-comment checks Markdown before every post, guards closers and repeated 
     await workerVerb(f.gateway, f.root, "pr-comment", ["3", file], { VMETHOD_TASK_PR: "3" }, deps)
   ).toContain("Posted");
   writeFileSync(file, "[worker] ACK already prefixed\n");
+  await workerVerb(f.gateway, f.root, "pr-comment", ["3", file], { VMETHOD_TASK_PR: "3" }, deps);
+  writeFileSync(file, "\n\n[worker] ACK after leading blanks\n");
+  await workerVerb(f.gateway, f.root, "pr-comment", ["3", file], { VMETHOD_TASK_PR: "3" }, deps);
+  writeFileSync(file, "[orchestrator] ANSWER for the worker\n");
   await expect(
     workerVerb(f.gateway, f.root, "pr-comment", ["3", file], { VMETHOD_TASK_PR: "3" }, deps)
   ).rejects.toThrow(
-    /First non-blank line is the protocol header "\[worker\] ACK already prefixed"; pr-comment adds the header itself/
+    /First non-blank line is the protocol header "\[orchestrator\] ANSWER for the worker"; pr-comment adds the \[worker\] header itself and a worker never posts \[orchestrator\] protocol/
   );
   writeFileSync(file, "\n\n[orchestrator] ANSWER for the worker\n");
   await expect(
     workerVerb(f.gateway, f.root, "pr-comment", ["3", file], { VMETHOD_TASK_PR: "3" }, deps)
-  ).rejects.toThrow("pr-comment adds the header itself");
+  ).rejects.toThrow("a worker never posts [orchestrator] protocol");
   expect(existsSync(join(f.root, "OWNED"))).toBe(false);
   f.done();
 });
