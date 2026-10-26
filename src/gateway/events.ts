@@ -160,6 +160,8 @@ interface CardInfo {
   state: string;
   stateReason: string;
   subIssueIds?: string[];
+  blockedBy?: { number: number; repo: string; state: string }[];
+  blockerCount?: number;
   closedBy: string;
   closedAt: string;
   column: string;
@@ -2656,7 +2658,13 @@ export class EventLoop {
       if (card.autopilotStopped) {
         remove(join(this.dir, `autopilot-${card.number}-stop`));
       }
-      await this.reconcileTurn(card, pullsOk && !pendingProgress && !columnProgress);
+      await this.reconcileTurn(
+        card,
+        pullsOk &&
+          !pendingProgress &&
+          !columnProgress &&
+          !card.blockedBy?.some((b) => b.state.toLowerCase() === "open")
+      );
       if (
         card.kind === "ISSUE" &&
         card.state === "OPEN" &&
@@ -2960,7 +2968,7 @@ export class EventLoop {
       for (;;) {
         const data = object(
           await this.host.github.graphql(
-            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state stateReason closedAt subIssues(first: 100) { nodes { id } pageInfo { hasNextPage } } closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
+            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state stateReason closedAt blockedBy(first: 100) { totalCount nodes { number state repository { nameWithOwner } } } subIssues(first: 100) { nodes { id } pageInfo { hasNextPage } } closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
             { owner, number, cursor }
           )
         );
@@ -3038,6 +3046,12 @@ export class EventLoop {
         object(object(content.subIssues).pageInfo).hasNextPage === false
           ? this.list(object(content.subIssues).nodes).map((node) => str(node.id))
           : undefined,
+      blockedBy: this.list(object(content.blockedBy).nodes).map((blocker) => ({
+        number: count(blocker.number) ?? 0,
+        repo: str(object(blocker.repository).nameWithOwner),
+        state: str(blocker.state),
+      })),
+      blockerCount: count(object(content.blockedBy).totalCount) ?? 0,
       closedBy: str(object(this.list(object(content.closure).nodes).at(-1)?.actor).login),
       closedAt: str(content.closedAt),
       column: str(object(node.status).name),
