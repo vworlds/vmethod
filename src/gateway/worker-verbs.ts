@@ -10,7 +10,11 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { configValue, getConfig } from "../config.js";
-import { checkMarkdown, MarkdownDependencyError } from "../gateway/markdown.js";
+import {
+  checkMarkdown,
+  guardProtocolHeader,
+  MarkdownDependencyError,
+} from "../gateway/markdown.js";
 import { assertLockfileInSync, lockfileCheckable, npmCiEnvironment } from "../gateway/lockfile.js";
 import type { CallContext, Transport } from "../gateway/transport.js";
 import { context } from "./transport.js";
@@ -73,12 +77,14 @@ export async function workerVerb(
       throw new Error("usage: pr-comment.sh <pr> <file>");
     }
     const body = readFileSync(args[1], "utf8");
+    // Before any local scratch state or post: this verb adds `[worker] ` itself.
+    guardProtocolHeader(body, "pr-comment");
     const scratch = join(root, ".tmp");
     mkdirSync(scratch, { recursive: true });
     const directory = mkdtempSync(join(scratch, "pr-comment-"));
     const file = join(directory, "body.md");
     try {
-      writeFileSync(file, body.startsWith("[worker]") ? body : `[worker] ${body}`);
+      writeFileSync(file, `[worker] ${body}`);
       return await transport.call("post", { ref: args[0], file }, ctx);
     } finally {
       rmSync(directory, { recursive: true, force: true });

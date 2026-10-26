@@ -168,6 +168,28 @@ export function guardClosingKeywords(text: string): void {
 }
 
 /**
+ * The file-posting verbs write the protocol header themselves: `review …
+ * answer|changes|owner|ask|approve`, `ask` and `scope-review` prepend
+ * `[orchestrator] <HEADING>` and worker `pr-comment` prepends `[worker] `. A body
+ * whose first non-blank line is already a protocol header (`[orchestrator] …` or
+ * `[worker] …`) would post the heading twice, and a parser could read the repeat
+ * as a protocol line. The error names the line and the verb adding the header. A
+ * header mentioned later in the text passes.
+ */
+export function guardProtocolHeader(text: string, verb: string): void {
+  const first = text.split(/\r?\n/).find((line) => line.trim() !== "");
+  if (first === undefined) {
+    return;
+  }
+  const line = first.trim();
+  if (/^\[(?:orchestrator|worker)\](?:\s|$)/.test(line)) {
+    throw new Error(
+      `First non-blank line is the protocol header ${JSON.stringify(line)}; ${verb} adds the header itself`
+    );
+  }
+}
+
+/**
  * Dependency references live only in the blocked-by relation, never in issue text:
  * open-task copies the body into the task brief, where a copied blocker line
  * wrongly signals a live blocker. A line consisting only of a dependency

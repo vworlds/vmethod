@@ -18,7 +18,7 @@ import { loadYaml, type Config } from "../config.js";
 import { type Dependencies, type GitHubClient } from "./client.js";
 import { type BoardService } from "./board.js";
 import { object, type ObjectData, type Person } from "./people.js";
-import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
+import { checkMarkdown, guardClosingKeywords, guardProtocolHeader } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
 import { cleanBaseMerges } from "./clean-base.js";
 import { liveBaseHead } from "./base-head.js";
@@ -807,6 +807,8 @@ export class TaskFlow {
       throw new Error("--owner-agreed is supported only by review answer");
     }
     const handback = readFileSync(input.file, "utf8");
+    // Before any write: the posted comment already opens with `[orchestrator] ${heading}`.
+    guardProtocolHeader(handback, "review");
     if (paused && input.outcome !== "ask") {
       const summonsComments =
         summonsKind === "issue"
@@ -940,6 +942,10 @@ export class TaskFlow {
         break;
       }
     }
+    // Before pausing workers or writing: the posted comment already opens with
+    // `[orchestrator] OWNER QUESTION`.
+    const question = readFileSync(file, "utf8");
+    guardProtocolHeader(question, "ask");
     for (const pr of linked) {
       await this.deps.workers?.clearWake?.(pr);
       if ((await this.status(String(pr))) === "live") {
@@ -947,7 +953,7 @@ export class TaskFlow {
       }
     }
     this.host.github.writes.beginOperation("ask", [{ repo: this.repo, number: this.number(ref) }]);
-    await this.post(ref, `[orchestrator] OWNER QUESTION\n\n${readFileSync(file, "utf8")}`);
+    await this.post(ref, `[orchestrator] OWNER QUESTION\n\n${question}`);
     await this.turn(ref, "owner");
     await this.card(
       issue,

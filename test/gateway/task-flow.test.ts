@@ -1426,6 +1426,37 @@ test.each(["QUESTION", "BLOCKED", "DESIGN", "HANDOFF"] as const)(
   }
 );
 
+test.each(["changes", "owner", "answer", "ask", "approve"] as const)(
+  "review %s refuses a body file that opens with a protocol header before writing",
+  async (outcome) => {
+    const f = fixture();
+    const file = join(f.root, "handback.md");
+    writeFileSync(file, "[orchestrator] ANSWER (round 1 evidence, no action needed.)\n");
+    await expect(f.flow().review({ ref: "27", outcome, file })).rejects.toThrow(
+      'First non-blank line is the protocol header "[orchestrator] ANSWER (round 1 evidence, no action needed.)"; review adds the header itself'
+    );
+    expect(f.writes).toEqual([]);
+    expect(f.touched).toEqual([]);
+    expect(f.resumes).toEqual([]);
+    f.done();
+  }
+);
+
+test("review answer accepts a body file that only mentions a protocol header later", async () => {
+  const f = fixture();
+  const file = join(f.root, "answer.md");
+  const handback = "The [orchestrator] ANSWER from round 1 stands; continue with the evidence.\n";
+  writeFileSync(file, handback);
+  await f.flow().review({ ref: "27", outcome: "answer", file });
+  expect(
+    f.writes.find((write) => write.path === "/repos/example/project/issues/27/comments")
+  ).toEqual({
+    path: "/repos/example/project/issues/27/comments",
+    body: { body: `[orchestrator] ANSWER\n\n${handback}` },
+  });
+  f.done();
+});
+
 test.each(["issuecomment-5", "discussion_r4363811103"])(
   "review ask --in-reply-to %s keeps its protocol in conversation and hands the owner the turn",
   async (anchor) => {
@@ -1577,6 +1608,28 @@ test.each([false, true])(
     f.done();
   }
 );
+
+test("issue ask refuses a protocol-header file before pausing workers or writing", async () => {
+  const f = fixture();
+  const original = f.deps.fetch;
+  f.deps.fetch = async (input, init) =>
+    new URL(String(input)).pathname === "/repos/example/project/pulls"
+      ? Response.json([])
+      : original(input, init);
+  const stopped: number[] = [];
+  f.deps.workers!.stop = async (pr) => {
+    stopped.push(pr);
+  };
+  const file = join(f.root, "question.md");
+  writeFileSync(file, "[worker] QUESTION\n\nWhich behavior should win?\n");
+  await expect(f.flow().ask("8", file)).rejects.toThrow(
+    'First non-blank line is the protocol header "[worker] QUESTION"; ask adds the header itself'
+  );
+  expect(stopped).toEqual([]);
+  expect(f.writes).toEqual([]);
+  expect(f.touched).toEqual([]);
+  f.done();
+});
 
 test.each([
   ["bug: merge-task markers", "fix: merge-task markers"],

@@ -167,8 +167,11 @@ BLOCKED or DESIGN, end your turn. The orchestrator's review, answer or hold rele
 wakes your session; read the task PR before acting. Each requested-change round
 gets point-by-point answers and READY at the next round number.
 
-Use these first lines through `pr-comment` (see [protocol](protocol.md) for the
-complete tag reference): `[worker] ACK`, `[worker] DESIGN`, `[worker] QUESTION`,
+Write the body file without a protocol header: `pr-comment` adds the `[worker] `
+line itself and refuses a file whose first non-blank line is already one
+(`[worker] …` or `[orchestrator] …`), so a heading never posts twice. The posted
+comment's first line is one of (see [protocol](protocol.md) for the complete tag
+reference): `[worker] ACK`, `[worker] DESIGN`, `[worker] QUESTION`,
 `[worker] BLOCKED`, and `[worker] READY FOR REVIEW (round n)`. QUESTION asks for a
 blocking decision; BLOCKED reports an external obstacle with evidence. READY
 requires green CI and no unresolved blockers; local green alone is not READY.

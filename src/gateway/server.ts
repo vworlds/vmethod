@@ -24,7 +24,12 @@ import {
   repoOf,
   restActor,
 } from "./queries.js";
-import { checkMarkdown, guardClosingKeywords, guardDependencyText } from "./markdown.js";
+import {
+  checkMarkdown,
+  guardClosingKeywords,
+  guardDependencyText,
+  guardProtocolHeader,
+} from "./markdown.js";
 import {
   inProcess,
   type CallContext,
@@ -930,6 +935,8 @@ class GatewayServer {
     if (!summary.trim() || /body sha256:|\[orchestrator\] SCOPE REVIEW/.test(summary)) {
       throw new Error("Provide a nonempty change summary, without a review tag or body hash");
     }
+    // Before any write: the posted comment already opens with `[orchestrator] SCOPE REVIEW`.
+    guardProtocolHeader(summary, "scope-review");
     const issue = await this.flowThread(String(number), "issue");
     if (issue.state !== "OPEN" || typeof issue.body !== "string") {
       throw new Error("Scope review requires an open issue with a readable body");

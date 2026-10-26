@@ -5,6 +5,7 @@ import {
   checkMarkdown,
   guardClosingKeywords,
   guardDependencyText,
+  guardProtocolHeader,
 } from "../../src/gateway/markdown.js";
 import { fixture } from "../helpers.js";
 
@@ -119,5 +120,39 @@ test("dependency guard permits prose that only mentions an issue", () => {
     "Fixes Blocked by: see #4",
   ]) {
     expect(() => guardDependencyText(line)).not.toThrow();
+  }
+});
+
+test.each([
+  { body: "[worker] ACK\n\nplan.", header: "[worker] ACK" },
+  { body: "[orchestrator] ANSWER (round 1)", header: "[orchestrator] ANSWER (round 1)" },
+  {
+    body: "[worker] READY FOR REVIEW (round 2)\n\nevidence",
+    header: "[worker] READY FOR REVIEW (round 2)",
+  },
+  { body: "[orchestrator]", header: "[orchestrator]" },
+  {
+    body: "\n\n[orchestrator] REVIEW round 2\n\nbody",
+    header: "[orchestrator] REVIEW round 2",
+  },
+  { body: "  [worker] BLOCKED\n", header: "[worker] BLOCKED" },
+  { body: "[worker] ACK\r\nbody", header: "[worker] ACK" },
+])("protocol header guard refuses a body opening with $header", ({ body, header }) => {
+  expect(() => guardProtocolHeader(body, "review")).toThrow(
+    `First non-blank line is the protocol header ${JSON.stringify(header)}; review adds the header itself`
+  );
+});
+
+test("protocol header guard accepts bodies that only mention a header later", () => {
+  for (const body of [
+    "Mentions the [orchestrator] ANSWER from the earlier round.\n",
+    "The card showed [worker] READY FOR REVIEW (round 1) first.\n",
+    "[vmethod] ACK\n",
+    "[workerless] x\n",
+    "[workers] x\n",
+    "[worker]ACK\n",
+    "",
+  ]) {
+    expect(() => guardProtocolHeader(body, "pr-comment")).not.toThrow();
   }
 });

@@ -264,6 +264,12 @@ mergeable.
    Update the agreed issue when owner feedback changes the scope.
    Return requested changes to draft; workers never toggle draft state.
 
+Body files for `review <pr> changes|owner|answer|ask|approve`, `ask` and
+`scope-review` carry no protocol header: the verb writes the `[orchestrator]
+<HEADING>` line itself and refuses, before anything is written, a file whose
+first non-blank line already is one (`[orchestrator] …` or `[worker] …`), so a
+heading never posts twice.
+
 Behavior a person will see or feel is judged by **trying it**, not by metrics alone.
 The specification must say that the owner tries it; metric acceptance is never
 presented as “done” for that work.
