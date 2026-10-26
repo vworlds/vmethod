@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import {
@@ -43,7 +43,8 @@ function mermaidFixture() {
     if (!globalThis.window || !globalThis.document) throw new Error('DOM missing during import');
     export default {
       initialize(options) { if (options.securityLevel !== 'strict') throw new Error('Unsafe initialization'); },
-      async parse(text) { if (text !== 'graph TD; A-->B') throw new Error('Invalid Mermaid fixture diagram'); }
+      async parse(text) { if (text !== 'graph TD; A-->B' && !text.startsWith('flowchart')) throw new Error('Invalid Mermaid fixture diagram'); return { diagramType: text.startsWith('flowchart') ? 'flowchart-v2' : 'flowchart-v2' }; },
+      mermaidAPI: { async getDiagramFromText(text) { if (text.includes('NO_EDGES')) return { type: 'flowchart-v2', db: {} }; return { type: 'flowchart-v2', db: { edges: text.includes('BAD_SHAPE') ? [{ type: 'arrow_point' }] : text.includes('<-.') ? [{ start: 'A', end: 'B', text: 'label', type: 'INVALID', stroke: 'INVALID' }] : [{ type: 'arrow_point', stroke: 'normal' }] } }; } }
     };
   `
   );
@@ -70,6 +71,40 @@ test("Mermaid parses every diagram and restores the DOM on failure", async () =>
   ).rejects.toThrow("Invalid Mermaid fixture");
   expect(Object.getOwnPropertyDescriptor(globalThis, "window")).toEqual(previousWindow);
   expect(Object.getOwnPropertyDescriptor(globalThis, "document")).toEqual(previousDocument);
+}, 10000);
+
+test("flowchart semantic check rejects invalid edges and reports block and fence", async () => {
+  const root = mermaidFixture();
+  await expect(
+    checkMarkdown(root, 'Text\n```mermaid\nflowchart TB\n A <-. "label" .- B\n```')
+  ).rejects.toThrow(
+    /Mermaid block 1 \(fence line 2\): invalid Mermaid edge A -> B.*reversed \.-> form/
+  );
+});
+
+test.each(["NO_EDGES", "BAD_SHAPE"])(
+  "flowchart semantic check fails closed for incompatible database shape: %s",
+  async (source) => {
+    await expect(
+      checkMarkdown(mermaidFixture(), `\`\`\`mermaid\nflowchart TB\n${source}\n\`\`\``)
+    ).rejects.toThrow(/flowchart database compatibility error/);
+  }
+);
+
+test("pinned Mermaid peer identifies invalid flowchart edges", async () => {
+  const root = fixture();
+  mkdirSync(join(root, "node_modules"), { recursive: true });
+  symlinkSync(join(process.cwd(), "node_modules/mermaid"), join(root, "node_modules/mermaid"));
+  symlinkSync(join(process.cwd(), "node_modules/jsdom"), join(root, "node_modules/jsdom"));
+  await expect(
+    checkMarkdown(
+      root,
+      '```mermaid\nsequenceDiagram\n A->>B: unchanged\n```\n```mermaid\nflowchart TB\n A <-. "label" .- B\n```'
+    )
+  ).rejects.toThrow(/Mermaid block 2 \(fence line 5\): invalid Mermaid edge A -> B/);
+  await expect(
+    checkMarkdown(root, '```mermaid\nflowchart TB\n B -. "<b>label 😃</b>" .-> A\n A <--> C\n```')
+  ).resolves.toBeUndefined();
 }, 10000);
 
 test("Mermaid refuses version drift", async () => {

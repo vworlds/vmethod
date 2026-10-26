@@ -4,6 +4,8 @@ import packageMetadata from "../../package.json" with { type: "json" };
 
 export class MarkdownDependencyError extends Error {}
 
+class FlowchartSemanticError extends Error {}
+
 export async function checkMarkdown(
   root: string,
   text: string,
@@ -117,6 +119,9 @@ export async function checkMarkdown(
         default: {
           initialize: (options: unknown) => void;
           parse: (text: string) => Promise<unknown>;
+          mermaidAPI: {
+            getDiagramFromText: (text: string) => Promise<unknown>;
+          };
         };
       };
       mermaidModule.default.initialize({
@@ -125,8 +130,63 @@ export async function checkMarkdown(
       });
       for (const [index, diagram] of diagrams.entries()) {
         try {
-          await mermaidModule.default.parse(diagram.source);
+          const parsed = (await mermaidModule.default.parse(diagram.source)) as
+            { diagramType?: unknown } | undefined;
+          if (
+            !parsed ||
+            !["flowchart", "flowchart-v2", "graph"].includes(String(parsed.diagramType))
+          ) {
+            continue;
+          }
+          const diagramModel = await mermaidModule.default.mermaidAPI.getDiagramFromText(
+            diagram.source
+          );
+          const diagramInfo = diagramModel as {
+            type?: unknown;
+            db?: {
+              getEdges?: () => unknown;
+              edges?: unknown;
+            };
+          };
+          if (!["flowchart", "flowchart-v2", "graph"].includes(String(diagramInfo.type))) {
+            throw new FlowchartSemanticError(
+              "flowchart database compatibility error: unexpected diagram type"
+            );
+          }
+          const database = diagramInfo.db;
+          const edges =
+            typeof database?.getEdges === "function" ? database.getEdges() : database?.edges;
+          if (!Array.isArray(edges)) {
+            throw new FlowchartSemanticError(
+              "flowchart database compatibility error: edges are unavailable"
+            );
+          }
+          for (const edge of edges) {
+            const item = edge as {
+              start?: unknown;
+              end?: unknown;
+              text?: unknown;
+              type?: unknown;
+              stroke?: unknown;
+            } | null;
+            if (!item || typeof item.type !== "string" || typeof item.stroke !== "string") {
+              throw new FlowchartSemanticError(
+                "flowchart database compatibility error: edge type or stroke is unavailable"
+              );
+            }
+            if (item.type === "INVALID" || item.stroke === "INVALID") {
+              throw new FlowchartSemanticError(
+                `invalid Mermaid edge ${String(item.start)} -> ${String(item.end)} (label ${JSON.stringify(item.text ?? "")}); use the reversed .-> form`
+              );
+            }
+          }
         } catch (error) {
+          if (error instanceof FlowchartSemanticError) {
+            throw new Error(
+              `Mermaid block ${index + 1} (fence line ${diagram.line}): ${error.message}`,
+              { cause: error }
+            );
+          }
           const detail = error as {
             message?: string;
             hash?: { loc?: { first_line?: number } };
