@@ -2233,6 +2233,14 @@ test("merge status does not treat unreachable recorded sessions as stopped", asy
   await expect(f.service.mergeStatus(31, true)).rejects.toThrow();
   f.done();
 });
+
+test("recorded reports whether any worker session record exists for the PR", async () => {
+  const f = fixture([...start]);
+  expect(await f.service.recorded(31)).toBe(false);
+  await f.service.command(["start", "31"]);
+  expect(await f.service.recorded(31)).toBe(true);
+  f.done();
+});
 const wakeRequest: Request = {
   path: "/api/session/ses_fake/prompt",
   method: "POST",

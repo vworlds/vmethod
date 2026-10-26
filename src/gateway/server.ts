@@ -1107,6 +1107,7 @@ class GatewayServer {
       ...this.deps,
       workers: this.deps.workers ?? {
         status: (pr, forMerge) => this.workers.mergeStatus(pr, forMerge),
+        recorded: (pr) => this.workers.recorded(pr),
         stop: (pr) => this.workers.command(["stop", String(pr)]),
         close: (pr) => this.workers.closeSession(pr),
         captureUsage: (pr) => this.workers.captureUsage(pr),
