@@ -17,6 +17,8 @@ export interface Dependencies {
   /** Backends distinguish no recorded session (stopped for merging) from unknown status. */
   workers?: {
     status(pr: number, forMerge?: boolean): Promise<"stopped" | "live" | "unknown">;
+    /** #275: whether any session record exists for the PR; false means it never had a worker. */
+    recorded?(pr: number): Promise<boolean>;
     resume(pr: number, prompt: string): Promise<string | void>;
     stop?(pr: number): Promise<string | void>;
     /** Best-effort list closure; false leaves the merge journal step retryable. */

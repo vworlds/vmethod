@@ -1090,7 +1090,9 @@ stopped opencode session from OpenChamber by setting
 `metadata.openchamber.work.state` to `closed`, with `closedAt` and
 `closedBy: vmethod`. It reads and preserves all other metadata, including links;
 it never deletes the session, title or history. Already-closed sessions are a no-op.
-Claude sessions are skipped because they have no OpenChamber list. A failed update
+Claude sessions are skipped because they have no OpenChamber list. A PR with no
+worker record was never worked by vmethod: it has no session to hide and the step
+completes without contacting any backend. A failed update
 reports `session not closed: <reason>` without failing the merge; recovery retries
 the unfinished session step.
 
@@ -1134,15 +1136,22 @@ Tracked modifications and untracked non-ignored files are retained; ignored file
 such as `node_modules` and `.tmp/` may be removed. Local commits must be reachable
 from the merged PR head or the local base branch; for an unmerged closed PR, only
 the base proves containment. Otherwise cleanup reports unpushed work and retains
-the tree. A live or unknown session, unavailable commit objects or failed safety
-read also retains data. Inspect the reported reason before retrying; do not bypass
+the tree. A live or unresolvable recorded session, unavailable commit objects or
+failed safety read also retains data; a PR without any worker record is treated
+as absent (#275), not unknown, and never retains data for a session that does not
+exist. Inspect the reported reason before retrying; do not bypass
 these checks with a manual forced removal.
 
 Merge follow-up journals live in the per-user state directory. A partial failure
 resumes board, issue, branch and checkout work without merging again. Already-merged
 owner button merges receive the same follow-up; bad historical titles only warn.
 After a merge, worker shutdown is best-effort and its outcome is reported; live or
-unknown sessions do not block recovery. The remote branch head is then re-read.
+unknown sessions do not block recovery. A PR whose worker record exists but cannot
+be resolved still gets today's cautious treatment: the failed stop is reported and
+cleanup retains the tree until inspected. A PR with no worker record, for example a
+hand-made task PR, was never worked by a vmethod worker: the follow-up skips the
+stop silently, needs no session close and its eligible worktree is removed (#275).
+The remote branch head is then re-read.
 Any commits beyond the merged PR head are reported as
 `post-merge commits on <branch>: <shas>` and the branch is kept for a follow-up PR.
 Otherwise cleanup continues with issue closure, board Done, branch deletion and
