@@ -976,6 +976,29 @@ of an interrupted process. The report is a terminal conflict result: it supersed
 the conflicted turn's queued card moves and restarts nothing else, and the same
 watcher cycle still reports the PR normally.
 
+A `starting` or `blocked` record also closes quietly when the current head is
+mergeable with the fetched current base, CI is green and non-stale, and the
+gateway confirms the fixer session is stopped (including no recorded session).
+A live or unknown session prevents recovery: inspect or stop it first. Blocked
+records remain pending for watcher reconciliation until recovered.
+
+Use `resolve-conflicts <pr> --retry` to retry a blocked `merge verify hook failed`
+record instead of closing it. With the fixer stopped, the command re-proves the
+current head against the recorded conflict/base, checks CI and runs verification
+again, even after the original dispatch deadline. It never launches another fixer
+or bypasses proof, escalated-path or current-base checks. Success restores the
+interrupted turn or carries the recorded approval through the normal merge path;
+a repeated failure stays blocked.
+
+For transition recovery on an older release without these paths, first confirm
+there is no live fixer with `worker status <pr>` (stop it with `worker stop <pr>`
+if necessary; unknown status is not proof of safety). Check the PR's current base,
+mergeability and green CI, then remove only that PR's
+`<state-root>/conflicts/<pr>.json` record. The state root is
+`${XDG_STATE_HOME:-$HOME/.local/state}/vmethod/<stateName>`. Do not remove another
+PR's record or an owned lock. Removing a record does not certify a resolution or
+carry approval; use the normal review/merge gates afterward.
+
 If the head already contains the fetched live base and is not conflicting, the
 command reports `nothing to resolve for #n` without a comment, board change or
 update-branch call. GitHub's specific update-branch 422 response saying there are
@@ -994,9 +1017,10 @@ or board transitions; only genuine conflicts beyond the limits are escalated.
    while it runs is queued, not allowed to switch it back early, and it follows
    the stale-wake rule under [Task-flow commands](#task-flow-commands) at the
    drain. Both
-   switches retain usage baselines and post the normal model NOTE.
+   switches retain usage baselines and post the normal model NOTE, but never edit
+   the card's Model: the cheaper family is temporary session state only.
 3. Otherwise a generic fixer starts in the PR's guarded linked worktree on the
-   cheapest ungated, priced family. Its fixed prompt limits edits to conflicted
+   cheapest ungated, priced family without changing the card's Model. Its fixed prompt limits edits to conflicted
    hunks, requires any installed merge-scope verify hook and CI, forbids merging, and requires
    `[worker] BLOCKED` with conflicting files when it cannot comply.
 

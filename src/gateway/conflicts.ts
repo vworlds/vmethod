@@ -92,13 +92,18 @@ export class ConflictService {
    * Current heads are no-ops; reconciliation errors propagate without conflict escalation.
    * A record whose PR is no longer open, or that a not-dispatched resolution can no
    * longer attribute on a mergeable PR, closes quietly as resolved outside the fixer.
+   * Stopped starting/blocked records also close on a green, non-stale mergeable PR.
+   * retry re-proves and verifies a blocked verification failure instead of closing it.
    * Auto-merge errors retain resolved state and return actionable manual-merge guidance.
    * The per-pr lock is owned like the watcher's: a dead owner's lock is cleared and the
    * reconcile continues, while a live owner reads as a quiet in-progress pending.
    */
-  async resolve(pr: number): Promise<string> {
+  async resolve(pr: number, retry = false): Promise<string> {
     if (!Number.isSafeInteger(pr) || pr < 1) {
       throw new Error("Expected a positive PR number");
+    }
+    if (typeof retry !== "boolean") {
+      throw new Error("Invalid conflict retry flag");
     }
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     const lock = join(this.directory, `${pr}.lock`);
@@ -111,22 +116,26 @@ export class ConflictService {
       return busy;
     }
     try {
-      return await this.run(pr);
+      return await this.run(pr, retry);
     } finally {
       this.release(lock, start);
     }
   }
 
-  /** Watchers reconcile pending fixes even after the conflicting head has advanced. */
+  /** Watchers reconcile starting, waiting and blocked fixes even after the head advances. */
   pending(pr: number): boolean {
     const record = this.read(pr);
-    return !!record && ["starting", "waiting"].includes(record.phase);
+    return !!record && ["starting", "waiting", "blocked"].includes(record.phase);
   }
 
-  /** True while a dispatched step-2/3 fixer episode owns the card. */
+  /** True while a dispatched step-2/3 fixer episode owns the card, including escalation. */
   fixing(pr: number): boolean {
     const record = this.read(pr);
-    return !!record && record.dispatched === true && ["starting", "waiting"].includes(record.phase);
+    return (
+      !!record &&
+      record.dispatched === true &&
+      ["starting", "waiting", "blocked"].includes(record.phase)
+    );
   }
 
   /** Create the per-pr lock, or return a quiet in-progress line while a live owner keeps it. */
@@ -204,8 +213,11 @@ export class ConflictService {
     }
   }
 
-  private async run(pr: number): Promise<string> {
+  private async run(pr: number, retry: boolean): Promise<string> {
     const old = this.read(pr);
+    if (retry && (old?.phase !== "blocked" || old.reason !== "merge verify hook failed")) {
+      throw new Error("Conflict retry requires a blocked merge verify hook failure");
+    }
     if (old) {
       // A PR that ended outside this workflow closes its record quietly: reading its
       // CI snapshot would fail every later reconciliation with a not-open error.
@@ -229,6 +241,25 @@ export class ConflictService {
         snapshot.head
     ) {
       throw new Error("Head or base moved during conflict preview; run again");
+    }
+    if (old && ["starting", "blocked"].includes(old.phase)) {
+      if (retry || (!snapshot.conflict && snapshot.green && !snapshot.stale)) {
+        const status = await this.hooks.status(pr);
+        if (status !== "stopped") {
+          return `PENDING #${pr}: conflict fixer ${status === "live" ? "running" : "status unknown; inspect session before recovery"}`;
+        }
+        if (retry) {
+          return this.finish(pr, old, snapshot, true);
+        }
+        // GitHub can report a temporarily unknown mergeability as non-conflicting.
+        // Prove the fetched head/base merge cleanly before discarding durable state.
+        if (!(await git.mergePreview(snapshot.head, snapshot.baseSha)).conflicts.length) {
+          return this.closeOutsideFixer(pr);
+        }
+      }
+      if (old.phase === "blocked") {
+        return this.event(pr, old);
+      }
     }
     const active = old && ["starting", "waiting"].includes(old.phase);
     if (
@@ -315,7 +346,12 @@ export class ConflictService {
     return `PENDING #${pr}: conflict fixer dispatched (step ${record.step})${cardApproved ? "; owner approval kept" : ""}`;
   }
 
-  private async finish(pr: number, record: Resolution, snapshot: CiSnapshot): Promise<string> {
+  private async finish(
+    pr: number,
+    record: Resolution,
+    snapshot: CiSnapshot,
+    retry = false
+  ): Promise<string> {
     // Step-1 records dispatch no fixer, so no fixer session explains a new head. A
     // healthy PR whose base moved, or whose head a clean-base proof cannot attribute,
     // was resolved outside the fixer: the record closes quietly instead of failing.
@@ -337,13 +373,13 @@ export class ConflictService {
         return this.closeOutsideFixer(pr);
       }
     }
-    if (this.deps.now() - record.started > 60 * 60_000) {
+    if (!retry && this.deps.now() - record.started > 60 * 60_000) {
       return this.block(pr, record, "conflict resolution exceeded the one-hour limit");
     }
     if ((await this.hooks.status(pr)) === "live") {
       return `PENDING #${pr}: conflict fixer running`;
     }
-    if (await this.hooks.workerBlocked(pr, record.started)) {
+    if (!retry && (await this.hooks.workerBlocked(pr, record.started))) {
       return this.block(pr, record, "fixer reported BLOCKED or QUESTION");
     }
     if (snapshot.head === record.head) {
@@ -435,6 +471,8 @@ export class ConflictService {
     if (
       current.head !== snapshot.head ||
       current.baseSha !== record.base ||
+      current.branch !== record.branch ||
+      current.conflict ||
       !current.green ||
       current.stale
     ) {
@@ -442,6 +480,7 @@ export class ConflictService {
     }
     record.resolvedHead = snapshot.head;
     record.phase = "resolved";
+    delete record.reason;
     this.save(pr, record);
     if (record.approved) {
       try {

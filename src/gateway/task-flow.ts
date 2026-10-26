@@ -1150,10 +1150,6 @@ export class TaskFlow {
     const approved =
       object(this.config.board).enabled !== false &&
       (await this.boardCard(item))?.values.Status === "Approved";
-    await this.post(
-      ref,
-      `[orchestrator] NOTE: conflict escalated (${reason})\n\nConflicting files:\n${files.map((file) => `- ${JSON.stringify(file)}`).join("\n") || "- (none)"}\n\n${approved ? "Owner approval kept: the card stays Approved." : "Owner review is required; no approval carried."}`
-    );
     // A Status write would move an Approved card out of the owner's decision; on an
     // approved card only the blocked Progress rides the escalation write.
     await this.card(
@@ -1162,6 +1158,14 @@ export class TaskFlow {
       renderProgress({ state: "blocked", round: null, red: false })
     );
     await this.turn(ref, "orchestrator");
+    // Report only after the card/turn writes succeed, using the live resulting card.
+    const kept =
+      object(this.config.board).enabled !== false &&
+      (await this.boardCard(item))?.values.Status === "Approved";
+    await this.post(
+      ref,
+      `[orchestrator] NOTE: conflict escalated (${reason})\n\nConflicting files:\n${files.map((file) => `- ${JSON.stringify(file)}`).join("\n") || "- (none)"}\n\n${kept ? "Owner approval kept: the card stays Approved." : "Owner review is required; no approval carried."}`
+    );
   }
 
   /** Merge a stopped/session-less task against the live base; carryApproval certifies no behaviour change after base merges. */

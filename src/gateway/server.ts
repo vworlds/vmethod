@@ -781,8 +781,8 @@ class GatewayServer {
     });
   }
 
-  resolveConflicts: Handlers["resolveConflicts"] = async ({ ref }) =>
-    this.conflicts.resolve(this.localNumber(ref));
+  resolveConflicts: Handlers["resolveConflicts"] = async ({ ref, retry }) =>
+    this.conflicts.resolve(this.localNumber(ref), retry);
 
   private get verification(): VerificationService {
     return new VerificationService(

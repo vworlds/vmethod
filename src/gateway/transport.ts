@@ -47,7 +47,7 @@ export interface Operations {
     output: string;
   };
   /** Orchestrator-only bounded conflict resolution and approval-carry reconciliation. */
-  resolveConflicts: { input: { ref: string }; output: string };
+  resolveConflicts: { input: { ref: string; retry?: boolean }; output: string };
   /** Orchestrator-only Development links; complete promotes, unlink demotes. Flags are exclusive. */
   linkTask: { input: { ref: string; complete?: boolean; unlink?: boolean }; output: string };
   releaseHold: { input: { ref: string }; output: string };

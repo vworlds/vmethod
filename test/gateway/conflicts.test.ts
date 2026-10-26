@@ -229,6 +229,120 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
   };
 }
 
+test.each(["starting", "blocked"])(
+  "a stopped %s record closes quietly on a moved, healthy head",
+  async (phase) => {
+    const f = await setup(true, false);
+    await f.service.resolve(31);
+    const record = JSON.parse(readFileSync(f.record(), "utf8"));
+    writeFileSync(f.record(), JSON.stringify({ ...record, phase }));
+    expect(f.service.pending(31)).toBe(true);
+    expect(await f.service.resolve(31)).toBe("conflict on #31 resolved outside the fixer");
+    expect(existsSync(f.record())).toBe(false);
+    expect(f.service.pending(31)).toBe(false);
+    expect(f.hooks.blocked).not.toHaveBeenCalled();
+    expect(f.hooks.cardRestore).not.toHaveBeenCalled();
+    expect(f.hooks.merge).not.toHaveBeenCalled();
+  },
+  15000
+);
+
+test.each(["live", "unknown"] as const)(
+  "a healthy blocked record is not cleared with fixer status %s",
+  async (status) => {
+    const f = await setup(true, false);
+    await f.service.resolve(31);
+    const record = JSON.parse(readFileSync(f.record(), "utf8"));
+    writeFileSync(f.record(), JSON.stringify({ ...record, phase: "blocked" }));
+    vi.mocked(f.hooks.status).mockResolvedValue(status);
+    expect(await f.service.resolve(31)).toMatch(/^PENDING/);
+    expect(existsSync(f.record())).toBe(true);
+    expect(f.hooks.fix).toHaveBeenCalledOnce();
+  },
+  15000
+);
+
+test("a non-conflicting snapshot cannot close an interrupted record when the fetched refs conflict", async () => {
+  const f = await setup(true, false);
+  vi.mocked(f.hooks.fix).mockRejectedValue(new Error("dispatch interrupted"));
+  await expect(f.service.resolve(31)).rejects.toThrow("dispatch interrupted");
+  f.snapshot.conflict = false;
+  await expect(f.service.resolve(31)).rejects.toThrow("previous dispatch was interrupted");
+  expect(existsSync(f.record())).toBe(true);
+  expect(f.service.pending(31)).toBe(true);
+}, 15000);
+
+test.each(["red", "stale", "conflicting"])(
+  "a blocked record is retained when the PR is %s",
+  async (state) => {
+    const f = await setup(true, false);
+    await f.service.resolve(31);
+    const record = JSON.parse(readFileSync(f.record(), "utf8"));
+    writeFileSync(f.record(), JSON.stringify({ ...record, phase: "blocked" }));
+    f.snapshot.green = state !== "red";
+    f.snapshot.stale = state === "stale";
+    f.snapshot.conflict = state === "conflicting";
+    await f.service.resolve(31);
+    expect(existsSync(f.record())).toBe(true);
+    expect(f.service.pending(31)).toBe(true);
+  },
+  15000
+);
+
+test("explicit verification retry re-proves a blocked head and carries approval after the deadline", async () => {
+  const f = await setup(true, true);
+  await f.service.resolve(31);
+  vi.mocked(f.hooks.verify).mockResolvedValueOnce(false).mockResolvedValue(true);
+  expect(await f.service.resolve(31)).toContain("merge verify hook failed");
+  f.advance();
+  expect(await f.service.resolve(31, true)).toBe("MERGED #31 (conflict-only, approval carried)");
+  expect(f.hooks.verify).toHaveBeenCalledTimes(2);
+  expect(f.hooks.merge).toHaveBeenCalledExactlyOnceWith(31, conflictCertification, f.snapshot.head);
+  expect(f.service.pending(31)).toBe(false);
+}, 15000);
+
+test.each(["live", "unknown", "bad proof", "base moved", "verify fails", "restore"])(
+  "verification retry preserves the safety gates: %s",
+  async (scenario) => {
+    const f = await setup(true, scenario !== "restore");
+    await f.service.resolve(31);
+    vi.mocked(f.hooks.verify).mockResolvedValue(false);
+    expect(await f.service.resolve(31)).toContain("merge verify hook failed");
+    vi.mocked(f.hooks.verify).mockResolvedValue(scenario !== "verify fails");
+    if (scenario === "live" || scenario === "unknown") {
+      vi.mocked(f.hooks.status).mockResolvedValue(scenario);
+    } else if (scenario === "bad proof") {
+      await f.foreignHead("outside.txt", "unrelated change\n");
+    } else if (scenario === "base moved") {
+      await f.moveBase();
+    }
+    const result = await f.service.resolve(31, true);
+    if (scenario === "restore") {
+      expect(result).toBe("RESOLVED #31 (step 3)");
+      expect(f.hooks.cardRestore).toHaveBeenCalledOnce();
+    } else {
+      expect(result).toMatch(
+        scenario === "live" || scenario === "unknown" ? /^PENDING/ : /^BLOCKED/
+      );
+      expect(f.hooks.cardRestore).not.toHaveBeenCalled();
+    }
+    expect(f.hooks.merge).not.toHaveBeenCalled();
+    expect(f.hooks.fix).toHaveBeenCalledOnce();
+    expect(f.hooks.verify).toHaveBeenCalledTimes(
+      ["restore", "verify fails"].includes(scenario) ? 2 : 1
+    );
+  },
+  15000
+);
+
+test("retry refuses records other than a blocked verification failure", async () => {
+  const f = await setup(true, false);
+  await expect(f.service.resolve(31, true)).rejects.toThrow("blocked merge verify hook failure");
+  await f.service.resolve(31);
+  await expect(f.service.resolve(31, true)).rejects.toThrow("blocked merge verify hook failure");
+  expect(f.hooks.verify).not.toHaveBeenCalled();
+}, 15000);
+
 test("auto-merge refusal retains the resolution without repeating verification or merge", async () => {
   const f = await setup(true, true);
   await f.service.resolve(31);
@@ -397,7 +511,11 @@ test.each([false, true])(
     }
     f.snapshot.green = false;
     f.snapshot.stale = true;
-    expect(await f.service.resolve(31)).toBe("nothing to resolve for #31");
+    expect(await f.service.resolve(31)).toBe(
+      previousFailure
+        ? "BLOCKED #31: conflict escalated (conflict dispatch failed; see gateway diagnostics)"
+        : "nothing to resolve for #31"
+    );
     for (const hook of [
       f.hooks.approved,
       f.hooks.update,
@@ -416,7 +534,7 @@ test.each([false, true])(
     ]) {
       expect(hook).not.toHaveBeenCalled();
     }
-    expect(f.service.pending(31)).toBe(false);
+    expect(f.service.pending(31)).toBe(previousFailure);
   },
   15000
 );
@@ -551,7 +669,8 @@ test("a blocked resolution never restores the prior card and leaves the turn wit
   expect(f.hooks.blocked).toHaveBeenCalledOnce();
   expect(f.hooks.cardRestore).not.toHaveBeenCalled();
   expect(f.card()).toMatchObject({ status: "In review", progress: "💥", assignees: ["worker"] });
-  expect(f.service.pending(31)).toBe(false);
+  expect(f.service.pending(31)).toBe(true);
+  expect(f.service.fixing(31)).toBe(true);
 }, 15000);
 
 test("a lost card restore is retried by reconciliation without repeating the resolution", async () => {
