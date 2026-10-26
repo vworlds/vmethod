@@ -967,6 +967,15 @@ export class TaskFlow {
     const status = (await this.deps.workers?.status(this.number(ref), forMerge)) ?? "unknown";
     return ["live", "stopped", "unknown"].includes(status) ? status : "unknown";
   }
+  /** #275: true only when the backend positively reports no worker session record. A failed
+   * probe keeps the recorded, cautious path: an unfalsifiable worker is never treated as absent. */
+  private async workerAbsent(ref: string): Promise<boolean> {
+    try {
+      return (await this.deps.workers?.recorded?.(this.number(ref))) === false;
+    } catch {
+      return false;
+    }
+  }
   /** Release an open held task, preserving prompt edits and refusing repeated releases. */
   async release(ref: string): Promise<string> {
     const item = await this.pr(ref);
@@ -1141,10 +1150,6 @@ export class TaskFlow {
     const approved =
       object(this.config.board).enabled !== false &&
       (await this.boardCard(item))?.values.Status === "Approved";
-    await this.post(
-      ref,
-      `[orchestrator] NOTE: conflict escalated (${reason})\n\nConflicting files:\n${files.map((file) => `- ${JSON.stringify(file)}`).join("\n") || "- (none)"}\n\n${approved ? "Owner approval kept: the card stays Approved." : "Owner review is required; no approval carried."}`
-    );
     // A Status write would move an Approved card out of the owner's decision; on an
     // approved card only the blocked Progress rides the escalation write.
     await this.card(
@@ -1153,6 +1158,14 @@ export class TaskFlow {
       renderProgress({ state: "blocked", round: null, red: false })
     );
     await this.turn(ref, "orchestrator");
+    // Report only after the card/turn writes succeed, using the live resulting card.
+    const kept =
+      object(this.config.board).enabled !== false &&
+      (await this.boardCard(item))?.values.Status === "Approved";
+    await this.post(
+      ref,
+      `[orchestrator] NOTE: conflict escalated (${reason})\n\nConflicting files:\n${files.map((file) => `- ${JSON.stringify(file)}`).join("\n") || "- (none)"}\n\n${kept ? "Owner approval kept: the card stays Approved." : "Owner review is required; no approval carried."}`
+    );
   }
 
   /** Merge a stopped/session-less task against the live base; carryApproval certifies no behaviour change after base merges. */
@@ -1356,16 +1369,22 @@ export class TaskFlow {
     }
     // The merge guard above protects an action, not recovery after a button/API merge.
     // Stop first, then inspect the remote branch before any destructive cleanup.
-    try {
-      if (!this.deps.workers?.stop) {
-        this.deps.report(`#${ref} worker stop unavailable (session unknown); continuing follow-up`);
-      } else {
-        const outcome = await this.deps.workers.stop(this.number(ref));
-        this.deps.report(`#${ref} worker stop: ${outcome ?? "requested"}`);
-        this.deps.report(`#${ref} worker status after stop: ${await this.status(ref)}`);
+    // #275: with no worker record the PR never had a worker; the worker is absent,
+    // not unknown, and the stop is skipped silently.
+    if (!(await this.workerAbsent(ref))) {
+      try {
+        if (!this.deps.workers?.stop) {
+          this.deps.report(
+            `#${ref} worker stop unavailable (session unknown); continuing follow-up`
+          );
+        } else {
+          const outcome = await this.deps.workers.stop(this.number(ref));
+          this.deps.report(`#${ref} worker stop: ${outcome ?? "requested"}`);
+          this.deps.report(`#${ref} worker status after stop: ${await this.status(ref)}`);
+        }
+      } catch {
+        this.deps.report(`#${ref} worker stop failed; continuing follow-up`);
       }
-    } catch {
-      this.deps.report(`#${ref} worker stop failed; continuing follow-up`);
     }
     const branchHead = async () => {
       const data = await this.host.github.rest(
@@ -1550,7 +1569,8 @@ export class TaskFlow {
         this.config,
         this.env,
         this.deps,
-        (pr) => this.status(String(pr)),
+        // Merge recovery: an absent worker record is stopped, not unknown (#275).
+        (pr) => this.status(String(pr), true),
         undefined,
         this.deps.workers?.captureUsage
       );
@@ -1558,6 +1578,10 @@ export class TaskFlow {
       await step("session", async () => {
         if (!(await worktrees.eligible(task))) {
           return false;
+        }
+        if (await this.workerAbsent(ref)) {
+          // #275: a PR that never had a worker has no session to close or hide.
+          return true;
         }
         if (!this.deps.workers?.close) {
           this.deps.report(`#${ref} session not closed: backend unavailable`);

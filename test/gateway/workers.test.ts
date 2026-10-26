@@ -737,6 +737,7 @@ test("conflict turn switches the existing session to the cheapest family and res
   );
   f.meta.model = "sol";
   await f.service.command(["start", "31", "--owner-approved"]);
+  vi.mocked(f.hooks.setModel).mockClear();
   expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(2);
   expect(f.record().model.family).toBe("glm");
   expect(f.record().conflictModel.family).toBe("sol");
@@ -753,6 +754,8 @@ test("conflict turn switches the existing session to the cheapest family and res
   await f.service.resume(31, "Read the PR for normal review work");
   expect(f.record().model.family).toBe("sol");
   expect(f.record().conflictModel).toBeUndefined();
+  expect(f.hooks.setModel).not.toHaveBeenCalled();
+  expect(f.meta.model).toBe("sol");
   expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
     3,
     31,
@@ -839,7 +842,10 @@ test("session-less conflict starts a fixed generic fixer even for a non-draft di
   f.meta.draft = false;
   f.meta.issue = undefined;
   f.meta.pointsOpen = undefined;
+  f.meta.model = "sol";
   expect(await f.service.resolveConflict(31, "dev", ["conflict.txt"])).toBe(3);
+  expect(f.hooks.setModel).not.toHaveBeenCalled();
+  expect(f.meta.model).toBe("sol");
   expect(f.record().model.family).toBe("glm");
   expect(f.record().points_open).toBeNull();
   expect(f.record().issue).toBeNull();
@@ -2231,6 +2237,14 @@ test("merge status does not treat unreachable recorded sessions as stopped", asy
   const f = fixture([...start, { path: "/api/session/active", status: 503 }]);
   await f.service.command(["start", "31"]);
   await expect(f.service.mergeStatus(31, true)).rejects.toThrow();
+  f.done();
+});
+
+test("recorded reports whether any worker session record exists for the PR", async () => {
+  const f = fixture([...start]);
+  expect(await f.service.recorded(31)).toBe(false);
+  await f.service.command(["start", "31"]);
+  expect(await f.service.recorded(31)).toBe(true);
   f.done();
 });
 const wakeRequest: Request = {

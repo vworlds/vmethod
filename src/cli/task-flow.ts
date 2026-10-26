@@ -10,10 +10,17 @@ export async function taskFlowVerb(
 ): Promise<string> {
   const ctx = context(env);
   if (verb === "resolve-conflicts") {
-    if (args.length !== 1) {
-      throw new Error("Usage: resolve-conflicts <pr>");
+    if (
+      !/^[1-9]\d*$/.test(args[0] ?? "") ||
+      (args.length !== 1 && !(args.length === 2 && args[1] === "--retry"))
+    ) {
+      throw new Error("Usage: resolve-conflicts <pr> [--retry]");
     }
-    return transport.call("resolveConflicts", { ref: args[0] }, ctx);
+    return transport.call(
+      "resolveConflicts",
+      { ref: args[0], ...(args.length === 2 ? { retry: true } : {}) },
+      ctx
+    );
   }
   if (verb === "ask") {
     if (args.length !== 2) {

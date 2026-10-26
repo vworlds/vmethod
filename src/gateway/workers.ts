@@ -1149,6 +1149,10 @@ export class WorkerService {
           : "stopped";
     });
   }
+  /** #275: whether any session record exists for the PR; a PR without one never had a worker. */
+  async recorded(pr: number): Promise<boolean> {
+    return (await this.locked(pr, async () => this.read(pr))) !== undefined;
+  }
   /** Hide a stopped opencode session without deleting history; failures remain retryable. */
   async closeSession(pr: number): Promise<boolean> {
     try {
@@ -1280,7 +1284,7 @@ export class WorkerService {
       }
     }
   }
-  /** Run a fixed conflict turn on the cheapest ungated configured backend-compatible family. */
+  /** Run a fixed conflict turn on the cheapest ungated backend-compatible family, without editing card Model. */
   async resolveConflict(pr: number, base: string, files: string[]): Promise<2 | 3> {
     const meta = await this.hooks.metadata(pr);
     if (
@@ -1378,7 +1382,10 @@ export class WorkerService {
     const meta = await this.hooks.metadata(record.pr);
     const reason = why.includes("conflict") ? "conflict-only" : "orchestrator-judgement";
     await this.changeModel(record, model, meta, why, boundary, reason);
-    await this.hooks.setModel(record.pr, model.family);
+    // Conflict backend switches are temporary session state, not a task Model edit.
+    if (reason !== "conflict-only") {
+      await this.hooks.setModel(record.pr, model.family);
+    }
     await this.hooks.modelComment(
       record.pr,
       `[orchestrator] NOTE: model switched to ${model.family} (${why.replace(/\s+/g, " ").trim()}); reason: ${reason}`
@@ -1718,7 +1725,9 @@ export class WorkerService {
         await this.setOpenCodeTitle(record);
       }
     }
-    await this.hooks.setModel(pr, model.family);
+    if (!conflictPrompt) {
+      await this.hooks.setModel(pr, model.family);
+    }
     return `Started ${record.id} for #${pr} on ${model.family}`;
   }
   async grade(pr: number, points?: number): Promise<string> {

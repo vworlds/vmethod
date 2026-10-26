@@ -781,8 +781,8 @@ class GatewayServer {
     });
   }
 
-  resolveConflicts: Handlers["resolveConflicts"] = async ({ ref }) =>
-    this.conflicts.resolve(this.localNumber(ref));
+  resolveConflicts: Handlers["resolveConflicts"] = async ({ ref, retry }) =>
+    this.conflicts.resolve(this.localNumber(ref), retry);
 
   private get verification(): VerificationService {
     return new VerificationService(
@@ -1107,6 +1107,7 @@ class GatewayServer {
       ...this.deps,
       workers: this.deps.workers ?? {
         status: (pr, forMerge) => this.workers.mergeStatus(pr, forMerge),
+        recorded: (pr) => this.workers.recorded(pr),
         stop: (pr) => this.workers.command(["stop", String(pr)]),
         close: (pr) => this.workers.closeSession(pr),
         captureUsage: (pr) => this.workers.captureUsage(pr),

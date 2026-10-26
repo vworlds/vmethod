@@ -983,6 +983,29 @@ of an interrupted process. The report is a terminal conflict result: it supersed
 the conflicted turn's queued card moves and restarts nothing else, and the same
 watcher cycle still reports the PR normally.
 
+A `starting` or `blocked` record also closes quietly when the current head is
+mergeable with the fetched current base, CI is green and non-stale, and the
+gateway confirms the fixer session is stopped (including no recorded session).
+A live or unknown session prevents recovery: inspect or stop it first. Blocked
+records remain pending for watcher reconciliation until recovered.
+
+Use `resolve-conflicts <pr> --retry` to retry a blocked `merge verify hook failed`
+record instead of closing it. With the fixer stopped, the command re-proves the
+current head against the recorded conflict/base, checks CI and runs verification
+again, even after the original dispatch deadline. It never launches another fixer
+or bypasses proof, escalated-path or current-base checks. Success restores the
+interrupted turn or carries the recorded approval through the normal merge path;
+a repeated failure stays blocked.
+
+For transition recovery on an older release without these paths, first confirm
+there is no live fixer with `worker status <pr>` (stop it with `worker stop <pr>`
+if necessary; unknown status is not proof of safety). Check the PR's current base,
+mergeability and green CI, then remove only that PR's
+`<state-root>/conflicts/<pr>.json` record. The state root is
+`${XDG_STATE_HOME:-$HOME/.local/state}/vmethod/<stateName>`. Do not remove another
+PR's record or an owned lock. Removing a record does not certify a resolution or
+carry approval; use the normal review/merge gates afterward.
+
 If the head already contains the fetched live base and is not conflicting, the
 command reports `nothing to resolve for #n` without a comment, board change or
 update-branch call. GitHub's specific update-branch 422 response saying there are
@@ -1001,9 +1024,10 @@ or board transitions; only genuine conflicts beyond the limits are escalated.
    while it runs is queued, not allowed to switch it back early, and it follows
    the stale-wake rule under [Task-flow commands](#task-flow-commands) at the
    drain. Both
-   switches retain usage baselines and post the normal model NOTE.
+   switches retain usage baselines and post the normal model NOTE, but never edit
+   the card's Model: the cheaper family is temporary session state only.
 3. Otherwise a generic fixer starts in the PR's guarded linked worktree on the
-   cheapest ungated, priced family. Its fixed prompt limits edits to conflicted
+   cheapest ungated, priced family without changing the card's Model. Its fixed prompt limits edits to conflicted
    hunks, requires any installed merge-scope verify hook and CI, forbids merging, and requires
    `[worker] BLOCKED` with conflicting files when it cannot comply.
 
@@ -1098,7 +1122,9 @@ stopped opencode session from OpenChamber by setting
 `metadata.openchamber.work.state` to `closed`, with `closedAt` and
 `closedBy: vmethod`. It reads and preserves all other metadata, including links;
 it never deletes the session, title or history. Already-closed sessions are a no-op.
-Claude sessions are skipped because they have no OpenChamber list. A failed update
+Claude sessions are skipped because they have no OpenChamber list. A PR with no
+worker record was never worked by vmethod: it has no session to hide and the step
+completes without contacting any backend. A failed update
 reports `session not closed: <reason>` without failing the merge; recovery retries
 the unfinished session step.
 
@@ -1142,15 +1168,22 @@ Tracked modifications and untracked non-ignored files are retained; ignored file
 such as `node_modules` and `.tmp/` may be removed. Local commits must be reachable
 from the merged PR head or the local base branch; for an unmerged closed PR, only
 the base proves containment. Otherwise cleanup reports unpushed work and retains
-the tree. A live or unknown session, unavailable commit objects or failed safety
-read also retains data. Inspect the reported reason before retrying; do not bypass
+the tree. A live or unresolvable recorded session, unavailable commit objects or
+failed safety read also retains data; a PR without any worker record is treated
+as absent (#275), not unknown, and never retains data for a session that does not
+exist. Inspect the reported reason before retrying; do not bypass
 these checks with a manual forced removal.
 
 Merge follow-up journals live in the per-user state directory. A partial failure
 resumes board, issue, branch and checkout work without merging again. Already-merged
 owner button merges receive the same follow-up; bad historical titles only warn.
 After a merge, worker shutdown is best-effort and its outcome is reported; live or
-unknown sessions do not block recovery. The remote branch head is then re-read.
+unknown sessions do not block recovery. A PR whose worker record exists but cannot
+be resolved still gets today's cautious treatment: the failed stop is reported and
+cleanup retains the tree until inspected. A PR with no worker record, for example a
+hand-made task PR, was never worked by a vmethod worker: the follow-up skips the
+stop silently, needs no session close and its eligible worktree is removed (#275).
+The remote branch head is then re-read.
 Any commits beyond the merged PR head are reported as
 `post-merge commits on <branch>: <shas>` and the branch is kept for a follow-up PR.
 Otherwise cleanup continues with issue closure, board Done, branch deletion and

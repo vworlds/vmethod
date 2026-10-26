@@ -36,6 +36,7 @@ import { GitHubClient } from "../../src/gateway/client.js";
 import { WriteJournal } from "../../src/gateway/write-journal.js";
 import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
 import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
+import { ConflictService, type ConflictHooks } from "../../src/gateway/conflicts.js";
 
 // Issue.blockedBy connection shape verified live by the orchestrator on PR 280.
 function blockers(
@@ -2571,6 +2572,37 @@ test("worker activity outside a dispatched fixer still revives the conflict card
     field: "Progress",
     value: "🤖🔨",
   });
+  f.done();
+});
+
+test("a late fixer READY after escalation cannot move an Approved card to Executing", async () => {
+  const f = setup();
+  f.task();
+  object(f.cards[0].status).name = "Approved";
+  object(f.cards[0].progress).text = "🤖🚫";
+  const directory = join(f.dir, "conflicts");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "24.json"), JSON.stringify({ phase: "blocked", dispatched: true }));
+  const hooks = new Proxy({} as ConflictHooks, {
+    get: (_target, key) => {
+      throw new Error(`Unexpected conflict hook ${String(key)}`);
+    },
+  });
+  const conflicts = new ConflictService(f.root, f.config, f.env, f.deps, hooks);
+  f.conflictFixing = (pr) => conflicts.fixing(pr);
+  const loop = f.loop();
+  await f.ack(loop, await f.tick(loop));
+  // Simulate escalation after the watcher's initial Approved-column observation.
+  object(f.cards[0].progress).text = "🤖🚫";
+  f.writes.length = 0;
+  f.advance();
+  f.comment("[worker] READY FOR REVIEW (round 1)", 1);
+  const events = await f.tick(loop);
+  expect(events.some((event) => event.kind === "ready")).toBe(true);
+  expect(f.writes).toEqual([]);
+  expect(object(f.cards[0].status).name).toBe("Approved");
+  expect(object(f.cards[0].progress).text).toBe("🤖🚫");
+  await f.ack(loop, events);
   f.done();
 });
 

@@ -87,7 +87,18 @@ test("resolve-conflicts routes only its single PR argument through the orchestra
     { operation: "resolveConflicts", input: { ref: "27" }, ctx: { role: "orchestrator" } },
   ]);
   calls.length = 0;
-  for (const args of [[], ["27", "--force"]]) {
+  await taskFlowVerb(transport, "resolve-conflicts", ["27", "--retry"], {
+    VMETHOD_ROLE: "orchestrator",
+  });
+  expect(calls).toEqual([
+    {
+      operation: "resolveConflicts",
+      input: { ref: "27", retry: true },
+      ctx: { role: "orchestrator" },
+    },
+  ]);
+  calls.length = 0;
+  for (const args of [[], ["27", "--force"], ["27", "--retry", "--retry"], ["--retry"]]) {
     await expect(
       taskFlowVerb(transport, "resolve-conflicts", args, { VMETHOD_ROLE: "orchestrator" })
     ).rejects.toThrow("Usage: resolve-conflicts");
