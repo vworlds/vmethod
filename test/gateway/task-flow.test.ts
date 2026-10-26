@@ -2246,6 +2246,75 @@ test("merged follow-up stops before removing the real task directory and branch,
   f.done();
 }, 15000);
 
+test("a merged PR without a worker record skips the stop silently and removes its worktree", async () => {
+  const f = fixture();
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: f.root,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  git("init", "-b", "dev");
+  git("config", "user.name", "Test");
+  git("config", "user.email", "test@example.invalid");
+  writeFileSync(join(f.root, ".gitignore"), "node_modules/\n.tmp/\n.worktrees/\n");
+  git("add", ".gitignore");
+  git("commit", "-m", "initial");
+  f.set({ state: "MERGED", head: git("rev-parse", "HEAD"), changed: false });
+  const path = join(f.root, ".worktrees/auto-8-task");
+  git("worktree", "add", "-b", "8-task", path);
+  mkdirSync(join(path, "node_modules"));
+  writeFileSync(join(path, "node_modules/payload"), "ignored");
+  f.deps.workers!.recorded = async () => false;
+  let stops = 0,
+    closes = 0;
+  f.deps.workers!.stop = async () => {
+    stops++;
+    throw new Error("Stop must not be attempted without a worker record");
+  };
+  f.deps.workers!.close = async () => {
+    closes++;
+    return true;
+  };
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (
+      file === "git" &&
+      (["worktree", "for-each-ref", "symbolic-ref", "rev-list", "branch", "update-ref"].includes(
+        args[0]
+      ) ||
+        args.join(" ") === "rev-parse --git-common-dir" ||
+        args.join(" ") === "status --porcelain --untracked-files=all")
+    ) {
+      return execFileSync(file, [...args], {
+        cwd: options?.cwd,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+    return exec(file, args, options);
+  };
+  await f.flow().merge("27");
+  expect(stops).toBe(0);
+  expect(closes).toBe(0);
+  expect(existsSync(path)).toBe(false);
+  expect(git("for-each-ref", "--format=%(refname)", "refs/heads/8-task")).toBe("");
+  expect(f.events.some((event) => event.includes("worker stop"))).toBe(false);
+  expect(f.events.some((event) => event.includes("session not closed"))).toBe(false);
+  expect(f.events.some((event) => event.includes("skipped:"))).toBe(false);
+  const journal = JSON.parse(
+    readFileSync(
+      join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+      "utf8"
+    )
+  );
+  expect(journal.done).toContain("session");
+  expect(journal.done).toContain("worktree");
+  f.done();
+}, 15000);
+
 test("open-task --from merges the source branch with a merge commit that keeps its commits and authors", async () => {
   const f = fixture();
   // The orchestrator session exports GIT_AUTHOR_*/GIT_COMMITTER_*; strip them so
@@ -3387,8 +3456,51 @@ test("a PR with no recorded worker session merges through the real session guard
     modelApproval: unexpected,
   });
   f.deps.workers!.status = (pr, forMerge) => workers.mergeStatus(pr, forMerge);
+  f.deps.workers!.recorded = (pr) => workers.recorded(pr);
+  f.deps.workers!.stop = async () => {
+    f.events.push("worker-stop");
+    throw new Error("Stop must not be attempted without a worker record");
+  };
+  f.deps.workers!.close = async () => {
+    f.events.push("worker-close");
+    return true;
+  };
   await expect(f.flow().status("27")).resolves.toBe("unknown");
   await expect(f.flow().merge("27")).resolves.toBe("Merged #27");
+  // #275: with no record the worker is absent; the follow-up skips stop and close silently.
+  expect(f.events).not.toContain("worker-stop");
+  expect(f.events).not.toContain("worker-close");
+  expect(f.events.some((event) => event.includes("worker stop"))).toBe(false);
+  expect(f.events.some((event) => event.includes("session not closed"))).toBe(false);
+  const journal = JSON.parse(
+    readFileSync(
+      join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+      "utf8"
+    )
+  );
+  expect(journal.done).toContain("session");
+  f.done();
+});
+
+test("a recorded worker that cannot be resolved keeps the cautious stop and cleanup skip", async () => {
+  const f = fixture();
+  f.set({ state: "MERGED", worker: "unknown" });
+  f.deps.workers!.recorded = async () => true;
+  f.deps.workers!.stop = async () => {
+    f.events.push("worker-stop");
+    throw new Error("session unknown");
+  };
+  await expect(f.flow().merge("27")).resolves.toBe("Merged #27");
+  expect(f.events).toContain("worker-stop");
+  expect(f.events.some((event) => event.includes("worker stop failed"))).toBe(true);
+  const journal = JSON.parse(
+    readFileSync(
+      join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+      "utf8"
+    )
+  );
+  expect(journal.done).not.toContain("session");
+  expect(journal.done).not.toContain("worktree");
   f.done();
 });
 

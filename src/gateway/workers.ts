@@ -1149,6 +1149,10 @@ export class WorkerService {
           : "stopped";
     });
   }
+  /** #275: whether any session record exists for the PR; a PR without one never had a worker. */
+  async recorded(pr: number): Promise<boolean> {
+    return (await this.locked(pr, async () => this.read(pr))) !== undefined;
+  }
   /** Hide a stopped opencode session without deleting history; failures remain retryable. */
   async closeSession(pr: number): Promise<boolean> {
     try {
