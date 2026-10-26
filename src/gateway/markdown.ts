@@ -128,10 +128,12 @@ export async function checkMarkdown(
       });
       for (const [index, diagram] of diagrams.entries()) {
         try {
-          const parsed = (await mermaidModule.default.parse(diagram.source)) as {
-            diagramType?: unknown;
-          };
-          if (!["flowchart", "flowchart-v2", "graph"].includes(String(parsed.diagramType))) {
+          const parsed = (await mermaidModule.default.parse(diagram.source)) as
+            { diagramType?: unknown } | undefined;
+          if (
+            !parsed ||
+            !["flowchart", "flowchart-v2", "graph"].includes(String(parsed.diagramType))
+          ) {
             continue;
           }
           const diagramModel = await mermaidModule.default.mermaidAPI.getDiagramFromText(
