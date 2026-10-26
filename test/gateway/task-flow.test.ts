@@ -1905,6 +1905,131 @@ test("merge session failure is nonfatal and retried without replaying completed 
   f.done();
 });
 
+test("merge follow-up captures worker usage before removing the worktree, and retry is a no-op", async () => {
+  const f = fixture();
+  const order: string[] = [];
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: f.root,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  git("init", "-b", "dev");
+  git("config", "user.name", "Test");
+  git("config", "user.email", "test@example.invalid");
+  writeFileSync(join(f.root, ".gitignore"), "node_modules/\n.tmp/\n.worktrees/\n");
+  git("add", ".gitignore");
+  git("commit", "-m", "initial");
+  f.set({ state: "MERGED", head: git("rev-parse", "HEAD"), changed: false });
+  const path = join(f.root, ".worktrees/auto-8-task");
+  git("worktree", "add", "-b", "8-task", path);
+  mkdirSync(join(path, "node_modules"));
+  writeFileSync(join(path, "node_modules/payload"), "ignored");
+  f.deps.workers!.captureUsage = async (pr) => {
+    expect(pr).toBe(27);
+    const journal = JSON.parse(
+      readFileSync(
+        join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+        "utf8"
+      )
+    );
+    expect(journal.done).not.toContain("worktree");
+    order.push("capture");
+    return true;
+  };
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (
+      file === "git" &&
+      (["worktree", "for-each-ref", "symbolic-ref", "rev-list", "branch", "update-ref"].includes(
+        args[0]
+      ) ||
+        args.join(" ") === "rev-parse --git-common-dir" ||
+        args.join(" ") === "status --porcelain --untracked-files=all")
+    ) {
+      if (args[0] === "worktree" && args[1] === "remove") {
+        expect(order).toEqual(["capture"]);
+        order.push("remove");
+      }
+      return execFileSync(file, [...args], {
+        cwd: options?.cwd,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+    return exec(file, args, options);
+  };
+  await f.flow().merge("27");
+  await f.flow().merge("27");
+  expect(order).toEqual(["capture", "remove"]);
+  expect(existsSync(path)).toBe(false);
+  f.done();
+});
+
+test("merge follow-up retains the worktree while usage capture fails, then removes it", async () => {
+  const f = fixture();
+  const git = (...args: string[]) =>
+    execFileSync("git", args, {
+      cwd: f.root,
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  git("init", "-b", "dev");
+  git("config", "user.name", "Test");
+  git("config", "user.email", "test@example.invalid");
+  writeFileSync(join(f.root, ".gitignore"), "node_modules/\n.tmp/\n.worktrees/\n");
+  git("add", ".gitignore");
+  git("commit", "-m", "initial");
+  f.set({ state: "MERGED", head: git("rev-parse", "HEAD"), changed: false });
+  const path = join(f.root, ".worktrees/auto-8-task");
+  git("worktree", "add", "-b", "8-task", path);
+  mkdirSync(join(path, "node_modules"));
+  writeFileSync(join(path, "node_modules/payload"), "ignored");
+  let capture = false;
+  f.deps.workers!.captureUsage = async () => capture;
+  let removals = 0;
+  const exec = f.deps.exec;
+  f.deps.exec = async (file, args, options) => {
+    if (
+      file === "git" &&
+      (["worktree", "for-each-ref", "symbolic-ref", "rev-list", "branch", "update-ref"].includes(
+        args[0]
+      ) ||
+        args.join(" ") === "rev-parse --git-common-dir" ||
+        args.join(" ") === "status --porcelain --untracked-files=all")
+    ) {
+      if (args[0] === "worktree" && args[1] === "remove") {
+        removals++;
+      }
+      return execFileSync(file, [...args], {
+        cwd: options?.cwd,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+    return exec(file, args, options);
+  };
+  expect(await f.flow().merge("27")).toContain("Merged");
+  expect(removals).toBe(0);
+  expect(existsSync(path)).toBe(true);
+  const journal = JSON.parse(
+    readFileSync(
+      join(f.env.XDG_STATE_HOME, "vmethod", String(f.config.stateName), "merge-27.json"),
+      "utf8"
+    )
+  );
+  expect(journal.done).not.toContain("worktree");
+  capture = true;
+  expect(await f.flow().merge("27")).toContain("Merged");
+  expect(removals).toBe(1);
+  expect(existsSync(path)).toBe(false);
+  f.done();
+});
+
 test.each(["live", "unknown"] as const)(
   "merge recovery never closes a %s session",
   async (worker) => {

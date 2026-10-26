@@ -27,6 +27,8 @@ interface Request {
   method?: string;
   body?: unknown;
   data?: unknown;
+  /** Raw non-enveloped body for HTTP error responses (the client reads `error.message`). */
+  error?: unknown;
   status?: number;
   cursor?: { previous?: string; next?: string };
 }
@@ -35,10 +37,11 @@ function fixture(
   priced = false,
   solGate: "owner" | "none" = "owner",
   flash = false,
-  fable = false
+  fable = false,
+  worktreeName = "9-task"
 ) {
   const root = validProject();
-  const directory = join(root, ".worktrees/9-task");
+  const directory = join(root, ".worktrees", worktreeName);
   mkdirSync(join(directory, "node_modules/.bin"), { recursive: true });
   mkdirSync(join(directory, ".tmp"));
   writeFileSync(join(directory, "node_modules/.bin/vmethod"), "fake", { mode: 0o755 });
@@ -155,6 +158,9 @@ function fixture(
       }
       if (target.pathname.endsWith("/prompt")) {
         prompts.push(JSON.parse(String(init?.body)).text);
+      }
+      if (expected.error !== undefined) {
+        return Response.json(expected.error, { status: expected.status ?? 200 });
       }
       return new Response(
         JSON.stringify({
@@ -340,6 +346,143 @@ test("grade emits delivery and segment event metrics without qualitative notes a
   saved.segments[1].switchReason = "uncontrolled-text";
   writeFileSync(file, JSON.stringify(saved));
   await expect(f.service.grade(31, 5)).rejects.toThrow("Invalid model-log record");
+  f.done();
+});
+
+/** A status poll whose session GET reports small cumulative usage. */
+const usagePoll = (usage: { input: number; output: number; cached: number }): Request[] =>
+  status().map((request) =>
+    request.path === "/api/session/ses_fake"
+      ? {
+          ...request,
+          data: {
+            id: "ses_fake",
+            cost: 0,
+            tokens: {
+              input: usage.input,
+              output: usage.output,
+              reasoning: 0,
+              cache: { read: usage.cached, write: 0 },
+            },
+          },
+        }
+      : request.path.endsWith("/message")
+        ? { ...request, path: request.path + "?limit=20" }
+        : request
+  );
+
+test("merge-time usage capture stores tokens so a later grade reads them after the worktree was removed", async () => {
+  const f = fixture(
+    [...start, ...usagePoll({ input: 12, output: 30, cached: 8 })],
+    true,
+    "owner",
+    false,
+    false,
+    "auto-9-task"
+  );
+  await f.service.command(["start", "31"]);
+  expect(f.record().usageCaptured).toBeUndefined();
+  expect(await f.service.captureUsage(31)).toBe(true);
+  expect(f.record().usageCaptured).toBe(true);
+  expect(f.record().segments[0].usage).toEqual({
+    tokens: { input: 12, output: 30, cached: 8 },
+    reportedUsd: 0,
+  });
+  // Idempotent: the second capture never contacts the backend.
+  expect(await f.service.captureUsage(31)).toBe(true);
+  rmSync(f.directory, { recursive: true, force: true });
+  f.meta.state = "MERGED";
+  f.meta.merged = true;
+  f.meta.closedAt = "1970-01-01T00:00:20.000Z";
+  f.meta.headOid = "c".repeat(40);
+  f.meta.diff = { files: 3, additions: 20, deletions: 4 };
+  const expectedUsd = (12 * 2 + 30 * 10 + 8 * 0.2) / 1e6;
+  await f.service.grade(31, 5);
+  const value = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
+  expect(value.tokens).toEqual({ input: 12, output: 30, cached: 8 });
+  expect(value.usd).toBeCloseTo(expectedUsd, 10);
+  expect(value.costCoverage).toBe("partial");
+  expect(value.segments[0]).toMatchObject({ usd: value.usd, outcome: "merged" });
+  expect(vi.mocked(f.hooks.gradeComment!).mock.calls[0]?.[1] ?? "").toContain("USD ≥ $0.000326");
+  f.done();
+});
+
+test("usage capture is a no-op without a record and reports a session it cannot resolve", async () => {
+  const f = fixture([
+    ...start,
+    { path: "/api/session/active", data: {} },
+    { path: "/api/session/ses_fake", data: { id: "ses_fake" } },
+    {
+      path: "/api/session/ses_fake/permission",
+      status: 404,
+      error: { error: { message: "Location not found: /example/project/.worktrees/auto-9-task" } },
+    },
+  ]);
+  vi.mocked(f.deps.report).mockClear();
+  expect(await f.service.captureUsage(31)).toBe(true);
+  expect(f.deps.report).not.toHaveBeenCalled();
+  await f.service.command(["start", "31"]);
+  expect(await f.service.captureUsage(31)).toBe(false);
+  expect(f.deps.report).toHaveBeenCalledWith(
+    expect.stringContaining(
+      "#31 usage not captured: opencode HTTP 404 on GET /api/session/ses_fake/permission: Location not found"
+    )
+  );
+  expect(f.record().usageCaptured).toBeUndefined();
+  f.done();
+});
+
+test.each([
+  {
+    name: "the session's location is gone",
+    poll: [
+      { path: "/api/session/active", data: {} },
+      { path: "/api/session/ses_fake", data: { id: "ses_fake" } },
+      {
+        path: "/api/session/ses_fake/permission",
+        status: 404,
+        error: {
+          error: { message: "Location not found: /example/project/.worktrees/auto-9-task" },
+        },
+      },
+    ],
+    detail: "opencode HTTP 404 on GET /api/session/ses_fake/permission: Location not found",
+  },
+  {
+    name: "opencode no longer knows the session",
+    poll: [
+      { path: "/api/session/active", data: {} },
+      {
+        path: "/api/session/ses_fake",
+        status: 404,
+        error: { error: { message: "no such session" } },
+      },
+    ],
+    detail: "session unknown",
+  },
+])("grade without stored usage fails clearly when $name", async ({ poll, detail }) => {
+  // The prefixed worktree keeps resolving to the recorded path after removal,
+  // exactly as cleanup leaves it; the location 404 then reaches opencode.
+  const f = fixture([...start, ...poll], false, "owner", false, false, "auto-9-task");
+  await f.service.command(["start", "31"]);
+  rmSync(f.directory, { recursive: true, force: true });
+  f.meta.state = "MERGED";
+  f.meta.merged = true;
+  f.meta.closedAt = "1970-01-01T00:00:20.000Z";
+  f.meta.headOid = "c".repeat(40);
+  const error = await f.service.grade(31, 5).then(
+    () => null,
+    (thrown) => thrown as Error
+  );
+  expect(error?.message).toMatch(
+    /^Cannot grade #31: no usage was stored before the worktree was removed and worker session ses_fake can no longer be resolved \(/
+  );
+  expect(
+    error?.message?.endsWith("); the delivery's cost, usage and learning record cannot be graded")
+  ).toBe(true);
+  expect(error?.message).toContain(detail);
+  expect(existsSync(join(f.root, ".vmethod/model-log.jsonl"))).toBe(false);
+  expect(f.hooks.setEstimate).not.toHaveBeenCalled();
   f.done();
 });
 
@@ -1093,7 +1236,6 @@ test("watcher fully prices 221 requests across three pages, then polls and grade
       },
       { path: "/api/session/ses_fake/message?limit=200&cursor=oldest", data: [oldest] },
       ...poll(true),
-      ...poll(true),
     ],
     true
   );
@@ -1118,6 +1260,7 @@ test("watcher fully prices 221 requests across three pages, then polls and grade
     usd: expect.closeTo(16.685, 8),
   });
   f.meta.state = "CLOSED";
+  // Grade reads stored usage; it no longer re-resolves the session (#262).
   await f.service.grade(31, 3);
   expect(f.hooks.setCost).toHaveBeenCalledWith(31, "$16.69");
   expect(
@@ -1186,6 +1329,8 @@ test("Claude replacement snapshots usage and cumulative reported cost across fre
   await f.service.command(["start", "31", "--replace"]);
   const second = { ...claudeResults[0], session_id: f.record().id };
   writeFileSync(log, [first, second].map((result) => JSON.stringify(result)).join("\n") + "\n");
+  // Poll once so the stored record carries the final segment usage (#262).
+  await f.service.watchStatus(31);
   f.meta.state = "CLOSED";
   await f.service.grade(31, 3);
   const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
@@ -1199,10 +1344,7 @@ test("Claude replacement snapshots usage and cumulative reported cost across fre
 });
 
 test("status persists provider tokens and API dollars, grading uses only this PR even with another delivery on the same issue", async () => {
-  const f = fixture(
-    [...start, ...measuredStatus(), ...measuredStatus(2), ...measuredStatus(2)],
-    true
-  );
+  const f = fixture([...start, ...measuredStatus(), ...measuredStatus(2)], true);
   await f.service.command(["start", "31"]);
   expect(await f.service.command(["status", "31"])).toContain("$1.193840");
   const other = f.record();
@@ -1215,6 +1357,7 @@ test("status persists provider tokens and API dollars, grading uses only this PR
   });
   f.meta.state = "MERGED";
   f.meta.merged = true;
+  // Grade reads the stored usage instead of re-resolving the session (#262).
   await f.service.grade(31, 5);
   expect(f.hooks.setCost).toHaveBeenCalledWith(31, "≥ $2.39");
   expect(f.hooks.gradeComment).toHaveBeenCalledWith(9, expect.stringContaining("$2.387679"));
@@ -1259,6 +1402,8 @@ test("model switch snapshots cumulative baseline and grades each family's delta"
     "[orchestrator] NOTE: model switched to sol (owner-request); reason: orchestrator-judgement"
   );
   f.meta.state = "MERGED";
+  // Poll once so the stored record holds the post-switch usage (#262).
+  await f.service.watchStatus(31);
   await f.service.grade(31, 5);
   const record = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
   expect(record.segments.map((segment: { usd: number }) => segment.usd)).toEqual([
@@ -1325,6 +1470,8 @@ test.each([false, true])(
       );
     }
     f.meta.state = "CLOSED";
+    // Poll once so the stored record carries the post-switch usage (#262).
+    await f.service.watchStatus(31);
     await f.service.grade(31, 3);
     expect(f.record().segments.map((segment: { usd: number }) => segment.usd)).toEqual([
       expect.closeTo(1.215, 8),
@@ -1411,6 +1558,8 @@ test.each(["model", "time", "repeated model", "excess history", "cached excess"]
       JSON.stringify(record)
     );
     f.meta.state = "CLOSED";
+    // Poll once so the stored record carries the final segment usage (#262).
+    await f.service.watchStatus(31);
     await f.service.grade(31, 3);
     const saved = f.record();
     expect(saved.segments[0]).toEqual(legacy);
@@ -2471,7 +2620,6 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
       body: { model: { providerID: "fake", id: "sol" } },
     },
     { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
-    ...usageStatus(),
   ]);
   await f.service.command(["start", "31"]);
   await expect(f.service.command(["model", "31", "sol"])).rejects.toThrow("--owner-approved");
@@ -2488,6 +2636,7 @@ test("model gate refuses before mutation; switch keeps id and grade writes issue
   expect(f.prompts).toHaveLength(1);
   f.meta.state = "MERGED";
   f.meta.merged = true;
+  // Grade reads the stored segment usage instead of re-resolving the session (#262).
   vi.mocked(f.hooks.submitLearnings!).mockRejectedValueOnce(new Error("Submission unavailable"));
   const stagedSummary = await f.service.grade(31, 20);
   expect(stagedSummary).toContain("Graded PR #31: issue #9 Estimate 20");

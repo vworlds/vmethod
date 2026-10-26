@@ -378,6 +378,14 @@ the existing watcher poll updates the task PR card automatically, rounded to two
 formatted as `$0.00` on the board (the model log and GRADE text keep full precision). Configure family prices
 and migrate the board as described in [worker cost accounting](learnings.md#worker-cost-and-model-log-migration).
 
+Grade reads the stored segment usage from the worker record instead of resolving
+the session whenever the record already holds usage — including the merge-time
+capture described in [task worktree cleanup](#task-worktree-cleanup) (#262). Only
+a record with nothing stored still resolves the session, and when that session is
+missing the grade refuses with `Cannot grade #<pr>: no usage was stored …` instead
+of forwarding opencode's raw 404; the delivery's cost, usage and learning record
+are then not grader-recoverable.
+
 Records under `$XDG_STATE_HOME/vmethod/<stateName>/workers/<pr>.json` hold session
 identity, repository, issue, worktree, opening Estimate and timestamped model
 segments. Writes use a per-PR exclusive lock and atomic rename. A lock left after
@@ -1050,6 +1058,13 @@ it never deletes the session, title or history. Already-closed sessions are a no
 Claude sessions are skipped because they have no OpenChamber list. A failed update
 reports `session not closed: <reason>` without failing the merge; recovery retries
 the unfinished session step.
+
+Before any removal, cleanup also captures the stopped worker session's final usage:
+one status poll stores tokens, USD and the model segments in the PR's worker record
+under the gateway state directory, and the record is marked captured (#262). A failed
+capture reports `usage not captured: <reason>` and retains the tree, so removal is
+retried together with the capture. Every cleanup path (merge follow-up, `worker stop
+--cleanup` and `worktrees --prune`) runs the same capture through its hook.
 
 OpenCode requires the session's location directory for PATCH. If an old task's
 tree is already gone and the update returns 404, cleanup temporarily creates an

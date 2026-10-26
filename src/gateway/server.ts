@@ -251,7 +251,8 @@ class GatewayServer {
       this.env,
       this.deps,
       (pr) => (this.deps.workers ? this.deps.workers.status(pr) : this.workers.mergeStatus(pr)),
-      (pr) => this.workers.closeSession(pr)
+      (pr) => this.workers.closeSession(pr),
+      (pr) => this.workers.captureUsage(pr)
     );
   }
 
@@ -1087,6 +1088,7 @@ class GatewayServer {
         status: (pr, forMerge) => this.workers.mergeStatus(pr, forMerge),
         stop: (pr) => this.workers.command(["stop", String(pr)]),
         close: (pr) => this.workers.closeSession(pr),
+        captureUsage: (pr) => this.workers.captureUsage(pr),
         resume: (pr, prompt) => this.workers.resume(pr, prompt),
         clearWake: (pr) => this.workers.clearWake(pr),
       },
