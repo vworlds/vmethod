@@ -188,6 +188,14 @@ QUESTION asks for a blocking decision; BLOCKED reports an external obstacle with
 evidence. READY requires green CI and no unresolved blockers; local green alone
 is not READY.
 
+## Ending a turn
+
+After posting a protocol comment (READY, QUESTION, DESIGN, BLOCKED or HANDOFF),
+end the turn with exactly one line, `<HEADING> posted: <comment url>`, and
+nothing else: no summary, recap or next steps. `<HEADING>` is that comment's
+heading, including a round number for READY. The orchestrator reads the protocol
+thread on the PR, not your chat output.
+
 ## Stop and ask
 
 If clean implementation needs another repository's change, a contradictory rule

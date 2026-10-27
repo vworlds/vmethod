@@ -1380,9 +1380,12 @@ test("card conflict on an owner-approved card keeps Approved", async () => {
 test.each([
   [
     "changes",
-    "[orchestrator] REVIEW round 1 is on your PR; read it with vmethod read pr 27 --new and act.",
+    "[orchestrator] REVIEW round 1 is on your PR; read it with vmethod read pr 27 --new and act. End your turn with one line naming what you posted.",
   ],
-  ["answer", "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 27 --new and act."],
+  [
+    "answer",
+    "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 27 --new and act. End your turn with one line naming what you posted.",
+  ],
 ] as const)("review %s resumes the worker", async (outcome, prompt) => {
   const f = fixture();
   const file = join(f.root, "review.md");
@@ -1509,7 +1512,7 @@ test.each(["QUESTION", "BLOCKED", "DESIGN", "HANDOFF"] as const)(
       {
         pr: 27,
         prompt:
-          "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 27 --new and act.",
+          "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 27 --new and act. End your turn with one line naming what you posted.",
       },
     ]);
     f.done();
@@ -1619,7 +1622,7 @@ test("review reports queued delivery and uses the next review round", async () =
   f.deps.workers!.resume = async (pr, prompt) => {
     expect(pr).toBe(27);
     expect(prompt).toBe(
-      "[orchestrator] REVIEW round 4 is on your PR; read it with vmethod read pr 27 --new and act."
+      "[orchestrator] REVIEW round 4 is on your PR; read it with vmethod read pr 27 --new and act. End your turn with one line naming what you posted."
     );
     return "queued for #27";
   };
@@ -3968,7 +3971,8 @@ test("unchanged lockfile avoids install; release-hold posts GO, clears hold and 
   expect(f.resumes).toEqual([
     {
       pr: 27,
-      prompt: "[orchestrator] GO is on your PR; read it with vmethod read pr 27 --new and act.",
+      prompt:
+        "[orchestrator] GO is on your PR; read it with vmethod read pr 27 --new and act. End your turn with one line naming what you posted.",
     },
   ]);
   f.done();

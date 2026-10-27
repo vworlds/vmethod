@@ -804,6 +804,9 @@ test("worker start sends inline authority, task values and the non-negotiable ch
     "READY FOR REVIEW (round n), QUESTION or BLOCKED",
     "pr-comment 31 .tmp/<file>.md",
     "Never end a turn without posting READY, QUESTION or BLOCKED",
+    "After posting a protocol comment (READY, QUESTION, DESIGN, BLOCKED or HANDOFF), end the turn with exactly one line",
+    "<HEADING> posted: <comment url>",
+    "no summary, recap or next steps",
   ]) {
     expect(prompt).toContain(required);
   }
