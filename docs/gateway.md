@@ -1042,7 +1042,7 @@ active conflict record; resolve before handing over`): a handover must never
   and retry rather than overwriting the edit.
 
 `review changes`, `review answer` and `release-hold` send only a fixed notification:
-`[orchestrator] REVIEW round N is on your PR; read it with vmethod read pr <n> --new and act.`
+`[orchestrator] REVIEW round N is on your PR; read it with vmethod read pr <n> --new and act. End your turn with one line naming what you posted.`
 The other headings are `ANSWER` and `GO`. Free-form review text stays on the PR.
 Idle workers resume immediately. Busy or permission-waiting workers persist the
 notification and return `queued for #n`; the worker-status poll delivers queued
