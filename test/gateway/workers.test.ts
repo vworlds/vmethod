@@ -655,6 +655,66 @@ test("wake queues are skipped and wait refuses to prompt a worktree-gone session
   expect(f.prompts).toHaveLength(1);
 });
 
+test("stop reports a worktree-gone record as already stopped without posting an interrupt", async () => {
+  const f = fixture([...start, ...gonePoll]);
+  await f.service.command(["start", "31"]);
+  rmSync(f.directory, { recursive: true, force: true });
+  const saved = f.record();
+  saved.pendingConflict = {
+    model: { family: "glm", model: "fake/glm", kind: "opencode", gate: "none", tier: "cheap" },
+    base: "dev",
+  };
+  writeFileSync(join(f.root, "state/vmethod/example-state/workers/31.json"), JSON.stringify(saved));
+  // The fake serves only the three gonePoll requests: no interrupt POST arrives.
+  expect(await f.service.command(["stop", "31"])).toBe("#31 already stopped (worktree gone)");
+  expect(f.record().pendingConflict).toBeUndefined();
+  f.done();
+});
+
+test("start restarts a worktree-gone record without --replace, carrying history and sending no interrupt", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...usagePoll({ input: 12, output: 30, cached: 8 }),
+      ...gonePoll,
+      { path: "/api/session", method: "POST", data: { id: "ses_resumed" } },
+      {
+        path: "/api/session/ses_resumed/prompt",
+        method: "POST",
+        body: {
+          text: expect.stringContaining("You are a worker. The PR body is the task"),
+          delivery: "steer",
+        },
+      },
+      { path: "/api/session/ses_resumed", data: { id: "ses_resumed", title: "project#31" } },
+    ],
+    true
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.captureUsage(31);
+  rmSync(f.directory, { recursive: true, force: true });
+  expect(await f.service.command(["start", "31"])).toContain("Started ses_resumed for #31 on glm");
+  const segments = f.record().segments;
+  expect(segments).toHaveLength(2);
+  expect(segments[0].usage).toEqual({
+    tokens: { input: 12, output: 30, cached: 8 },
+    reportedUsd: 0,
+  });
+  expect(segments.at(-1).why).toBe("resume");
+  expect(f.record().id).toBe("ses_resumed");
+  f.done();
+});
+
+test("a live recorded session still requires --replace on start", async () => {
+  const f = fixture([...start, ...status()]);
+  await f.service.command(["start", "31"]);
+  await expect(f.service.command(["start", "31"])).rejects.toThrow(
+    "A live session already exists; use --replace"
+  );
+  expect(f.record().segments).toHaveLength(1);
+  f.done();
+});
+
 /** A usable record for a session whose worktree is gone, with stored usage for pricing. */
 const storedRecord = {
   version: 1 as const,
@@ -963,7 +1023,11 @@ test.each(["idle drain", "stop"])(
     );
     const after: Request[] =
       next === "stop"
-        ? [{ path: "/api/session/ses_fake/interrupt", method: "POST" }]
+        ? [
+            // #290: stop reads the session status before interrupting it.
+            ...measuredStatus(),
+            { path: "/api/session/ses_fake/interrupt", method: "POST" },
+          ]
         : [
             ...measuredStatus(),
             {
@@ -2795,6 +2859,8 @@ test("models, health, permission listing, log, stop, wait and all-session status
       path: "/api/session/ses_fake/message?limit=3",
       data: [{ type: "assistant", content: [{ type: "text", text: "hello" }] }],
     },
+    // #290: stop reads the session status before interrupting it.
+    ...status(),
     { path: "/api/session/ses_fake/interrupt", method: "POST" },
     ...status(true),
     ...status(),
