@@ -11,9 +11,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Temporary backward-compatibility fix, owner decision 2026-10-27 (#309):
+      # GitHub never advances pull_request.base.sha while a learning PR stays
+      # open, so the job kept running stale CLI code under this current workflow
+      # file; #247 failed exactly that way with the pre-#285 token-variable
+      # error. Check out the base branch tip instead, so the workflow file and
+      # the code it runs always match. It still never checks out PR head code.
+      # Remove this workaround and restore pull_request.base.sha by 2026-11-26.
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
