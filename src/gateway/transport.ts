@@ -45,6 +45,8 @@ export interface Operations {
     input: { ref: string; mergeCommit?: boolean; carryApproval?: string };
     output: string;
   };
+  /** Close an unmerged task PR without merging; card, worktree and issue follow-up belong to the watcher. */
+  closeTask: { input: { ref: string; comment?: string }; output: string };
   /** Orchestrator-only bounded conflict resolution and approval-carry reconciliation. */
   resolveConflicts: { input: { ref: string; retry?: boolean }; output: string };
   /** Orchestrator-only Development links; complete promotes, unlink demotes. Flags are exclusive. */

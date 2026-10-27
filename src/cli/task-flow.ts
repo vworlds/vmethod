@@ -138,6 +138,31 @@ export async function taskFlowVerb(
       ctx
     );
   }
+  if (verb === "close-task") {
+    const usage = "Usage: close-task <pr> [--comment file]";
+    if (!args.length) {
+      throw new Error(usage);
+    }
+    let comment: string | undefined;
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === "--comment" && comment === undefined) {
+        comment = args[++i];
+        if (!comment || comment.startsWith("--")) {
+          throw new Error(usage);
+        }
+      } else {
+        throw new Error(usage);
+      }
+    }
+    if (!/^[1-9]\d*$/.test(args[0])) {
+      throw new Error(usage);
+    }
+    return transport.call(
+      "closeTask",
+      { ref: args[0], ...(comment !== undefined ? { comment } : {}) },
+      ctx
+    );
+  }
   if (verb === "release-hold" && args.length === 1) {
     return transport.call("releaseHold", { ref: args[0] }, ctx);
   }

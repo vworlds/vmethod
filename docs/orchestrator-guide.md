@@ -301,6 +301,15 @@ the worker. Record base-only changes after owner approval rather than implying a
 different head was reviewed. Emergency overrides must be explicit and logged and
 never replace review.
 
+Abandoning a delivery — an answered spike, a superseded approach — is the
+orchestrator's `close-task <pr> [--comment file]` (vmethod 1.0, #288), never raw
+`gh`. It refuses PRs outside the configured repository, non-task PRs and closed
+PRs before any write, then stops the recorded worker like merge follow-up (no
+worker record skips silently), posts the optional checked comment and closes the
+PR unmerged. The watcher moves the card to Done, reports the worktree cleanup
+candidate and leaves a linked issue open for your LAUNCH decision; the command's
+output reminds you to run `grade <pr>` on every closed delivery, merged or not.
+
 Owner approval survives conflict fixes (owner rule, 2026-10-18). Do not ask for
 re-approval merely because the approved delivery needed conflicts resolved. Use
 `merge-task <pr> --carry-approval "<reason>"` after reviewing the resolution and
@@ -449,7 +458,8 @@ is complete. The watcher itself never writes that follow-up.
 When the watcher reports `NOT PLANNED #n`, post one short comment on the issue
 mentioning its requester so they know not to wait or fork locally. Quote the owner's
 reason when one was given. If the event says an open task PR remains, decide whether
-to close that PR; the watcher does not close it automatically.
+to close that PR with `close-task <pr>`; the watcher does not close it
+automatically.
 
 When several orchestrator sessions share one account, an item's author no longer
 identifies the session that owns it. Ask the owning session before acting rather

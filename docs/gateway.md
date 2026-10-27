@@ -988,6 +988,19 @@ active conflict record; resolve before handing over`): a handover must never
   `revise estimates: …` for own-repository dependents. Missing native links never
   block merging. If GitHub already closed the issue, follow-up still sets its card
   to Done without another close write or duplicate comment.
+- `close-task <pr> [--comment file]` closes an unmerged task PR without merging:
+  the orchestrator abandons a delivery (for example an answered spike). It refuses,
+  before any write, unless the PR number names the configured repository, the PR is
+  open and a task PR (task header or `vmethod-task` relation — the same test the
+  watcher uses). In order it stops the PR's recorded worker exactly like merge
+  follow-up (a PR with no worker record skips this silently; a failed stop is
+  reported and never blocks the close), posts the optional comment — Markdown
+  check and closing-keyword guard like `issue close` — and PATCHes the PR closed.
+  A direct task PR (`<!-- vmethod-task {"issues":[]} -->`) is closeable too. No
+  merge, board or turn writes: the watcher moves the closed PR card to Done and
+  reports the worktree as a cleanup candidate for `worker stop <pr> --cleanup`,
+  and a linked issue stays open for the orchestrator's LAUNCH decision. The
+  output ends with `Reminder: run grade <pr>`. `issue close` closes issues only.
 - `resolve-conflicts <pr>` starts or reconciles [bounded conflict resolution](#conflict-resolution).
   Only the orchestrator or watcher can call the `resolveConflicts({ref})` operation;
   a fixer never receives merge authority.
@@ -1017,11 +1030,12 @@ stale. No recorded/reachable session returns
 Without worker control, these commands still post and update the board. Workers
 end their turn after a status comment; they do not poll for review replies.
 
-The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `resolveConflicts`, `releaseHold`
-and `workerStatus`; `src/gateway/task-flow-types.ts` and `transport.ts` own their
-signatures. The gateway wires worker status, stop and resume to the recorded opencode
-session. Only the merge guard treats missing records as stopped;
-ordinary worker status still reports a missing session as unknown.
+The transport operations are `openTask`, `linkTask`, `reviewTask`, `mergeTask`, `closeTask`,
+`resolveConflicts`, `releaseHold` and `workerStatus`; `src/gateway/task-flow-types.ts`
+and `transport.ts` own their signatures. The gateway wires worker status, stop and
+resume to the recorded opencode session. Only the merge guard treats missing
+records as stopped; ordinary worker status still reports a missing session as
+unknown.
 
 ### Conflict resolution
 

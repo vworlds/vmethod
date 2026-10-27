@@ -1203,6 +1203,7 @@ class GatewayServer {
   askIssue: Handlers["askIssue"] = async (input) => this.flow.ask(input.ref, input.file);
   mergeTask: Handlers["mergeTask"] = async (input) =>
     this.flow.merge(input.ref, input.mergeCommit, input.carryApproval);
+  closeTask: Handlers["closeTask"] = async (input) => this.flow.close(input.ref, input.comment);
   linkTask: Handlers["linkTask"] = async (input) =>
     this.flow.link(input.ref, input.complete, input.unlink);
   releaseHold: Handlers["releaseHold"] = async (input) => this.flow.release(input.ref);
@@ -2386,6 +2387,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     reviewTask: server.reviewTask,
     askIssue: server.askIssue,
     mergeTask: server.mergeTask,
+    closeTask: server.closeTask,
     resolveConflicts: server.resolveConflicts,
     linkTask: server.linkTask,
     releaseHold: server.releaseHold,
@@ -2432,6 +2434,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     reviewTask: ["orchestrator"],
     askIssue: ["orchestrator"],
     mergeTask: ["orchestrator"],
+    closeTask: ["orchestrator"],
     resolveConflicts: ["orchestrator"],
     linkTask: ["orchestrator"],
     releaseHold: ["orchestrator"],

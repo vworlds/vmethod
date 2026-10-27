@@ -1618,6 +1618,53 @@ export class TaskFlow {
     return output;
   }
 
+  /** Close an unmerged task PR without merging (#288): the delivery is abandoned.
+   * The watcher moves the closed PR card to Done and reports the worktree cleanup
+   * candidate; a linked issue stays open for the LAUNCH decision. Refused before
+   * any write unless the PR is in the configured repository, open and a task PR. */
+  async close(ref: string, comment?: string): Promise<string> {
+    const item = await this.pr(ref);
+    if (item.state !== "OPEN") {
+      throw new Error("PR is not open");
+    }
+    // The watcher's task-PR test: a task header or a valid structured relation.
+    if (taskIssueNumbers(String(item.body)) === undefined) {
+      throw new Error("Closing requires a task PR (task header or vmethod-task relation)");
+    }
+    const body = comment === undefined ? undefined : readFileSync(comment, "utf8");
+    if (body !== undefined) {
+      // Checked like `issue close`, before any effect.
+      await checkMarkdown(this.root, body);
+      guardClosingKeywords(body);
+    }
+    // Stop the recorded worker exactly like merge follow-up. #275: with no worker
+    // record the PR never had a worker; the stop is skipped silently. A failed
+    // or unavailable stop never blocks the close; the watcher reports the worker.
+    if (!(await this.workerAbsent(ref))) {
+      try {
+        if (!this.deps.workers?.stop) {
+          this.deps.report(`#${ref} worker stop unavailable (session unknown); continuing`);
+        } else {
+          const outcome = await this.deps.workers.stop(this.number(ref));
+          this.deps.report(`#${ref} worker stop: ${outcome ?? "requested"}`);
+          this.deps.report(`#${ref} worker status after stop: ${await this.status(ref)}`);
+        }
+      } catch {
+        this.deps.report(`#${ref} worker stop failed; continuing`);
+      }
+    }
+    if (body !== undefined) {
+      await this.post(ref, body);
+    }
+    const closed = object(
+      await this.host.github.rest(this.path(ref, "pulls"), "PATCH", { state: "closed" }, false)
+    );
+    if (closed.state !== "closed") {
+      throw new Error("PR closure not confirmed");
+    }
+    return `Closed #${ref}\nReminder: run grade ${ref}`;
+  }
+
   private async verifyMerge(ref: string, base: string, head: string): Promise<void> {
     const parent = join(this.root, ".tmp");
     mkdirSync(parent, { recursive: true });

@@ -22,6 +22,7 @@ const verbIssues = new Map<string, number | null>([
   ["open-task", 8],
   ["review", 8],
   ["merge-task", 8],
+  ["close-task", 288],
   ["release-hold", 8],
   ["worker", 9],
   ["claude-worker", 9],

@@ -69,6 +69,7 @@ try {
     case "review":
     case "ask":
     case "merge-task":
+    case "close-task":
     case "resolve-conflicts":
     case "link-task":
     case "release-hold":
@@ -123,6 +124,7 @@ try {
               "review",
               "ask",
               "merge-task",
+              "close-task",
               "resolve-conflicts",
               "link-task",
               "release-hold",

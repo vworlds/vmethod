@@ -879,12 +879,17 @@ function fixture() {
         body = String(payload.body);
         data = { number: 27, node_id: "pr" };
       } else if (method === "PATCH" && path === "/repos/example/project/pulls/27") {
-        expect(typeof payload.body).toBe("string");
-        body = String(payload.body);
+        expect(["string", "undefined"]).toContain(typeof payload.body);
+        if (typeof payload.body === "string") {
+          body = String(payload.body);
+        }
         if (typeof payload.title === "string") {
           title = payload.title;
         }
-        data = { number: 27, node_id: "pr" };
+        if (payload.state === "closed") {
+          prState = "CLOSED";
+        }
+        data = { number: 27, node_id: "pr", ...(payload.state ? { state: payload.state } : {}) };
       } else if (
         method === "POST" &&
         /^\/repos\/example\/project\/issues\/(8|27)\/comments$/.test(path)
@@ -2040,6 +2045,107 @@ test("merge session failure is nonfatal and retried without replaying completed 
   expect(await f.flow().merge("27")).toContain("Merged");
   expect(await f.flow().merge("27")).toContain("Merged");
   expect(attempts).toBe(2);
+  f.done();
+});
+
+test("close-task stops a live worker, posts its comment and closes the task PR unmerged", async () => {
+  const f = fixture();
+  f.set({ worker: "live", boardValues: { Status: "Executing", Progress: "🤖🔨" } });
+  const stops: number[] = [];
+  f.deps.workers!.recorded = async (pr) => pr === 27;
+  f.deps.workers!.stop = async (pr) => {
+    stops.push(pr);
+    f.set({ worker: "stopped" });
+    return "requested";
+  };
+  const file = join(f.root, "close.md");
+  writeFileSync(file, "Delivery abandoned: the spike does not scale.\n");
+  expect(await f.flow().close("27", file)).toBe("Closed #27\nReminder: run grade 27");
+  expect(stops).toEqual([27]);
+  expect(f.events).toContain("report #27 worker stop: requested");
+  expect(f.events).toContain("report #27 worker status after stop: stopped");
+  // Spec order: stop the worker, post the comment, close the PR.
+  expect(f.events.indexOf("report #27 worker stop: requested")).toBeLessThan(
+    f.events.indexOf("POST /repos/example/project/issues/27/comments")
+  );
+  expect(f.events.indexOf("POST /repos/example/project/issues/27/comments")).toBeLessThan(
+    f.events.indexOf("PATCH /repos/example/project/pulls/27")
+  );
+  expect(
+    f.writes.some(
+      (write) => write.path === "/repos/example/project/pulls/27" && write.body.state === "closed"
+    )
+  ).toBe(true);
+  expect(
+    f.writes.filter((write) => write.path !== "/graphql" && !write.path.endsWith("/comments"))
+  ).toHaveLength(1); // the close PATCH is the only non-comment write
+  // The watcher owns the card; the linked issue stays open and untouched.
+  expect(f.touched).toEqual([]);
+  expect(f.writes.filter((write) => write.path.includes("/issues/8"))).toEqual([]);
+  f.done();
+});
+
+test.each([
+  '<!-- vmethod-task {"issues":[]} -->',
+  "# Task: feat: task (issue #8)\n\nSpecification.\n",
+])("close-task accepts a direct or header task PR and leaves its issue alone: %j", async (body) => {
+  const f = fixture();
+  f.set({ body });
+  f.deps.workers!.recorded = async () => false;
+  f.deps.workers!.stop = async () => {
+    throw new Error("Unexpected stop for a PR without a worker record");
+  };
+  expect(await f.flow().close("27")).toBe("Closed #27\nReminder: run grade 27");
+  expect(f.events).not.toContain("worker-status");
+  expect(f.touched).toEqual([]);
+  expect(f.writes.filter((write) => write.path.includes("/issues/8"))).toEqual([]);
+  f.done();
+});
+
+test("close-task continues after a failed worker stop", async () => {
+  const f = fixture();
+  f.set({ worker: "live" });
+  f.deps.workers!.recorded = async () => true;
+  f.deps.workers!.stop = async () => {
+    throw new Error("PATCH unavailable");
+  };
+  expect(await f.flow().close("27")).toBe("Closed #27\nReminder: run grade 27");
+  expect(f.events).toContain("report #27 worker stop failed; continuing");
+  expect(f.writes.some((write) => write.path === "/repos/example/project/pulls/27")).toBe(true);
+  f.done();
+});
+
+test("close-task continues when the worker backend has no stop control", async () => {
+  // The fixture's fake backend defines status and resume only: no stop, no record probe.
+  const f = fixture();
+  f.set({ worker: "unknown" });
+  expect(await f.flow().close("27")).toBe("Closed #27\nReminder: run grade 27");
+  expect(f.events).toContain("report #27 worker stop unavailable (session unknown); continuing");
+  expect(f.writes.some((write) => write.path === "/repos/example/project/pulls/27")).toBe(true);
+  f.done();
+});
+
+test("close-task refuses foreign, non-task and closed PRs before any write", async () => {
+  const f = fixture();
+  f.deps.workers!.stop = async () => {
+    throw new Error("Unexpected stop on refusal");
+  };
+  await expect(f.flow().close("example/other#27")).rejects.toThrow("Expected own-repository");
+  f.set({ body: "A plain change\n" });
+  await expect(f.flow().close("27")).rejects.toThrow("Closing requires a task PR");
+  f.set({ state: "CLOSED", body: '<!-- vmethod-task {"issues":[8]} -->' });
+  await expect(f.flow().close("27")).rejects.toThrow("PR is not open");
+  f.set({ state: "MERGED" });
+  await expect(f.flow().close("27")).rejects.toThrow("PR is not open");
+  // The comment check runs before any effect: never refuse after stopping.
+  f.set({ state: "OPEN" });
+  const bad = join(f.root, "bad.md");
+  writeFileSync(bad, "Fixes #8\n");
+  await expect(f.flow().close("27", bad)).rejects.toThrow("forbidden closing");
+  await expect(f.flow().close("27", join(f.root, "missing.md"))).rejects.toThrow("ENOENT");
+  expect(f.events).not.toContain("worker-status");
+  expect(f.touched).toEqual([]);
+  expect(f.writes.filter((write) => write.path !== "/graphql")).toEqual([]);
   f.done();
 });
 
