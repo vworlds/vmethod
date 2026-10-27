@@ -414,7 +414,7 @@ class GatewayServer {
       throw new Error("No accepted task thread");
     }
     const type = kind === "pr" ? "PullRequest" : "Issue";
-    const fields = `title body state ${kind === "pr" ? "isDraft merged closedAt headRefOid baseRefOid changedFiles additions deletions headRefName closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : "labels(first: 100) { nodes { name } } blockedBy(first: 100) { nodes { state } pageInfo { hasNextPage } }"} projectItems(first: 100) { nodes { id isArchived project { number owner { ... on Organization { login } ... on User { login } } } fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } } } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }`;
+    const fields = `title body state ${kind === "pr" ? "isDraft merged closedAt headRefOid baseRefOid changedFiles additions deletions headRefName baseRefName closingIssuesReferences(first: 100) { nodes { number repository { nameWithOwner } } pageInfo { hasNextPage } }" : "labels(first: 100) { nodes { name } } blockedBy(first: 100) { nodes { state } pageInfo { hasNextPage } }"} projectItems(first: 100) { nodes { id isArchived project { number owner { ... on Organization { login } ... on User { login } } } fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } } } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }`;
     const result = await this.node(String(item.id), fields, type);
     if (!this.filter.accept(result, repoOf(result).owner, link)) {
       throw new Error("Task identity changed during read");
@@ -474,6 +474,10 @@ class GatewayServer {
       }
     });
     const item = await this.richThread(pr, "pr");
+    // Refuse incomplete metadata rather than rendering "undefined" in prompts.
+    if (typeof item.baseRefName !== "string" || !item.baseRefName) {
+      throw new Error("Missing PR base branch");
+    }
     const links = object(item.closingIssuesReferences);
     if (object(links.pageInfo).hasNextPage === true) {
       throw new Error("Too many linked issues");
@@ -562,7 +566,7 @@ class GatewayServer {
     return {
       pr,
       issue,
-      base: String(item.baseRefName),
+      base: item.baseRefName,
       branch: String(item.headRefName),
       title: String(item.title),
       body,

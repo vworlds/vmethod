@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { parse } from "graphql";
+import { parse, visit } from "graphql";
 import { stringify } from "yaml";
 import { expect, test, vi } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
@@ -127,6 +127,8 @@ function fixture(prefix?: string, legacy = false) {
   };
   const gradePosts: unknown[] = [];
   const modelPosts: unknown[] = [];
+  const prompts: string[] = [];
+  let richBaseRefName: unknown = "dev";
   const unexpected: string[] = [];
   let active = false,
     turnError: unknown;
@@ -141,6 +143,8 @@ function fixture(prefix?: string, legacy = false) {
           return Response.json({ data: { id: "ses_test", directory, model: "fake/glm" } });
         }
         if (url.pathname === "/api/session/ses_test/prompt") {
+          // #305: the first prompt's task values must reach opencode as sent.
+          prompts.push(object(JSON.parse(String(init?.body))).text as string);
           return Response.json({ data: {} });
         }
         if (url.pathname === "/api/session/active") {
@@ -353,7 +357,19 @@ function fixture(prefix?: string, legacy = false) {
           });
         }
         if (variables.id === "PR31") {
-          return Response.json({ data: { node: pr } });
+          // #305: GitHub answers exactly the selected fields, so the canned
+          // metadata read drops baseRefName whenever the query does not select
+          // it. The override also models absent or malformed metadata.
+          const selected: string[] = [];
+          visit(parse(query), {
+            Field: (node) => {
+              selected.push(node.name.value);
+            },
+          });
+          const node = selected.includes("baseRefName")
+            ? { ...pr, baseRefName: richBaseRefName }
+            : { ...pr, baseRefName: undefined };
+          return Response.json({ data: { node } });
         }
         if (variables.id === "ISSUE9") {
           return Response.json({ data: { node: issue } });
@@ -416,6 +432,10 @@ function fixture(prefix?: string, legacy = false) {
     comments,
     gradePosts,
     modelPosts,
+    prompts,
+    setRichBaseRefName: (value: unknown) => {
+      richBaseRefName = value;
+    },
     mutations,
     requests,
     deps,
@@ -458,6 +478,32 @@ test.each(["pr", "issue"])(
       "Owner summons is paused"
     );
     expect(f.requests.every((request) => !request.includes("/api/session"))).toBe(true);
+    f.done();
+  }
+);
+
+test("worker start's first prompt names the task PR's base branch", async () => {
+  const f = fixture();
+  await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
+  // #305: the metadata selection must carry baseRefName, so the prompt reports
+  // the real base branch instead of the literal string "undefined".
+  expect(f.prompts).toHaveLength(1);
+  expect(f.prompts[0]).toContain('Base: "dev"; branch: "9-task"');
+  expect(f.prompts[0]).not.toContain('"undefined"');
+  f.done();
+});
+
+test.each([undefined, null, "", 42])(
+  "task metadata with base %j is refused before any worker session",
+  async (base) => {
+    const f = fixture();
+    // Keep the initial task guard valid while varying the rich metadata response.
+    f.setRichBaseRefName(base);
+    await expect(f.transport.call("worker", { args: ["start", "31"] }, f.ctx)).rejects.toThrow(
+      "Missing PR base branch"
+    );
+    expect(f.requests.every((request) => !request.includes("/api/session"))).toBe(true);
+    expect(f.prompts).toEqual([]);
     f.done();
   }
 );

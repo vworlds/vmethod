@@ -492,6 +492,8 @@ authority rules, task values, command prefix and a checklist pointing to the
 pinned [worker guide](worker-guide.md). The worker reads the current PR and
 authenticated amendments through the gateway; the session's first message is no
 longer a copy of the PR body. Existing live contexts are not sent onboarding again.
+Task values include the PR's base branch; missing, empty or non-string base metadata
+is refused with `Missing PR base branch` before creating a worker session.
 Start and review wakes resolve the model from the PR card's Model field, never a
 body line; migrate in-flight cards before adoption.
 
