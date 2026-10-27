@@ -764,8 +764,15 @@ export class WorkerService {
         if (rest.length) {
           throw new Error("Usage: worker stop <pr>");
         }
+        // #290: read status first; a worktree-gone session is already stopped
+        // and its interrupt POST would resolve through the gone location
+        // directory and answer 404 Location not found.
+        const status = await this.status(record, false, undefined, false);
         delete record.pendingConflict;
         this.save(record);
+        if (status.reason === "worktree gone") {
+          return `#${pr} already stopped (worktree gone)`;
+        }
         await this.interrupt(record);
         return `Interrupted ${record.id}`;
       }
@@ -1431,13 +1438,16 @@ export class WorkerService {
       this.hooks.modelApproval(pr, meta.issue, family)
     );
     const previous = this.read(pr);
-    let unknown = false;
+    let stopped = false;
     if (previous) {
-      unknown = (await this.status(previous, false)).reason === "session unknown";
-      if (!unknown && !replace) {
+      const reason = (await this.status(previous, false)).reason;
+      // #290: a worktree-gone session is stopped like a lost one: no interrupt
+      // or idle wait, prepare recreates the tree and history carries over.
+      stopped = reason === "session unknown" || reason === "worktree gone";
+      if (!stopped && !replace) {
         throw new Error("A live session already exists; use --replace");
       }
-      if (!unknown) {
+      if (!stopped) {
         await this.interrupt(previous);
         await this.idle(previous, 30);
       }
@@ -1449,7 +1459,7 @@ export class WorkerService {
       );
     }
     // An opening override recorded by open-task grades as this segment's reason.
-    const override = !unknown && !replace ? taskModelOverride(meta.body) : undefined;
+    const override = !stopped && !replace ? taskModelOverride(meta.body) : undefined;
     // The launcher installs dependencies and writes .vmethod/.env for the task.
     const directory = await this.hooks.prepare(pr);
     const response = object(
@@ -1485,7 +1495,7 @@ export class WorkerService {
           family: model.family,
           model: model.model,
           rounds: [this.round(meta)],
-          why: unknown
+          why: stopped
             ? "resume"
             : replace
               ? "owner-request"

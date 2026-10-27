@@ -141,6 +141,8 @@ test("task-flow CLI routes typed inputs and rejects malformed options before tra
   await taskFlowVerb(transport, "link-task", ["27"], env);
   await taskFlowVerb(transport, "link-task", ["27", "--complete"], env);
   await taskFlowVerb(transport, "link-task", ["27", "--unlink"], env);
+  await taskFlowVerb(transport, "close-task", ["27"], env);
+  await taskFlowVerb(transport, "close-task", ["27", "--comment", "close.md"], env);
   expect(calls).toEqual([
     {
       operation: "openTask",
@@ -191,6 +193,12 @@ test("task-flow CLI routes typed inputs and rejects malformed options before tra
       input: { ref: "27", complete: false, unlink: true },
       ctx: { role: "orchestrator" },
     },
+    { operation: "closeTask", input: { ref: "27" }, ctx: { role: "orchestrator" } },
+    {
+      operation: "closeTask",
+      input: { ref: "27", comment: "close.md" },
+      ctx: { role: "orchestrator" },
+    },
   ]);
   calls.length = 0;
   for (const [verb, args] of [
@@ -198,6 +206,12 @@ test("task-flow CLI routes typed inputs and rejects malformed options before tra
     ["open-task", ["8", "--hold", "--hold"]],
     ["open-task", ["8", "--from"]],
     ["merge-task", ["27", "--force"]],
+    ["close-task", []],
+    ["close-task", ["27", "--comment"]],
+    ["close-task", ["27", "--force"]],
+    ["close-task", ["27", "--comment", "close.md", "extra"]],
+    ["close-task", ["27", "--comment", "a.md", "--comment", "b.md"]],
+    ["close-task", ["27#comment"]],
     ["link-task", []],
     ["link-task", ["27", "--force"]],
     ["link-task", ["27", "--complete", "--unlink"]],

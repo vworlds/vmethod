@@ -16,6 +16,7 @@ import {
 import { bodyHash } from "../../src/gateway/scope.js";
 import type { ObjectData } from "../../src/gateway/people.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
+import { taskFlowVerb } from "../../src/cli/task-flow.js";
 
 test.each(["issue", "pr"] as const)(
   "orchestrator can stop but not grant autopilot on an accepted %s",
@@ -615,6 +616,117 @@ test("merge is refused at the gateway when worker management reports live, witho
     },
   };
   await expect(f.transport.call("mergeTask", { ref: "27" })).rejects.toThrow("Stop the worker");
+  f.done();
+});
+
+test("close-task stops the recorded worker and closes an open task PR unmerged", async () => {
+  const f = fixtureServer([
+    graph({ repository: { pullRequest: item() } }),
+    graph({
+      node: item({
+        __typename: "PullRequest",
+        number: 27,
+        title: "feat: task",
+        body: 'Task text\n\n<!-- vmethod-task {"issues":[8]} -->\n',
+        state: "OPEN",
+        headRefName: "8-task",
+        baseRefName: "dev",
+        baseRefOid: sha,
+        isDraft: true,
+        headRepository: { nameWithOwner: "example/project" },
+        labels: { nodes: [], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+    {
+      path: "/repos/example/project/issues/27/comments",
+      method: "POST",
+      body: { body: "Delivery abandoned: the spike does not scale.\n" },
+      json: {},
+    },
+    {
+      path: "/repos/example/project/pulls/27",
+      method: "PATCH",
+      body: { state: "closed" },
+      json: { state: "closed" },
+    },
+  ]);
+  f.deps.workers = {
+    status: async (pr, forMerge) => {
+      expect({ pr, forMerge }).toEqual({ pr: 27, forMerge: false });
+      return "stopped";
+    },
+    resume: async () => {
+      throw new Error("Unexpected resume");
+    },
+    recorded: async (pr) => pr === 27,
+    stop: async (pr) => {
+      expect(pr).toBe(27);
+      return "requested";
+    },
+  };
+  const file = join(f.root, "close.md");
+  writeFileSync(file, "Delivery abandoned: the spike does not scale.\n");
+  await expect(
+    taskFlowVerb(f.transport, "close-task", ["27", "--comment", file], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).resolves.toBe("Closed #27\nReminder: run grade 27");
+  expect(f.reports).toEqual([
+    "#27 worker stop: requested",
+    "#27 worker status after stop: stopped",
+  ]);
+  f.done();
+});
+
+test.each([
+  {
+    case: "foreign repository",
+    ref: "example/foreign#27",
+    body: "Task text",
+    state: "OPEN",
+    reads: false,
+    message: "Expected own-repository",
+  },
+  {
+    case: "non-task PR",
+    ref: "27",
+    body: "Task text",
+    state: "OPEN",
+    reads: true,
+    message: "Closing requires a task PR",
+  },
+  {
+    case: "closed task PR",
+    ref: "27",
+    body: 'Task text\n\n<!-- vmethod-task {"issues":[8]} -->\n',
+    state: "CLOSED",
+    reads: true,
+    message: "PR is not open",
+  },
+])("close-task refuses a $case before any write", async ({ ref, body, state, reads, message }) => {
+  const prReads = reads
+    ? [
+        graph({ repository: { pullRequest: item() } }),
+        graph({
+          node: item({
+            __typename: "PullRequest",
+            number: 27,
+            title: "feat: task",
+            body,
+            state,
+            headRefName: "8-task",
+            baseRefName: "dev",
+            baseRefOid: sha,
+            headRepository: { nameWithOwner: "example/project" },
+            labels: { nodes: [], pageInfo: { hasNextPage: false } },
+          }),
+        }),
+      ]
+    : [];
+  const f = fixtureServer(prReads);
+  f.deps.workers = undefined;
+  // A refusal never posts, never PATCHes state and never stops a worker.
+  await expect(f.transport.call("closeTask", { ref })).rejects.toThrow(message);
   f.done();
 });
 
