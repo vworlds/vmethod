@@ -1,10 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { expect, test } from "vitest";
 import { githubToken } from "../../src/gateway/github-token.js";
 import { taskEnvironment } from "../../src/gateway/worker-context.js";
 import {
   workerCheckout,
+  workerCheckoutIsSelf,
   workerWorktreeName,
   workerWorktreePrefix,
 } from "../../src/gateway/worker-path.js";
@@ -23,6 +24,14 @@ test("VMETHOD_WORKER_CHECKOUT overrides workerCheckout per machine", () => {
   const root = validProject();
   const config = getConfig(root, { VMETHOD_WORKER_CHECKOUT: "/srv/machine-worker" });
   expect(workerCheckout(root, config)).toBe("/srv/machine-worker");
+});
+
+test("workerCheckoutIsSelf reports a worker checkout's own config and never a missing value", () => {
+  const root = fixture();
+  expect(workerCheckoutIsSelf(root, { workerCheckout: `../${basename(root)}` })).toBe(true);
+  expect(workerCheckoutIsSelf(root, { workerCheckout: root })).toBe(true);
+  expect(workerCheckoutIsSelf(root, { workerCheckout: "../worker" })).toBe(false);
+  expect(workerCheckoutIsSelf(root, {})).toBe(false);
 });
 
 test("worker worktree names carry the prefix and flatten branch slashes", () => {

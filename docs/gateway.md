@@ -383,7 +383,13 @@ by `VMETHOD_WORKER_CHECKOUT`. Its gitignored `.claude/settings.local.json` holds
 worker identity (`VMETHOD_ROLE=worker`, the worker's `GH_CONFIG_DIR`, git author and
 SSH command); OpenCode applies it to every session in that project, whatever the
 model. `vmethod check` (as orchestrator) refuses a missing clone, and start refuses
-a worker checkout that shares the orchestrator's `.git`.
+a worker checkout that shares the orchestrator's `.git`. Running `check` in the
+worker checkout with an inherited orchestrator environment is not a wrong layout
+but the wrong identity: `check` reports `this is the worker checkout, but the
+environment is the orchestrator's (VMETHOD_ROLE=orchestrator); run check with this
+checkout's own .claude/settings.local.json env`, and `--online` also names the
+login. A `workerCheckout` that resolves into the orchestrator's own checkout keeps
+the `separate clone` refusal.
 
 Start requires an accepted, open draft task PR, one linked unblocked issue and an
 allowed model. It then prepares the task's worktree, using only the OpenCode API it
