@@ -127,6 +127,7 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod autopilot inherit <pr>`
 - `vmethod board set <issue> <field> <value>|--clear`
 - `vmethod board set <issue|pr> Assignees owner|orchestrator|--clear`
+- `vmethod board add <issue> [--estimate n] [--status name]`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package with `npm exec --no -- vmethod`, never a downloading fallback.
@@ -229,8 +230,10 @@ configured board through the issue-side relation, then applies optional points-s
 `--status` values through the shared field writer; Status clears Progress, and
 without `--status` it defaults to the first workflow column (Backlog). You can
 immediately use `board set` after successful creation. If board follow-up fails,
-the error identifies the created issue: inspect it and retry board operations,
-never repeat creation. A disabled board skips membership; estimate/status flags
+the error identifies the created issue and ends with `retry with: vmethod board
+add <n>` plus the creation's original `--estimate`/`--status` flags: run that
+exact command once to complete the failed board writes idempotently, never
+repeat creation. A disabled board skips membership; estimate/status flags
 require a board. Closure gates the issue's author/editor through the people filter
 and optionally posts a checked file comment before closing. It does not close PRs
 or move board cards implicitly. Both file paths reject closing/association syntax.
@@ -283,6 +286,20 @@ this is what keeps housekeeping from being misread as another session's move.
 This is a deliberate-repair verb for cases such as a stale owner assignee left on
 an epic in Executing; anything that waits on the owner still goes through the
 tracked owner-question commands.
+
+`board add <issue> [--estimate n] [--status name]` is the orchestrator-only
+repair for an `issue create` whose board follow-up failed (#287): it re-runs
+exactly that follow-up — `board.ensure` membership through the issue-side
+relation, then one `setIssueFields` call with the effective entries — inside the
+same journaled operation (#199). It is idempotent. An issue not on the configured
+board is added and receives Status (`--status`, or the first workflow column
+when omitted) plus any passed `--estimate`; an issue already on the board keeps
+its Status unless `--status` is given and only the fields that were passed are
+written, so a re-run never moves a card back to Backlog. Estimates must use the
+shared points scale. A foreign reference, a PR and a closed issue are refused
+before any write. `board status --fix` is unchanged by this verb: it repairs the
+README's own drift, never a missing board membership. The typed operation is
+`boardAdd({ref, estimate?, status?})` in `src/gateway/transport.ts`.
 
 ## Worker commands
 
@@ -459,7 +476,11 @@ segments. Writes use a per-PR exclusive lock and atomic rename. A lock left afte
 a crash must be removed only after confirming its operation is no longer running.
 Failed prompt submission leaves the created session recorded. Start refuses an
 existing known session, including an idle one; `--replace` interrupts and waits
-before replacing it. Every new context (start, replacement, lost-session re-entry
+before replacing it. A recorded session whose worktree is gone is stopped, not
+live (#290): start restarts the task without `--replace` and without an interrupt
+or idle wait; `prepare` recreates the worktree on the PR branch, the record's
+segment history and usage carry over, and the new context receives onboarding.
+Every new context (start, replacement, lost-session re-entry
 or adoption) receives the same generated first prompt: inline
 authority rules, task values, command prefix and a checklist pointing to the
 pinned [worker guide](worker-guide.md). The worker reads the current PR and
@@ -486,7 +507,9 @@ as stopped, not unknown: `mergeStatus` reports `stopped` so `merge-task`
 follow-up and `worktrees` cleanup proceed, closure proceeds, queued wakes and
 conflict drains are skipped as for `session unknown`, prompt submission refuses
 with `worktree gone; prompt not sent`, and usage capture plus grading fall back
-to the record's stored usage. Quota/provider failures
+to the record's stored usage. `worker start` restarts a worktree-gone record
+like a lost session, and `worker stop` clears `pendingConflict` but skips the
+interrupt, returning `#<pr> already stopped (worktree gone)`. Quota/provider failures
 print `QUOTA <family>` plus that family's ordered `fallback` list from `models.yaml`.
 They never trigger an automatic switch. The shared `OpencodeClient.status`
 preserves the watcher's directory-only permission/failure contract; its explicit
@@ -1169,8 +1192,13 @@ Watcher terminal events are `RESOLVED #n (step k)`,
 `MERGED #n (conflict-only, approval carried)`,
 `conflict on #n resolved outside the fixer`, or
 `BLOCKED #n: conflict escalated (<reason>)`. Pending work does not wake the
-orchestrator just to repeat CONFLICT. State and locks live under the configured
-per-user state root, not in the package checkout.
+orchestrator just to repeat CONFLICT. An up-to-date PR closes quietly: the
+`nothing to resolve for #n` result — the fetched base is already merged in,
+including the end of a clean `refresh-checks` update, or update-branch answers
+422 because there are no new base commits — still books its record as resolved
+and emits no event, so a base move without conflict wakes nobody. State and
+locks live under the configured per-user state root, not in the package
+checkout.
 
 The per-PR lock is owned like the watcher's: a `0700` file holding the
 reconciling process's pid and process start time. A reconcile clears a lock
@@ -1219,9 +1247,9 @@ inspection. This sets its work state to `open`, preserves the remaining metadata
 and does not restart the worker or recreate its worktree.
 
 For a task closed without merging, the watcher reports a cleanup candidate. Run
-`vmethod worker stop <pr> --cleanup` to interrupt its recorded session and attempt
-the same guarded cleanup and session closure. Stopping alone never removes files
-or hides sessions.
+`vmethod worker stop <pr> --cleanup` to stop its recorded session (the interrupt
+is skipped for a worktree-gone record) and attempt the same guarded cleanup and
+session closure. Stopping alone never removes files or hides sessions.
 
 Use orchestrator-only `vmethod worktrees` to list merged/closed task trees and their
 sizes in allocated KiB, with a total of removable space. `vmethod worktrees --prune`

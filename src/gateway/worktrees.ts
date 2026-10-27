@@ -212,8 +212,17 @@ export class WorktreeService {
       if (head && (await this.checkedOut(task.branch)).length > (path === undefined ? 0 : 1)) {
         return "branch belongs to another worktree";
       }
-      if (head && (await this.uncontained(head, task))) {
-        return "unpushed work (branch head not contained in PR head or base)";
+      if (head) {
+        // #293: GitHub may hold merged-head commits the worker clone never fetched
+        // (refresh-checks, an outside conflict fix or an owner push); fetch before
+        // containment so cleanup needs no manual fetch into the worker checkout.
+        const missing = await this.fetchMissing(task);
+        if (missing) {
+          return missing;
+        }
+        if (await this.uncontained(head, task)) {
+          return "unpushed work (branch head not contained in PR head or base)";
+        }
       }
     } catch {
       return "safety check failed (session, git state or commit objects unavailable); retry after inspection";
@@ -272,13 +281,56 @@ export class WorktreeService {
     }
   }
 
-  /** The worker checkout's local base lags; its origin ref is refreshed by every launch. */
-  private async uncontained(head: string, task: WorktreeTask): Promise<boolean> {
-    if (!/^[a-f\d]{40}$/i.test(head) || !/^[a-f\d]{40}$/i.test(task.head)) {
-      throw new Error("Invalid cleanup commit");
+  /** Fetch, once, the merged head and base objects the worker clone has not seen (#293):
+   * the merged branch is deleted on GitHub and its squash head exists only behind
+   * refs/pull/<n>/head, which no worker checkout ref ever brought in. Already-present
+   * objects need no fetch; a failed fetch refuses with its own reason.
+   */
+  private async fetchMissing(task: WorktreeTask): Promise<string | undefined> {
+    const wants: [string, string][] = [];
+    if (!(await this.hasCommit(task.head))) {
+      wants.push([`merged PR head ${task.head}`, `refs/pull/${task.pr}/head`]);
     }
+    if (!(await this.baseRefs(task)).length) {
+      wants.push([
+        `base branch ${task.base}`,
+        `+refs/heads/${task.base}:refs/remotes/origin/${task.base}`,
+      ]);
+    }
+    if (!wants.length) {
+      return undefined;
+    }
+    if (
+      !(await this.git().transfer(
+        "fetch",
+        wants.map(([, ref]) => ref)
+      ))
+    ) {
+      // The head want first: with both missing it names the merged head.
+      return `cannot fetch ${wants[0][0]}: fetch failed`;
+    }
+    return undefined;
+  }
+
+  /** Whether the checkout's object store resolves the commit; a malformed head is
+   * never fetchable and stays refused by the containment check's own validation.
+   */
+  private async hasCommit(sha: string): Promise<boolean> {
+    if (!/^[a-f\d]{40}$/i.test(sha)) {
+      return false;
+    }
+    try {
+      await this.git().run("rev-parse", "--verify", "--quiet", `${sha}^{commit}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Local and origin refs of the task base; the containment check accepts either. */
+  private async baseRefs(task: WorktreeTask): Promise<string[]> {
     validateBranch(task.base);
-    const bases = (
+    return (
       await this.git().run(
         "for-each-ref",
         "--format=%(refname)",
@@ -288,6 +340,14 @@ export class WorktreeService {
     )
       .split("\n")
       .filter(Boolean);
+  }
+
+  /** The worker checkout's local base lags; its origin ref is refreshed by every launch. */
+  private async uncontained(head: string, task: WorktreeTask): Promise<boolean> {
+    if (!/^[a-f\d]{40}$/i.test(head) || !/^[a-f\d]{40}$/i.test(task.head)) {
+      throw new Error("Invalid cleanup commit");
+    }
+    const bases = await this.baseRefs(task);
     if (!bases.length) {
       throw new Error("Base branch unavailable in the worker checkout");
     }

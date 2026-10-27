@@ -753,7 +753,9 @@ class GatewayServer {
    * membership. Optional estimate/status use the shared board field writer; estimates must
    * use the shared points scale and labels may repeat. Status defaults to the first workflow
    * column (Backlog), so a card filed without --status is never in no column.
-   * Board follow-up failures identify the created issue so callers do not create a duplicate.
+   * Board follow-up failures identify the created issue and name the exact
+   * `board add` retry command with the original flags (#287), so callers never
+   * recreate a duplicate.
    */
   issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [], estimate, status }) => {
     if (
@@ -817,13 +819,68 @@ class GatewayServer {
           { name: "Status", value: status ?? workflowColumns[0] },
         ]);
       } catch (error) {
+        // The retry hint is the orchestrator's repair path (#287): it passes the
+        // created issue's original estimate/status flags to `board add`, which can
+        // exactly redo the failed membership and field writes idempotently.
+        const flags = [
+          ...(estimate !== undefined ? ["--estimate", String(estimate)] : []),
+          ...(status !== undefined ? ["--status", status] : []),
+        ];
         throw new Error(
-          `Created issue #${String(created.number)}; board follow-up failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry board operations only.`,
+          `Created issue #${String(created.number)}; board follow-up failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry board operations only; retry with: vmethod board add ${String(created.number)}${flags.length ? ` ${flags.join(" ")}` : ""}`,
           { cause: error }
         );
       }
     }
     return `Created issue #${String(created.number)}`;
+  };
+
+  /** Orchestrator-only retry of issue create's board follow-up (#287): membership
+   * through `board.ensure` (the issue-side relation), then one `setIssueFields` call
+   * with the effective entries, inside the same journaled operation (#199). Idempotent: an
+   * off-board issue gains Status (the --status value or the first workflow column)
+   * plus any passed Estimate; a card already on the board keeps its Status unless
+   * --status is given and only the passed fields change, so a re-run never moves
+   * it back to Backlog. A foreign reference, a PR and a closed issue are refused
+   * before any write. */
+  boardAdd: Handlers["boardAdd"] = async ({ ref, estimate, status }) => {
+    if (estimate !== undefined) {
+      assertEstimate(estimate);
+    }
+    if (status !== undefined && (typeof status !== "string" || !status.trim())) {
+      throw new Error("Invalid issue status");
+    }
+    if (object(this.config.board).enabled === false) {
+      throw new Error("Board is disabled; board add requires a configured board");
+    }
+    const number = this.localNumber(ref);
+    const issue = await this.flowThread(String(number), "issue");
+    if (issue.state !== "OPEN") {
+      throw new Error(`Refusing board add on closed issue #${number}`);
+    }
+    const contentId = String(issue.id);
+    const card = await this.board.issueCard(contentId);
+    // The field plan mirrors issue create's follow-up: a fresh card files in the
+    // first workflow column unless --status names one; an on-board card keeps its
+    // Status and receives only the fields that were passed (#287).
+    const entries = [
+      ...(estimate !== undefined ? [{ name: "Estimate", value: String(estimate) }] : []),
+      ...(!card || status !== undefined
+        ? [{ name: "Status", value: status ?? workflowColumns[0] }]
+        : []),
+    ];
+    // One operation for the board writes (#199), exactly as issue create's
+    // follow-up: the membership add, then the fields in a single ordered mutation.
+    this.github.writes.beginOperation("board add", [{ repo: String(this.config.repo), number }]);
+    await this.board.ensure(contentId);
+    if (entries.length) {
+      await this.board.setIssueFields(contentId, entries);
+    }
+    return card
+      ? entries.length
+        ? `Repaired issue #${number} board fields`
+        : `Issue #${number} is already on the board`
+      : `Added issue #${number} to the board`;
   };
 
   /** Close an accepted own-repository issue, optionally posting a validated file comment first. */
@@ -2380,6 +2437,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueClose: server.issueClose,
     boardSetIssue: server.boardSetIssue,
     boardSetAssignees: server.boardSetAssignees,
+    boardAdd: server.boardAdd,
     worker: server.worker,
     grade: server.grade,
     suggestModel: server.suggestModel,
@@ -2427,6 +2485,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueClose: ["orchestrator"],
     boardSetIssue: ["orchestrator"],
     boardSetAssignees: ["orchestrator"],
+    boardAdd: ["orchestrator"],
     worker: ["orchestrator"],
     grade: ["orchestrator"],
     suggestModel: ["orchestrator"],

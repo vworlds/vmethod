@@ -35,6 +35,10 @@ export interface Operations {
     input: { ref: string; value: "owner" | "orchestrator" | null };
     output: string;
   };
+  /** Repair an issue create board follow-up (#287): ensure configured-board membership
+   * and write the passed fields; a card already on the board keeps its Status unless
+   * status is given, so a re-run never moves it back to Backlog. */
+  boardAdd: { input: { ref: string; estimate?: number; status?: string }; output: string };
   worker: { input: { args: string[] }; output: string | WorkerResult };
   suggestModel: { input: { ref: string }; output: string };
   grade: { input: { ref: string; points?: number }; output: string };

@@ -157,6 +157,44 @@ async function existingVerb(
 ): Promise<string> {
   switch (verb) {
     case "board": {
+      if (args[0] === "add") {
+        if (args.length < 2) {
+          throw new Error("Usage: vmethod board add <issue> [--estimate n] [--status name]");
+        }
+        let estimate: number | undefined;
+        let status: string | undefined;
+        for (let i = 2; i < args.length; i += 2) {
+          const flag = args[i],
+            value = args[i + 1];
+          if (!["--estimate", "--status"].includes(flag) || !value || value.startsWith("--")) {
+            throw new Error("Usage: vmethod board add <issue> [--estimate n] [--status name]");
+          }
+          if (flag === "--status") {
+            if (status !== undefined) {
+              throw new Error("Usage: --status may appear only once");
+            }
+            status = value;
+          } else {
+            if (
+              estimate !== undefined ||
+              !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) ||
+              !Number.isFinite(Number(value))
+            ) {
+              throw new Error("Usage: --estimate requires a finite nonnegative number, once");
+            }
+            estimate = Number(value);
+          }
+        }
+        return transport.call(
+          "boardAdd",
+          {
+            ref: args[1],
+            ...(estimate === undefined ? {} : { estimate }),
+            ...(status === undefined ? {} : { status }),
+          },
+          ctx
+        );
+      }
       if (args[0] === "set" && args[2] === "Assignees") {
         if (args.length !== 4 || !["owner", "orchestrator", "--clear"].includes(args[3])) {
           throw new Error("Usage: board set <issue|pr> Assignees owner|orchestrator|--clear");
