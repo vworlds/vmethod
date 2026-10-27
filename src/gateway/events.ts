@@ -61,9 +61,10 @@ const MIGRATION_WINDOW_MS = 60 * 60_000;
 const HOLD_MAX_AGE_MS = 120_000;
 const GRADE_SETTLE_MS = 60_000;
 /** A delivery carries the chat-rule reminder at most once per interval. */
-const CHAT_REMINDER_EVERY_MS = 2 * 60 * 60_000;
+const CHAT_REMINDER_EVERY_MS = 30 * 60_000;
 /** The reminder's state file stores the last show time; empty delivery stays silent. */
-const CHAT_REMINDER = "REMINDER: chat = #n pointers only or warnings; discuss on GitHub.";
+const CHAT_REMINDER =
+  "REMINDER (owner rule): chat = #n pointers only or warnings; discuss on GitHub. Don't explain here what you will put in an issue/PR. Evidence, plans and summaries go on the issue/PR, never in chat.";
 /** A board baseline is pruned only after this many consecutive successful polls missed it. */
 const BOARD_ABSENT_POLLS = 3;
 /** A board baseline is pruned only once its absence window spans at least this long. */

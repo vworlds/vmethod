@@ -571,8 +571,9 @@ server write `guide-seen-<version>`, suppressing later notices for that version 
 the state directory. A failed notice write leaves it unseen.
 
 A nonempty delivery carries one reminder line for the orchestrator, at most once
-every two hours, printed after the events: `REMINDER: chat = #n pointers only or
-warnings; discuss on GitHub.` The line never produces output on its own: a batch
+every 30 minutes, printed after the events: `REMINDER (owner rule): chat = #n
+pointers only or warnings; discuss on GitHub. Don't explain here what you will put
+in an issue/PR. Evidence, plans and summaries go on the issue/PR, never in chat.` The line never produces output on its own: a batch
 without events stays empty, so idle periods stay silent. Its last-show timestamp
 persists in the state directory (`chat-reminder`), so a watcher restart inside the
 window does not repeat it. The reminder is delivery metadata, not an event: it has

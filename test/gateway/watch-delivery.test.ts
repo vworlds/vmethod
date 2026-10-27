@@ -220,9 +220,10 @@ test.each(["worker", "peer", "owner", "unknown", "edited"])(
   }
 );
 
-const CHAT_REMINDER = "REMINDER: chat = #n pointers only or warnings; discuss on GitHub.";
+const CHAT_REMINDER =
+  "REMINDER (owner rule): chat = #n pointers only or warnings; discuss on GitHub. Don't explain here what you will put in an issue/PR. Evidence, plans and summaries go on the issue/PR, never in chat.";
 
-test("deliveries less than 2h apart carry the chat-rule reminder once, then again 2h later", async () => {
+test("deliveries less than 30 minutes apart carry the chat-rule reminder once, then again 30 minutes later", async () => {
   const f = new WatchFake();
   try {
     const loop = f.loop();
@@ -233,13 +234,13 @@ test("deliveries less than 2h apart carry the chat-rule reminder once, then agai
     expect(first.events).not.toHaveLength(0);
     expect(first.reminder).toBe(CHAT_REMINDER);
     await f.ack(loop, first.events);
-    f.advance(60 * 60_000);
+    f.advance(15 * 60_000);
     f.comment("[worker] BLOCKED\nSecond");
     const second = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
     expect(second.events).not.toHaveLength(0);
     expect(second.reminder).toBeUndefined();
     await f.ack(loop, second.events);
-    f.advance(60 * 60_000);
+    f.advance(15 * 60_000);
     f.comment("[worker] QUESTION\nThird");
     const third = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
     expect(third.events).not.toHaveLength(0);
@@ -255,12 +256,12 @@ test("deliveries less than 2h apart carry the chat-rule reminder once, then agai
   }
 });
 
-test("the chat-rule reminder never stands alone: an idle 2h+ window produces no output", async () => {
+test("the chat-rule reminder never stands alone: an idle 30-minute+ window produces no output", async () => {
   const f = new WatchFake();
   try {
     const loop = f.loop();
     expect(await f.once(loop)).toEqual([]);
-    f.advance(3 * 60 * 60_000);
+    f.advance(45 * 60_000);
     expect(await f.once(loop)).toEqual([]);
     f.comment("[worker] QUESTION\nLate");
     const late = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
@@ -284,7 +285,7 @@ test("a watcher restart inside the interval does not repeat the chat-rule remind
     await f.ack(loop, first.events);
     loop.close();
     loop = f.loop();
-    f.advance(30 * 60_000);
+    f.advance(15 * 60_000);
     f.comment("[worker] BLOCKED\nAfter restart");
     const again = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
     expect(again.events).not.toHaveLength(0);
