@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import type { Dependencies } from "../../src/gateway/client.js";
 import { WorktreeService, type WorktreeTask } from "../../src/gateway/worktrees.js";
-import { fixture } from "../helpers.js";
+import { fixture, ghConfig } from "../helpers.js";
 
 /** The worker checkout (a git repository) apart from the orchestrator's root, task trees
  * in OpenCode's own directory, and an OpenCode fake that removes them through git. */
@@ -90,7 +90,7 @@ function setup() {
     releaseBranch: "master",
     workerCheckout: checkout,
   };
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     OPENCODE_BASE_URL: "http://opencode.test",
     OPENCODE_SERVER_USERNAME: "user",
     OPENCODE_SERVER_PASSWORD: "password",
@@ -120,6 +120,160 @@ function setup() {
     add,
   };
 }
+
+/** A stand-in for the origin the transfer fetch targets: a clone of the worker checkout
+ * that moved on and holds the merged head behind refs/pull/<pr>/head only, as GitHub
+ * does after it deletes a merged branch.
+ */
+function standInOrigin(f: ReturnType<typeof setup>, pr: number): { remote: string; head: string } {
+  const remote = fixture();
+  execFileSync("git", ["clone", "-q", f.checkout, remote], {
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5000,
+  });
+  writeFileSync(join(remote, "merged"), "data");
+  f.git(["config", "user.name", "Test"], remote);
+  f.git(["config", "user.email", "test@example.invalid"], remote);
+  f.git(["add", "merged"], remote);
+  f.git(["commit", "-m", "merged on GitHub"], remote);
+  const head = f.git(["rev-parse", "HEAD"], remote);
+  f.git(["update-ref", `refs/pull/${pr}/head`, head], remote);
+  return { remote, head };
+}
+
+/** Serve the transfer's git invocation from the stand-in origin instead of GitHub,
+ * recording every fetch refspec; never delegates token-bearing calls to git config.
+ */
+function interceptTransfer(f: ReturnType<typeof setup>, remote = "") {
+  const exec = f.deps.exec;
+  const refspecs: string[] = [];
+  let attempts = 0;
+  let fail = false;
+  f.deps.exec = async (file, args, options) => {
+    if (file === "git" && args[0] === "-c" && args[4] === "fetch") {
+      attempts++;
+      expect(args.slice(4, 7)).toEqual(["fetch", "-q", "https://github.com/example/project.git"]);
+      expect(String(args)).not.toContain("fake-token");
+      expect(options?.env?.VMETHOD_GIT_TOKEN).toBe("fake-token");
+      refspecs.push(...args.slice(7));
+      if (fail) {
+        throw new Error("secret: fake-token / untrusted remote stderr");
+      }
+      return execFileSync("git", ["fetch", "-q", remote, ...args.slice(7)], {
+        cwd: options?.cwd,
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+    return exec(file, args, options);
+  };
+  return {
+    refspecs,
+    attempts: () => attempts,
+    fail: () => {
+      fail = true;
+    },
+  };
+}
+
+const serviceTestsTimeout = 30000;
+
+test(
+  "cleanup fetches the merged head GitHub holds after the branch is deleted",
+  async () => {
+    const f = setup();
+    f.env.GH_CONFIG_DIR = ghConfig("fake-token");
+    const origin = standInOrigin(f, 1);
+    const transfer = interceptTransfer(f, origin.remote);
+    const tree = f.add(1);
+    tree.task.head = origin.head;
+    expect(await f.service().cleanup(tree.task)).toBe(true);
+    expect(existsSync(tree.path)).toBe(false);
+    expect(f.removals).toEqual([tree.path]);
+    expect(transfer.attempts()).toBe(1);
+    expect(transfer.refspecs).toEqual(["refs/pull/1/head"]);
+  },
+  serviceTestsTimeout
+);
+
+test(
+  "an unpushed local commit is still refused after the merged head is fetched",
+  async () => {
+    const f = setup();
+    f.env.GH_CONFIG_DIR = ghConfig("fake-token");
+    const origin = standInOrigin(f, 1);
+    const transfer = interceptTransfer(f, origin.remote);
+    const tree = f.add(1);
+    tree.task.head = origin.head;
+    writeFileSync(join(tree.path, "divergent"), "data");
+    f.git(["add", "divergent"], tree.path);
+    f.git(["commit", "-m", "not pushed"], tree.path);
+    expect(await f.service().cleanup(tree.task)).toBe(false);
+    expect(existsSync(tree.path)).toBe(true);
+    expect(f.reports.join("\n")).toContain(
+      "unpushed work (branch head not contained in PR head or base)"
+    );
+    expect(transfer.attempts()).toBe(1);
+    expect(transfer.refspecs).toEqual(["refs/pull/1/head"]);
+    expect(f.removals).toEqual([]);
+  },
+  serviceTestsTimeout
+);
+
+test(
+  "a failed fetch refuses with its own reason instead of the generic safety skip",
+  async () => {
+    const f = setup();
+    f.env.GH_CONFIG_DIR = ghConfig("fake-token");
+    const transfer = interceptTransfer(f);
+    transfer.fail();
+    f.deps.sleep = async () => undefined; // The retried fetch fails outright.
+    const tree = f.add(1);
+    tree.task.head = "e".repeat(40); // Missing object, so reason fetches it first.
+    expect(await f.service().cleanup(tree.task)).toBe(false);
+    expect(existsSync(tree.path)).toBe(true);
+    expect(f.reports.join("\n")).toContain(
+      `cannot fetch merged PR head ${"e".repeat(40)}: fetch failed`
+    );
+    expect(f.reports.join("\n")).not.toContain("safety check failed");
+    expect(transfer.attempts()).toBe(3);
+    expect(f.removals).toEqual([]);
+  },
+  serviceTestsTimeout
+);
+
+test(
+  "a head still missing after the fetch keeps the generic refusal",
+  async () => {
+    const f = setup();
+    f.env.GH_CONFIG_DIR = ghConfig("fake-token");
+    const origin = standInOrigin(f, 1);
+    const transfer = interceptTransfer(f, origin.remote);
+    const tree = f.add(1);
+    tree.task.head = "f".repeat(40); // Missing object, never assume an empty rev-list.
+    expect(await f.service().cleanup(tree.task)).toBe(false);
+    expect(f.reports.join("\n")).toContain("safety check failed");
+    expect(existsSync(tree.path)).toBe(true);
+    expect(transfer.attempts()).toBe(1);
+    expect(transfer.refspecs).toEqual(["refs/pull/1/head"]);
+    expect(f.removals).toEqual([]);
+  },
+  serviceTestsTimeout
+);
+
+test(
+  "already-present merged head and base need no fetch",
+  async () => {
+    const f = setup();
+    f.env.GH_CONFIG_DIR = ghConfig("fake-token");
+    const transfer = interceptTransfer(f);
+    const tree = f.add(1);
+    expect(await f.service().cleanup(tree.task)).toBe(true);
+    expect(transfer.attempts()).toBe(0);
+  },
+  serviceTestsTimeout
+);
 
 test.each([false, true])(
   "failed du reports size unknown and continues every tree (prune=%s)",

@@ -1599,6 +1599,11 @@ export class EventLoop {
     if (result.startsWith("PENDING")) {
       return;
     }
+    // The conflict service books an up-to-date PR itself; a no-op result has no
+    // news and must not wake the orchestrator (a false alarm).
+    if (result.startsWith("nothing to resolve for #")) {
+      return;
+    }
     this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
     if (
       /^(?:RESOLVED|MERGED|BLOCKED)\b/.test(result) ||

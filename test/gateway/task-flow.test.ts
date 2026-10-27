@@ -2103,6 +2103,7 @@ function workerTaskTree(f: ReturnType<typeof fixture>, onRemove: () => void = ()
         args[0]
       ) ||
         args.join(" ") === "rev-parse --git-common-dir" ||
+        (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "--quiet") ||
         args.join(" ") === "status --porcelain --untracked-files=all")
     ) {
       return execFileSync(file, [...args], {
