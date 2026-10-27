@@ -71,7 +71,7 @@ Submission additionally verifies the token viewer against central numeric identi
 and explicit `repos` bindings. See [shared learnings](learnings.md).
 
 - `vmethod read pr <n> [--files|--diff|--reviews|--checks|--new]`
-- `vmethod read issue <n>`
+- `vmethod read issue <n> [--new]`
 - `vmethod read comment <id>` (numeric issue-comment ID in the configured repo)
 - `vmethod read checks <n>` (PR number)
 - `vmethod read registry <package>` (untrusted npm metadata)
@@ -79,20 +79,25 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 
   `read pr <n>` prints the whole thread as one section per item: the PR itself
   (title, state, draft, head and body), then each comment, review and review
-  comment. Every section sits under a stable header naming the item kind, id and
+  comment. `read issue <n>` does the same for an issue: the issue itself
+  (title, state and body) and each comment, under the same stable headers.
+  Every section sits under a stable header naming the item kind, id and
   time, plus the author's verified login and role, for example
   `### comment 6437236013, jpeletier (owner), 2026-10-27T09:12Z`; bodies stay
   fenced as untrusted text, and filtering is unchanged — items the gateway drops
   never appear. Each full read also saves the thread as `.tmp/<n>-thread.md`
   under the checkout root (git-ignored) beside an index of item id → content
-  hashes (the body, plus the PR item's state line), and every
-  checkout or worktree keeps its own snapshot.
-  `read pr <n> --new` prints only the difference since that snapshot, by item id:
-  new items under their header, edited items with `(edited)` and the full new
-  body, deleted items with `(deleted)`, and one closing `<k> unchanged` line for
-  the omitted items. The PR item hashes its structured `state …, draft …, head …`
-  line separately from its fenced body, so a pushed head re-reports only the
-  state line and title and body re-appear only when they changed; an old-format
+  hashes (the body, plus the pr and issue items' state line), and every
+  checkout or worktree keeps its own snapshot. Issues and PRs share one number
+  space, so snapshot names cannot collide.
+  `read pr <n> --new` and `read issue <n> --new` print only the difference since
+  that snapshot, by item id: new items under their header, edited items with
+  `(edited)` and the full new body, deleted items with `(deleted)`, and one
+  closing `<k> unchanged` line for the omitted items. The pr and issue items
+  hash their structured state line separately from their fenced body — the PR
+  item's line carries `draft` and `head` besides `state` — so a pushed head or a
+  closed and reopened issue re-reports only the state line while title and body
+  re-appear only when they changed; an old-format
   index without that separation is `snapshot unreadable`. It then replaces the
   snapshot. When nothing changed it
   prints exactly `#<n>: nothing new since your last read (<k> unchanged)`, exits
@@ -150,8 +155,9 @@ the watcher leaves the copied label unjudged for the two-minute in-flight window
 `autopilotInherit({ref}) → string`.
 
 `issue edit` and `scope-review` are orchestrator-only, configured-repository writes.
-Read an issue first: `read issue` saves its exact body hash in worktree-local
-`.tmp/`; `issue edit` checks the live body against it immediately before writing.
+Read an issue first: `read issue` (plain or with `--new`) saves its exact body hash
+in worktree-local `.tmp/`; `issue edit` checks the live body against it immediately
+before writing.
 This is a stale-read guard, not an atomic GitHub compare-and-swap. Both writes
 validate Markdown and closing syntax, and refuse a body whose line consists only
 of a dependency reference: dependencies go in the blocked-by relation through

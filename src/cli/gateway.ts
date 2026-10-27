@@ -212,10 +212,11 @@ async function existingVerb(
         args.length > 3 ||
         (option !== undefined &&
           !["--files", "--diff", "--reviews", "--checks", "--new"].includes(option)) ||
-        (option !== undefined && kind !== "pr")
+        (option !== undefined &&
+          (option === "--new" ? !["pr", "issue"].includes(kind) : kind !== "pr"))
       ) {
         throw new Error(
-          "Usage: vmethod read pr|issue|comment|checks|registry <ref> [--files|--diff|--reviews|--checks|--new]"
+          "Usage: vmethod read pr <ref> [--files|--diff|--reviews|--checks|--new] | read issue <ref> [--new] | read comment|checks|registry <ref>"
         );
       }
       return transport.call("read", { kind, ref, option } as ReadInput, ctx);

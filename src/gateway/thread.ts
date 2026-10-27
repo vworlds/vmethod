@@ -4,22 +4,22 @@ import { bodyHash } from "./scope.js";
 import { object, untrusted, type ObjectData } from "./people.js";
 import type { ThreadRef } from "./refs.js";
 
-/** One rendered thread section: the PR itself, a comment, a review or a review comment. */
+/** One rendered thread section: the PR or issue itself, a comment, a review or a review comment. */
 export interface ThreadItem {
-  kind: "pr" | "comment" | "review" | "review comment";
-  /** `pr` items carry the pull request number; the rest a numeric REST id. */
+  kind: "pr" | "issue" | "comment" | "review" | "review comment";
+  /** The thread's pr and issue items carry the thread number; the rest a numeric REST id. */
   id: string;
   /** Minute-precision UTC creation time, as the item header shows it. */
   time: string;
   login: string;
   role: string;
-  /** The delivered body part: untrusted fence; for the pr item everything after the state line. */
+  /** The delivered body part: untrusted fence; for the pr and issue items everything after the state line. */
   content: string;
-  /** pr items only: the structured state line, hashed separately from the body. */
+  /** pr and issue items only: the structured state line, hashed separately from the body. */
   metaLine?: string;
 }
 
-/** A snapshot record: the item's header data plus its body hash (and the pr item's state-line hash). */
+/** A snapshot record: the item's header data plus its body hash (and a root item's state-line hash). */
 export interface SnapshotRecord {
   kind: ThreadItem["kind"];
   id: string;
@@ -44,7 +44,7 @@ export type ThreadDelta =
       next: readonly ThreadItem[];
     };
 
-const kinds: string[] = ["pr", "comment", "review", "review comment"];
+const kinds: string[] = ["pr", "issue", "comment", "review", "review comment"];
 const roles: string[] = ["owner", "orchestrator", "worker", "collaborator", "system"];
 
 export function itemKey(item: Pick<ThreadItem, "kind" | "id">): string {
@@ -95,7 +95,7 @@ function itemHash(item: ThreadItem): string {
   return bodyHash(`${threadHeader(item)}\n\n${item.content}`);
 }
 
-/** The structured state line hash; absent for every non-pr item. */
+/** The structured state line hash; absent for comments, reviews and review comments. */
 function metaHash(item: ThreadItem): string | undefined {
   return item.metaLine === undefined ? undefined : bodyHash(item.metaLine);
 }
@@ -186,15 +186,16 @@ export function readThreadSnapshot(root: string, base: string): ThreadSnapshot {
       return { state: "unreadable", reason: "invalid index entry" };
     }
     const meta: unknown = entry.meta;
-    // The pr item hashes its state line separately from its body; an old-format
-    // pr record without it is unreadable, so a push never diffs on a stale guess.
-    const stateHash =
-      kind === "pr"
-        ? typeof meta === "string" && /^[0-9a-f]{64}$/.test(meta)
-          ? meta
-          : undefined
-        : null;
-    if (kind === "pr" ? stateHash === undefined : meta !== undefined) {
+    // The thread's root item (pr or issue) hashes its state line separately from
+    // its body; an old-format root record without it is unreadable, so a read
+    // never diffs on a stale guess.
+    const isRoot = kind === "pr" || kind === "issue";
+    const stateHash = isRoot
+      ? typeof meta === "string" && /^[0-9a-f]{64}$/.test(meta)
+        ? meta
+        : undefined
+      : null;
+    if (isRoot ? stateHash === undefined : meta !== undefined) {
       return { state: "unreadable", reason: "invalid index entry" };
     }
     const record: SnapshotRecord = {
@@ -239,8 +240,8 @@ export function threadDiff(
       sections.push(threadSection(item));
       continue;
     }
-    // The pr item prints only the changed part: its state line alone, or its
-    // body alone, or both; everything unchanged stays omitted.
+    // The pr and issue items print only the changed part: their state line
+    // alone, or their body alone, or both; everything unchanged stays omitted.
     const metaChanged = record.meta !== metaHash(item);
     const bodyChanged = record.hash !== itemHash(item);
     if (!metaChanged && !bodyChanged) {

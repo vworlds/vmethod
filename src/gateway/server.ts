@@ -51,7 +51,7 @@ import {
   threadSection,
   threadTime,
   type ThreadItem,
-} from "./pr-thread.js";
+} from "./thread.js";
 import { AutopilotReader, inheritAutopilot, type AutopilotState } from "./autopilot.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { setTurn, turnAssignees } from "./turn.js";
@@ -1690,15 +1690,83 @@ class GatewayServer {
     return items;
   }
 
+  /** The whole issue thread as one item per section: the issue (title, state and
+   * body), then each comment. Every step filters identities exactly like the
+   * labelled reads; a dropped author's read is skipped. */
+  private async issueThread(
+    item: ObjectData,
+    link: string,
+    target: ThreadRef
+  ): Promise<ThreadItem[] | undefined> {
+    const content = await this.node(String(item.id), "title body state createdAt", "Issue");
+    const author = this.filter.accept(content, repoOf(content).owner, link);
+    if (!author) {
+      // Today's read: the re-filtered issue body returning nothing means no thread.
+      return undefined;
+    }
+    if (typeof content.state !== "string") {
+      throw new Error("Missing issue state");
+    }
+    // The exact body this read delivered, hashed for `issue edit`'s stale-read guard.
+    if (target.repo === String(this.config.repo)) {
+      mkdirSync(resolve(this.root, ".tmp"), { recursive: true });
+      writeFileSync(
+        resolve(this.root, ".tmp", `issue-read-${target.number}.sha256`),
+        bodyHash(String(content.body))
+      );
+    }
+    const items: ThreadItem[] = [];
+    const seen = new Set<string>();
+    const add = (entry: ThreadItem): void => {
+      const key = itemKey(entry);
+      if (seen.has(key)) {
+        throw new Error(`Duplicate thread item ${key}`);
+      }
+      seen.add(key);
+      items.push(entry);
+    };
+    add({
+      kind: "issue",
+      id: String(target.number),
+      time: threadTime(content.createdAt),
+      login: author.login,
+      role: author.role,
+      // The state line hashes separately from the body: a close or reopen
+      // re-reports only it, never the untouched title and body (#292).
+      metaLine: `state ${content.state}`,
+      content: threadContent(content),
+    });
+    for (const meta of await this.collection(String(item.id), "Issue", "comments")) {
+      if (!this.filter.accept(meta, repoOf(meta).owner, link)) {
+        continue;
+      }
+      const entry = await this.threadEntry(
+        "comment",
+        meta,
+        link,
+        "body databaseId createdAt",
+        "IssueComment"
+      );
+      if (entry) {
+        add(entry);
+      }
+    }
+    return items;
+  }
+
   /** Print the per-item thread; `--new` diffs against the checkout-local snapshot. */
-  private async prReport(
+  private async threadReport(
+    kind: "pr" | "issue",
     ref: string,
     item: ObjectData,
     link: string,
     option: ReadInput["option"]
   ): Promise<string> {
     const target = reference(ref, this.config);
-    const items = await this.prThread(item, link, target);
+    const items =
+      kind === "pr"
+        ? await this.prThread(item, link, target)
+        : await this.issueThread(item, link, target);
     if (!items) {
       return "No accepted thread";
     }
@@ -1759,8 +1827,10 @@ class GatewayServer {
     if (
       !["pr", "issue", "comment", "checks", "registry"].includes(kind) ||
       (option !== undefined &&
-        (kind !== "pr" ||
-          !["--files", "--diff", "--reviews", "--checks", "--new"].includes(option)))
+        (kind === "issue"
+          ? option !== "--new"
+          : kind !== "pr" ||
+            !["--files", "--diff", "--reviews", "--checks", "--new"].includes(option)))
     ) {
       throw new Error("Unsupported read kind or option");
     }
@@ -1808,7 +1878,6 @@ class GatewayServer {
     if (kind === "checks" || option === "--checks") {
       return this.checks(item, link);
     }
-    const type = kind === "issue" ? "Issue" : "PullRequest";
     if (option === "--files" || option === "--diff") {
       if (kind !== "pr") {
         throw new Error("Files and diff require a PR");
@@ -1846,47 +1915,27 @@ class GatewayServer {
       }
       return labelled(person, JSON.stringify(files, null, 2));
     }
-    if (kind === "pr" && option !== "--reviews") {
-      return this.prReport(ref, item, link, option);
-    }
-    const output: string[] = [];
-    if (option !== "--reviews") {
-      const content = await this.node(String(item.id), "title body", type);
-      const body = renderItem(content, this.filter, link);
-      if (!body) {
-        return "No accepted thread";
+    if (option === "--reviews") {
+      if (kind !== "pr") {
+        throw new Error("Reviews require a PR");
       }
-      if (kind === "issue" && reference(ref, this.config).repo === String(this.config.repo)) {
-        mkdirSync(resolve(this.root, ".tmp"), { recursive: true });
-        writeFileSync(
-          resolve(this.root, ".tmp", `issue-read-${reference(ref, this.config).number}.sha256`),
-          bodyHash(String(content.body))
+      const output: string[] = [];
+      for (const meta of await this.collection(String(item.id), "PullRequest", "reviews")) {
+        if (!this.filter.accept(meta, repoOf(meta).owner, link)) {
+          continue;
+        }
+        const body = renderItem(
+          await this.node(String(meta.id), "body", "PullRequestReview"),
+          this.filter,
+          link
         );
+        if (body) {
+          output.push(body);
+        }
       }
-      output.push(body);
+      return output.join("\n\n") || "No accepted content";
     }
-    const field = option === "--reviews" ? "reviews" : "comments";
-    if (field === "reviews" && kind !== "pr") {
-      throw new Error("Reviews require a PR");
-    }
-    for (const meta of await this.collection(String(item.id), type, field)) {
-      if (!this.filter.accept(meta, repoOf(meta).owner, link)) {
-        continue;
-      }
-      const body = renderItem(
-        await this.node(
-          String(meta.id),
-          "body",
-          field === "reviews" ? "PullRequestReview" : "IssueComment"
-        ),
-        this.filter,
-        link
-      );
-      if (body) {
-        output.push(body);
-      }
-    }
-    return output.join("\n\n") || "No accepted content";
+    return this.threadReport(kind, ref, item, link, option);
   };
 
   /** Post exact Markdown without changing the turn. A same-PR discussion_r replyTo

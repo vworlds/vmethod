@@ -538,7 +538,14 @@ test("registry reads authenticate first but never send GitHub credentials to npm
 test("comment pagination carries the cursor, filters before follow-up reads, and labels a trusted editor", async () => {
   const fixture = fixtureServer([
     graph({ repository: { issue: item() } }),
-    graph({ node: item({ title: "Issue", body: hostile }) }),
+    graph({
+      node: item({
+        title: "Issue",
+        body: hostile,
+        state: "OPEN",
+        createdAt: "2026-10-27T09:12:00Z",
+      }),
+    }),
     graph({
       node: item({
         comments: {
@@ -558,9 +565,11 @@ test("comment pagination carries the cursor, filters before follow-up reads, and
     graph({
       node: item({
         id: "accepted",
+        databaseId: 6437236013,
         lastEditedAt: "now",
         editor: actor(2),
         body: hostile,
+        createdAt: "2026-10-27T09:12:00Z",
       }),
     }),
   ]);
@@ -582,7 +591,7 @@ test("comment pagination carries the cursor, filters before follow-up reads, and
     kind: "issue",
     ref: "3",
   });
-  expect(result).toContain("from peer (orchestrator)");
+  expect(result).toContain("### comment 6437236013, peer (orchestrator), 2026-10-27T09:12Z");
   fixture.done();
 }, 15000);
 
