@@ -747,6 +747,11 @@ test.each([
   ["issue", ["close", "37", "--comment"]],
   ["issue", ["close", "37", "--wrong", "file"]],
   ["board", ["set", "39", "Estimate"]],
+  ["board", ["add"]],
+  ["board", ["add", "39", "--estimate"]],
+  ["board", ["add", "39", "--estimate", "NaN"]],
+  ["board", ["add", "39", "--bogus", "x"]],
+  ["board", ["add", "39", "--status", "Done", "--status", "Done"]],
   ["board", ["set", "39", "Progress", "👤❓", "--clear"]],
   ["board", ["set", "39", "Estimate", "--clear", "5"]],
   ["board", ["set", "39", "Estimate", "5", "--repo", "foreign"]],
@@ -832,6 +837,7 @@ test.each([
   "issueEstimate",
   "boardSetIssue",
   "boardSetAssignees",
+  "boardAdd",
 ] as const)(
   "%s denies workers before any network",
   async (operation) => {
@@ -842,6 +848,7 @@ test.each([
       issueEstimate: { ref: "37", points: 5 },
       boardSetIssue: { ref: "37", field: "Estimate", value: "5" },
       boardSetAssignees: { ref: "37", value: null },
+      boardAdd: { ref: "37" },
     };
     await expect(
       f.transport.call(operation, inputs[operation], { role: "worker", taskPr: 40 })
@@ -851,7 +858,13 @@ test.each([
   15000
 );
 
-test.each(["issueClose", "issueEstimate", "boardSetIssue", "boardSetAssignees"] as const)(
+test.each([
+  "issueClose",
+  "issueEstimate",
+  "boardSetIssue",
+  "boardSetAssignees",
+  "boardAdd",
+] as const)(
   "%s rejects foreign references before networking",
   async (operation) => {
     const f = fixtureServer([]);
@@ -1013,25 +1026,177 @@ test("issue create reports failure without retrying a non-idempotent write", asy
   f.done();
 }, 15000);
 
-test("issue create identifies the issue after a board add failure without recreating it", async () => {
-  const requests = createBoardReads();
-  requests.pop();
+test("issue create names the board add retry command on a failed follow-up and board add repairs it", async () => {
+  const recording = createdCard();
+  const card = recording.items.nodes[0];
+  const statusField = recording.fields.nodes.find((field) => field.name === "Status")!;
+  const backlog = { id: "6f1a2b3c", name: "Backlog", color: "GRAY", description: "" };
+  statusField.options!.push(backlog);
   const f = fixtureServer([
     {
       path: "/repos/example/project/issues",
       json: { number: issueResponse.number, node_id: issueResponse.node_id },
     },
-    ...requests,
+    // The membership add mutation fails: the issue exists, the board never saw it.
+    ...createBoardReads(recording).slice(0, 4),
     { path: "/graphql", json: { errors: [{ message: "add refused" }] } },
+    // The named retry command repairs it: membership, Estimate and default Status.
+    graph({ repository: { issue: item({ id: issueResponse.node_id }) } }),
+    graph({ node: { ...acceptedIssue(), id: issueResponse.node_id } }),
+    ...boardReads(recording).slice(0, 2),
+    membershipRead(recording, false),
+    ...createBoardReads(recording),
+    ...boardReads(recording),
+    {
+      ...boardGraph({
+        m0: { projectV2Item: { id: card.id } },
+        m1: { projectV2Item: { id: card.id } },
+        m2: { projectV2Item: { id: card.id } },
+      }),
+      checkQuery(query, variables) {
+        expect(query).toContain("mutation BoardSetCards");
+        expect(variables).toEqual({
+          m0: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((f) => f.name === "Estimate")!.id,
+            value: { number: 2 },
+          },
+          m1: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((f) => f.name === "Progress")!.id,
+          },
+          m2: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: statusField.id,
+            value: { singleSelectOptionId: backlog.id },
+          },
+        });
+      },
+    },
   ]);
   const file = join(f.root, "body.md");
   writeFileSync(file, "Body");
-  await expect(f.transport.call("issueCreate", { title: "Title", file })).rejects.toThrow(
-    'Created issue #37; board follow-up failed: GitHub GraphQL (untrusted errors): "add refused". Do not recreate'
-  );
+  await expect(
+    gatewayVerb(f.transport, "issue", ["create", "Title", file, "--estimate", "2"], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).rejects.toThrow("retry with: vmethod board add 37 --estimate 2");
   expect(f.sleeps).toEqual([]);
+  expect(
+    await gatewayVerb(f.transport, "board", ["add", "37", "--estimate", "2"], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).toBe("Added issue #37 to the board");
   f.done();
 }, 15000);
+
+test("board add is idempotent: a bare re-run on an on-board issue makes no write", async () => {
+  const recording = structuredClone(boardRecording);
+  const card = recording.items.nodes[0];
+  const f = fixtureServer([
+    graph({ repository: { issue: item({ id: card.content.id }) } }),
+    graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+    ...boardReads(recording),
+    ...boardReads(recording).slice(0, 2),
+    boardGraph({ node: { __typename: "Issue", repository: { nameWithOwner: "example/project" } } }),
+    membershipRead(recording),
+  ]);
+  await expect(
+    gatewayVerb(f.transport, "board", ["add", "39"], { VMETHOD_ROLE: "orchestrator" })
+  ).resolves.toBe("Issue #39 is already on the board");
+  f.done();
+}, 15000);
+
+test("board add on an on-board issue writes only its passed field and keeps the Status", async () => {
+  const recording = structuredClone(boardRecording);
+  const card = recording.items.nodes[0];
+  const f = fixtureServer([
+    graph({ repository: { issue: item({ id: card.content.id }) } }),
+    graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+    ...boardReads(recording),
+    ...boardReads(recording).slice(0, 2),
+    boardGraph({ node: { __typename: "Issue", repository: { nameWithOwner: "example/project" } } }),
+    membershipRead(recording),
+    ...boardReads(recording),
+    {
+      ...boardGraph({ m0: { projectV2Item: { id: card.id } } }),
+      checkQuery(query, variables) {
+        expect(query).toContain("mutation BoardSetCards");
+        expect(Object.keys(variables)).toEqual(["m0"]);
+        expect(variables.m0).toEqual({
+          projectId: recording.id,
+          itemId: card.id,
+          fieldId: recording.fields.nodes.find((field) => field.name === "Estimate")!.id,
+          value: { number: 3 },
+        });
+      },
+    },
+  ]);
+  await expect(
+    gatewayVerb(f.transport, "board", ["add", "39", "--estimate", "3"], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).resolves.toBe("Repaired issue #39 board fields");
+  f.done();
+}, 15000);
+
+test("board add --status is the only re-run form that moves an on-board card's Status", async () => {
+  const recording = structuredClone(boardRecording);
+  const card = recording.items.nodes[0];
+  const statusField = recording.fields.nodes.find((field) => field.name === "Status")!;
+  const done = statusField.options!.find((option) => option.name === "Done")!;
+  const f = fixtureServer([
+    graph({ repository: { issue: item({ id: card.content.id }) } }),
+    graph({ node: { ...acceptedIssue(), id: card.content.id } }),
+    ...boardReads(recording),
+    ...boardReads(recording).slice(0, 2),
+    boardGraph({ node: { __typename: "Issue", repository: { nameWithOwner: "example/project" } } }),
+    membershipRead(recording),
+    ...boardReads(recording),
+    {
+      ...boardGraph({
+        m0: { projectV2Item: { id: card.id } },
+        m1: { projectV2Item: { id: card.id } },
+      }),
+      checkQuery(query, variables) {
+        expect(query).toContain("mutation BoardSetCards");
+        expect(variables).toEqual({
+          m0: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((field) => field.name === "Progress")!.id,
+          },
+          m1: {
+            projectId: recording.id,
+            itemId: card.id,
+            fieldId: statusField.id,
+            value: { singleSelectOptionId: done.id },
+          },
+        });
+      },
+    },
+  ]);
+  await expect(
+    gatewayVerb(f.transport, "board", ["add", "39", "--status", "Done"], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).resolves.toBe("Repaired issue #39 board fields");
+  f.done();
+}, 15000);
+
+test("board add requires a configured board", async () => {
+  const f = fixtureServer([]);
+  const config = join(f.root, "vmethod.yaml");
+  writeFileSync(config, readFileSync(config, "utf8").replace("enabled: true", "enabled: false"));
+  const gateway = createGateway(f.root, f.env, f.deps);
+  await expect(gateway.call("boardAdd", { ref: "37" }, { role: "orchestrator" })).rejects.toThrow(
+    "Board is disabled"
+  );
+  f.done();
+});
 
 test.each([NaN, Infinity, -1, 4, 1.5])(
   "issue create rejects invalid estimate %s before networking",
@@ -1043,6 +1208,37 @@ test.each([NaN, Infinity, -1, 4, 1.5])(
     f.done();
   }
 );
+
+test.each([
+  [NaN, "Estimate must be one of"],
+  [Infinity, "Estimate must be one of"],
+  [-1, "Estimate must be one of"],
+  [4, "0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999"],
+])("board add rejects invalid estimate %s before networking", async (estimate, message) => {
+  const f = fixtureServer([]);
+  await expect(f.transport.call("boardAdd", { ref: "37", estimate })).rejects.toThrow(message);
+  f.done();
+});
+
+test("board add refuses a closed issue without writing", async () => {
+  const card = structuredClone(boardRecording).items.nodes[0];
+  const f = fixtureServer([
+    graph({ repository: { issue: item({ id: card.content.id }) } }),
+    graph({ node: { ...acceptedIssue(), id: card.content.id, state: "CLOSED" } }),
+  ]);
+  await expect(f.transport.call("boardAdd", { ref: "39" })).rejects.toThrow(
+    "Refusing board add on closed issue #39"
+  );
+  f.done();
+}, 15000);
+
+test("board add refuses a PR before any write", async () => {
+  const f = fixtureServer([graph({ repository: { issue: null } })]);
+  await expect(f.transport.call("boardAdd", { ref: "39" })).rejects.toThrow(
+    "GitHub thread not found"
+  );
+  f.done();
+}, 15000);
 
 test("issue create with disabled board preserves standalone creation", async () => {
   const f = fixtureServer([

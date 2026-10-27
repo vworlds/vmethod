@@ -545,6 +545,22 @@ export class BoardService implements BoardIO {
     return text(object(object(result.addProjectV2ItemById).item).id);
   }
 
+  /** The configured-board issue card for a content ID, or null when the issue has no
+   * live membership in the configured project (#287 board add idempotence probe);
+   * membership is read from the issue side, never the eventually consistent listing. */
+  async issueCard(contentId: string): Promise<Card | null> {
+    const snapshot = await this.snapshot();
+    const node = await this.issueSideItem(contentId, snapshot.id);
+    if (!node) {
+      return null;
+    }
+    const card = await this.decodeCard(node);
+    if (card.kind !== "Issue" || card.contentId !== contentId) {
+      return null;
+    }
+    return card;
+  }
+
   private async issueSideItem(
     contentId: string,
     projectId: string

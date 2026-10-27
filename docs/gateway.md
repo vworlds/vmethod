@@ -127,6 +127,7 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod autopilot inherit <pr>`
 - `vmethod board set <issue> <field> <value>|--clear`
 - `vmethod board set <issue|pr> Assignees owner|orchestrator|--clear`
+- `vmethod board add <issue> [--estimate n] [--status name]`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package with `npm exec --no -- vmethod`, never a downloading fallback.
@@ -229,8 +230,10 @@ configured board through the issue-side relation, then applies optional points-s
 `--status` values through the shared field writer; Status clears Progress, and
 without `--status` it defaults to the first workflow column (Backlog). You can
 immediately use `board set` after successful creation. If board follow-up fails,
-the error identifies the created issue: inspect it and retry board operations,
-never repeat creation. A disabled board skips membership; estimate/status flags
+the error identifies the created issue and ends with `retry with: vmethod board
+add <n>` plus the creation's original `--estimate`/`--status` flags: run that
+exact command once to complete the failed board writes idempotently, never
+repeat creation. A disabled board skips membership; estimate/status flags
 require a board. Closure gates the issue's author/editor through the people filter
 and optionally posts a checked file comment before closing. It does not close PRs
 or move board cards implicitly. Both file paths reject closing/association syntax.
@@ -283,6 +286,20 @@ this is what keeps housekeeping from being misread as another session's move.
 This is a deliberate-repair verb for cases such as a stale owner assignee left on
 an epic in Executing; anything that waits on the owner still goes through the
 tracked owner-question commands.
+
+`board add <issue> [--estimate n] [--status name]` is the orchestrator-only
+repair for an `issue create` whose board follow-up failed (#287): it re-runs
+exactly that follow-up — `board.ensure` membership through the issue-side
+relation, then one `setIssueFields` call with the effective entries — inside the
+same journaled operation (#199). It is idempotent. An issue not on the configured
+board is added and receives Status (`--status`, or the first workflow column
+when omitted) plus any passed `--estimate`; an issue already on the board keeps
+its Status unless `--status` is given and only the fields that were passed are
+written, so a re-run never moves a card back to Backlog. Estimates must use the
+shared points scale. A foreign reference, a PR and a closed issue are refused
+before any write. `board status --fix` is unchanged by this verb: it repairs the
+README's own drift, never a missing board membership. The typed operation is
+`boardAdd({ref, estimate?, status?})` in `src/gateway/transport.ts`.
 
 ## Worker commands
 
