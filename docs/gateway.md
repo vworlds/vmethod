@@ -135,7 +135,9 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
 - `vmethod board add <issue> [--estimate n] [--status name]`
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
-installed package with `npm exec --no -- vmethod`, never a downloading fallback.
+installed package through the PATH launcher, `vmethod <verb>`; where it is not
+installed yet, `npm exec --no -- vmethod` still refuses to download. Never use a
+downloading fallback.
 
 `autopilot stop` is an orchestrator-only, configured-repository removal on an
 accepted issue or PR. It posts the stop in the thread; the next watcher poll
@@ -369,7 +371,8 @@ suggest-model <issue>
 grade <delivery-pr> [points]
 ```
 
-The wrapper must set `VMETHOD_ROLE=orchestrator`. Worker clients cannot launch,
+Your checkout's environment must set `VMETHOD_ROLE=orchestrator`; do not prefix it
+on commands. Worker clients cannot launch,
 switch, grade or interrupt sessions. All GitHub and opencode operations stay on
 the typed gateway transport; Basic authentication is in headers, never argv.
 

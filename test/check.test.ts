@@ -27,6 +27,18 @@ test("missing family price warns without failing or pretending usage is free", (
   ).toBe(true);
 });
 
+test("check validates role and root overrides from the checkout environment", () => {
+  const root = validProject();
+  expect(check(root, { VMETHOD_ROLE: "worker", VMETHOD_ROOT: root }).code).toBe(0);
+  const invalid = check(root, { VMETHOD_ROLE: "typo", VMETHOD_ROOT: join(root, "missing") });
+  expect(invalid.code).toBe(1);
+  expect(invalid.messages).toEqual([
+    "VMETHOD_ROLE is typo, not orchestrator or worker; fix it in this checkout's .claude/settings.local.json",
+    `VMETHOD_ROOT is ${join(root, "missing")}, which is not a usable directory; commands resolve the checkout from it`,
+  ]);
+  expect(check(root, { VMETHOD_ROOT: join(root, "vmethod.yaml") }).code).toBe(1);
+});
+
 test("only explicit prerelease deferral softens absent settings, on every run", () => {
   const root = validProject();
   rmSync(join(root, ".claude/settings.json"));

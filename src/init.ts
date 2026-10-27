@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync, chmodSync, lstatSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { stringify } from "yaml";
 import { validateYaml } from "./config.js";
-import { stub, verbs } from "./registry.js";
+import { launcher, launcherMark, stub, verbs } from "./registry.js";
 
 export function init(root: string, templateRoot: string, dryRun = false): string[] {
   const plans: { path: string; text: string; executable?: boolean }[] = [];
@@ -126,4 +127,34 @@ export function init(root: string, templateRoot: string, dryRun = false): string
     }
   }
   return plans.map((plan) => `${dryRun ? "Would write" : "Wrote"} ${plan.path}`);
+}
+
+/** The launcher lives outside a checkout (`~/.local/bin` by default); an argument's
+ * home-relative form is expanded here, since commands run without a shell that would.
+ */
+export function launcherDir(dir?: string): string {
+  const value = dir ?? "~/.local/bin";
+  if (value === "~") {
+    return homedir();
+  }
+  return value.startsWith("~/") ? join(homedir(), value.slice(2)) : value;
+}
+
+/** Write the marked per-machine launcher, replacing only files that carry its marker. */
+export function installLauncher(dir: string): string {
+  const target = join(dir, "vmethod");
+  try {
+    const entry = lstatSync(target);
+    if (!entry.isFile() || !readFileSync(target, "utf8").split(/\r?\n/).includes(launcherMark)) {
+      throw new Error(`Refusing to overwrite a file that is not a vmethod launcher: ${target}`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(target, launcher());
+  chmodSync(target, 0o755);
+  return `Wrote ${target}`;
 }

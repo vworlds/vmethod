@@ -38,9 +38,12 @@ Never edit, build in or switch another checkout, or commit to `baseBranch` or
 `releaseBranch`. One session owns the worktree: resume it rather than launching a
 second worker there. `push` owns submission; see the
 [worker command reference](gateway.md#worker-commands). Invoke the local bin through
-`npm exec --no -- vmethod`, never a downloading fallback. Your session already runs
-with the worker identity: `VMETHOD_ROLE=worker`, your own gh login in `GH_CONFIG_DIR`
-and your git author; never change them.
+`vmethod` on PATH (the launcher; [adoption](adoption.md) installs it with `init --launcher`),
+never a downloading fallback, and do not prefix `VMETHOD_ROLE` or `VMETHOD_ROOT`:
+your session already runs with the worker identity — `VMETHOD_ROLE=worker`, your own
+gh login in `GH_CONFIG_DIR` and your git author, all from this checkout's
+`.claude/settings.local.json` — and the checkout resolves from `VMETHOD_ROOT` or git
+discovery. `vmethod check` verifies the environment. Never change them.
 
 ### Commands
 
@@ -52,11 +55,11 @@ worktree or `.vmethod/.env` is missing; report it as BLOCKED rather than setting
 variables yourself. The generated `scripts/agent/*.sh` stubs work the same way.
 
 ```sh
-npm exec --no -- vmethod read pr <n>
-npm exec --no -- vmethod read pr <n> --new
-npm exec --no -- vmethod pr-comment <n> .tmp/<file>.md
-npm exec --no -- vmethod push
-npm exec --no -- vmethod wait-checks <n>
+vmethod read pr <n>
+vmethod read pr <n> --new
+vmethod pr-comment <n> .tmp/<file>.md
+vmethod push
+vmethod wait-checks <n>
 ```
 
 The first command per session reads the full thread and leaves its snapshot

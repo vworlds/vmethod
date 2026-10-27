@@ -28,7 +28,11 @@ an exactly pinned devDependency (`"@vworlds/vmethod": "1.2.0"`). Both current co
   - **Never `npx vmethod`.** With `node_modules` missing (a fresh worktree, a failed `npm ci`),
     `npx` silently downloads the *latest* package from the registry, unpinned. That is exactly
     the hole the pin closes.
-  - Docs say `npm exec --no -- vmethod <verb>`, which refuses to download.
+  - Docs say `vmethod <verb>`: the PATH launcher written by `init --launcher` resolves
+    the checkout the same way and runs that checkout's own install — `node_modules/.bin/vmethod`
+    in a consumer, `node <checkout>/dist/vmethod.mjs` in vmethod's own checkout (its
+    `package.json` names `@vworlds/vmethod`). Until a machine has installed it, guides still
+    teach `npm exec --no -- vmethod <verb>`, which refuses to download.
   - `vmethod init` writes thin stubs (`scripts/agent/<x>.sh`, each marked `# vmethod stub`) that
     `exec "$(git rev-parse --show-toplevel)/node_modules/.bin/vmethod" <verb> "$@"`, and fail
     with "run npm ci" if it is absent. The paths in existing prompts, docs and habits keep
@@ -559,7 +563,8 @@ vmethod's wrappers, which call GitHub internally:
 
 - **Enforced, not just documented.** The hard stop is a permission rule: Claude Code
   `.claude/settings.json` denies `Bash(gh *)`, `npx`, `curl`/`wget` to GitHub, and `git push` outside
-  `push.sh`, and allows the `vmethod` stubs and `npm exec --no -- vmethod`. opencode gets the equivalent config. `templates/` ships both.
+  `push.sh`, and allows the `vmethod` stubs, `npm exec --no -- vmethod` and the `vmethod` PATH
+  launcher. opencode gets the equivalent config. `templates/` ships both.
   **The owner installs them; agents never edit their own permissions.** `vmethod check` verifies
   that they are in place.
 - **Inbound filter.** Before anything reaches the agent:

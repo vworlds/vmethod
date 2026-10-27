@@ -97,6 +97,9 @@ export function smoke() {
     const output = run(cli, ["check"], consumer, env);
     const expectedWarnings = ["sol", "astra", "sonnet", "glm", "big-pickle"]
       .map((family) => `WARN models.yaml: ${family} has no price; delivery usd is null`)
+      .concat([
+        "WARN vmethod is not on PATH; write it with npm exec --no -- vmethod init --launcher",
+      ])
       .join("\n");
     if (output.trim() !== expectedWarnings) {
       throw new Error(`Unexpected check output: ${output}`);
@@ -109,6 +112,13 @@ export function smoke() {
     const version = run(cli, ["version"], consumer, env);
     if (!version.includes(`vmethod ${pkg.version}`)) {
       throw new Error("Bundled version differs from packed package");
+    }
+    // The per-machine launcher resolves the consumer's own install with no npm exec.
+    const launcherBin = join(temp, "launcher-bin");
+    run(cli, ["init", "--launcher", launcherBin], consumer, env);
+    const throughLauncher = run(join(launcherBin, "vmethod"), ["version"], consumer, env);
+    if (!throughLauncher.includes(`vmethod ${pkg.version}`)) {
+      throw new Error("Launcher did not resolve the consumer checkout's own installation");
     }
     if (!readFileSync(join(consumer, "package.json")).equals(originalPackage)) {
       throw new Error("Smoke unexpectedly modified consumer package.json");

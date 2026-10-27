@@ -1,9 +1,9 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
-import { check } from "../check.js";
+import { check, launcherReport } from "../check.js";
 import { configValue, getConfig } from "../config.js";
-import { init } from "../init.js";
+import { init, installLauncher, launcherDir } from "../init.js";
 import { verbs } from "../registry.js";
 import { createGateway } from "../gateway/server.js";
 import { checkOnline } from "../gateway/identity.js";
@@ -187,12 +187,20 @@ try {
         }
       }
       console.log(result.messages.length ? result.messages.join("\n") : "vmethod check: ok");
+      console.log(launcherReport(process.env));
       process.exitCode = result.code;
       break;
     }
     case "init": {
+      if (args[0] === "--launcher") {
+        if (args.length > 2 || (args[1] !== undefined && args[1].startsWith("-"))) {
+          throw new Error("Usage: vmethod init --launcher [dir]");
+        }
+        console.log(installLauncher(launcherDir(args[1])));
+        break;
+      }
       if (args.length && (args.length !== 1 || args[0] !== "--dry-run")) {
-        throw new Error("Usage: vmethod init [--dry-run]");
+        throw new Error("Usage: vmethod init [--dry-run] or init --launcher [dir]");
       }
       const templates = resolve(dirname(fileURLToPath(import.meta.url)), "../templates");
       console.log(

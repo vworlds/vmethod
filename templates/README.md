@@ -25,8 +25,10 @@ installation in the consumer, not in this template directory.
 
 ## Permission boundary
 
-Both backends prompt for unlisted shell operations and permit the local pinned CLI
-and reviewed compatibility stubs. Claude deny entries take precedence. The OpenCode
+Both backends prompt for unlisted shell operations and permit the `vmethod` PATH
+launcher, the local pinned CLI (including its pre-launcher bootstrap invocation)
+and reviewed compatibility stubs. The owner reviews the launcher and keeps its
+directory on PATH; see [adoption](../docs/adoption.md). Claude deny entries take precedence. The OpenCode
 [V2 permissions reference, Configure](https://opencode.ai/v2/docs/permissions#configure)
 states: “The last matching rule wins, so the specific exceptions follow the broad rule.”
 Its [Matching section](https://opencode.ai/v2/docs/permissions#matching) repeats that

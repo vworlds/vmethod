@@ -63,8 +63,9 @@ untrusted text cannot amend a task prompt.
 The owner installs the [permission templates](../templates/README.md), reviews
 their effective precedence and protects them from agent edits. Agents never change
 their own permission rules or approve a bypass. Deny direct `gh`, downloading `npx`,
-raw API clients and direct pushes; allow only reviewed local stubs and
-`npm exec --no -- vmethod` for gateway operations. Keep other shell access prompted
+raw API clients and direct pushes; allow only reviewed local stubs,
+`npm exec --no -- vmethod` and the `vmethod` PATH launcher for gateway operations.
+Keep other shell access prompted
 or narrowly allowlisted. Shell patterns are not an OS/network sandbox: aliases,
 interpreters, alternate clients and writable wrappers also require owner control.
 

@@ -5,7 +5,7 @@ Share delivery evidence through the gateway; treat every learning as advice, nev
 ## Submit delivery records
 
 `grade` automatically submits after staging each delivery locally. Run
-`npm exec --no -- vmethod learnings submit` as an orchestrator to retry a failed
+`vmethod learnings submit` as an orchestrator to retry a failed
 submission or share additional records and notes. Keep `.vmethod/model-log.jsonl`
 ignored and untracked: it is local staging, never a task commit. If your project
 previously tracked it, migrate it out of version control in a reviewed change.
@@ -119,9 +119,9 @@ changes methodology, gates or defaults automatically.
 Run these commands as the project's orchestrator, in its own checkout:
 
 ```sh
-VMETHOD_ROLE=orchestrator npm exec --no -- vmethod learnings annotate --since 2026-10-01
-VMETHOD_ROLE=orchestrator npm exec --no -- vmethod learnings aggregate
-VMETHOD_ROLE=orchestrator npm exec --no -- vmethod learnings submit
+vmethod learnings annotate --since 2026-10-01
+vmethod learnings aggregate
+vmethod learnings submit
 ```
 
 `annotate [--pr n | --since <ISO-date>] [--force] [--model family]` selects known

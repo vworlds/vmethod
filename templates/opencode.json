@@ -4,6 +4,11 @@
     { "action": "shell", "resource": "*", "effect": "ask" },
     {
       "action": "shell",
+      "resource": "vmethod *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
       "resource": "npm exec --no -- vmethod *",
       "effect": "allow"
     },

@@ -1,11 +1,12 @@
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { join, dirname, delimiter } from "node:path";
 import { getConfig, loadYaml } from "./config.js";
 import type { Config } from "./config.js";
 import permissionTemplate from "../templates/claude-settings.json" with { type: "json" };
 import packageMetadata from "../package.json" with { type: "json" };
 import { gitIdentityVariables } from "./gateway/git.js";
+import { launcherMark } from "./registry.js";
 import type { Person } from "./gateway/people.js";
 import { workerCheckout } from "./gateway/worker-path.js";
 
@@ -38,6 +39,28 @@ export function check(
           `Missing ${key}: set in the orchestrator environment; git config identity is not used`
         );
       }
+    }
+  }
+  // Commands no longer spell the environment inline: the checkout's
+  // .claude/settings.local.json carries the role and checkout overrides must resolve.
+  const role = env.VMETHOD_ROLE;
+  if (role !== undefined && role !== "orchestrator" && role !== "worker") {
+    messages.push(
+      `VMETHOD_ROLE is ${role}, not orchestrator or worker; fix it in this checkout's .claude/settings.local.json`
+    );
+  }
+  const rootOverride = env.VMETHOD_ROOT;
+  if (rootOverride !== undefined) {
+    let usable: boolean;
+    try {
+      usable = statSync(rootOverride, { throwIfNoEntry: false })?.isDirectory() ?? false;
+    } catch {
+      usable = false;
+    }
+    if (!usable) {
+      messages.push(
+        `VMETHOD_ROOT is ${rootOverride}, which is not a usable directory; commands resolve the checkout from it`
+      );
     }
   }
   let missing = false;
@@ -260,4 +283,43 @@ function codeownersPattern(pattern: string): RegExp {
     }
   }
   return new RegExp(expression + "(?:/|$)");
+}
+
+/** Report whether the first executable `vmethod` on env.PATH is a marked launcher.
+ * Missing and foreign commands are advisory warnings, not blocking findings.
+ */
+export function launcherReport(env: NodeJS.ProcessEnv = {}): string {
+  const target = pathVmethod(env);
+  if (!target) {
+    return "WARN vmethod is not on PATH; write it with npm exec --no -- vmethod init --launcher";
+  }
+  let marked: boolean;
+  try {
+    marked = readFileSync(target, "utf8").split(/\r?\n/).includes(launcherMark);
+  } catch {
+    marked = false;
+  }
+  return marked
+    ? `vmethod on PATH is the vmethod launcher: ${target}`
+    : `WARN vmethod on PATH is ${target}, not a vmethod launcher; remove or rename it, then run vmethod init --launcher ${dirname(target)}`;
+}
+
+/** The PATH command a shell would execute: the first executable file named `vmethod`.
+ * Non-executable and broken entries are skipped like exec would.
+ */
+function pathVmethod(env: NodeJS.ProcessEnv): string | undefined {
+  for (const dir of env.PATH === undefined ? [] : env.PATH.split(delimiter)) {
+    const target = join(dir || ".", "vmethod");
+    try {
+      // A symlink to the launcher is still the launcher; a directory never runs.
+      if (!statSync(target).isFile()) {
+        continue;
+      }
+      accessSync(target, constants.X_OK);
+      return target;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
 }

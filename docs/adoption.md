@@ -6,11 +6,21 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
 
 - [ ] Install an **exactly pinned** `@vworlds/vmethod` devDependency and commit the
       lockfile. Use the Node version required by the release. Run `npm ci` in every
-      worktree; invoke through `npm exec --no -- vmethod`, never `npx`.
+      worktree; until the launcher below is installed, invoke through
+      `npm exec --no -- vmethod`, never `npx`.
 - [ ] Run `init --dry-run`, review, then `init`. It writes absent configuration and
       registered compatibility stubs; it never overwrites existing configuration or
       an unmarked script. Resolve conflicting local scripts explicitly, not by
       deleting them blindly. Current verbs are listed in [Package commands](package.md).
+- [ ] **Install the PATH launcher on every machine agents run commands on:**
+      `npm exec --no -- vmethod init --launcher` writes a marked `vmethod` script to
+      `~/.local/bin` by default (pass a different `dir` when needed), mode 755. Keep
+      the directory on `PATH`; `vmethod check` reports whether the `vmethod` on PATH
+      is this launcher. From then on commands are `vmethod <verb>` with no
+      `VMETHOD_ROLE`/`VMETHOD_ROOT` prefix. The launcher resolves the checkout the
+      commands run in and never executes another checkout's installation; it replaces
+      an older launcher and refuses to overwrite any file that does not carry its
+      marker.
 - [ ] Fill `repo`, `org`, `baseBranch`, `releaseBranch`, `stateName`, `workerCheckout`,
       `branches`, `board`, `checks`, `postMerge` and `changelog` from local settings
       as appropriate. Preserve existing state names and markers so watchers do not
@@ -51,7 +61,7 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       remain aliases. Set `board.enabled: false` for intentional offline/fork work.
 - [ ] Log each identity into its own gh config directory with
       `GH_CONFIG_DIR=<dir> gh auth login`; vmethod never reads `GH_TOKEN`. Identity
-      kept only in git config is not used. `VMETHOD_ROLE=orchestrator vmethod check`
+      kept only in git config is not used. `vmethod check` as the orchestrator
       reports missing identities and a missing worker checkout. In each checkout,
       `vmethod check --online` reports which login it holds.
 - [ ] Migrate in-flight opencode sessions with `worker adopt <pr> <session-id>`,
@@ -75,7 +85,8 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       dependencies. Run offline `check`; do not mistake skeleton validation for
       online identity, board or Markdown verification.
       During the rc pilot, with owner-approved permission installation deferred,
-      use `npm exec --no -- vmethod check --defer-permissions` in CI. The switch is
+      use `npm exec --no -- vmethod check --defer-permissions` in CI (CI machines
+      have no launcher; the long form still refuses to download). The switch is
       visible in the adoption diff and warns on every run; it only softens absent
       settings, never invalid installed settings or other findings. Remove it at
       1.0 and have the owner install permissions: stable releases reject the switch.

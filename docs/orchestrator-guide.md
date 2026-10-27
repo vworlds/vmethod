@@ -2,6 +2,12 @@
 
 Develop decisions with the owner, brief a worker and verify the result independently.
 
+Run commands as `vmethod <verb>` with the PATH launcher (`init --launcher` writes it;
+see [adoption](adoption.md)), and do not prefix `VMETHOD_ROLE` or `VMETHOD_ROOT`:
+your checkout's `.claude/settings.local.json` sets the role and the other identity
+variables, and commands resolve the checkout from `VMETHOD_ROOT` or git discovery.
+`vmethod check` verifies the environment.
+
 ## Autopilot
 
 An owner-applied `autopilot` label delegates the task's ordinary owner decisions to
@@ -127,7 +133,7 @@ keep the pause. **An owner comment alone never resumes execution.** After they
 agree in words, quote their exact words as a Markdown blockquote in your hand-back:
 
 ```sh
-npm exec --no -- vmethod review 43 answer .tmp/handback.md --owner-agreed https://github.com/org/repo/pull/43#issuecomment-123
+vmethod review 43 answer .tmp/handback.md --owner-agreed https://github.com/org/repo/pull/43#issuecomment-123
 ```
 
 The flag is your attestation that the quotation is agreement. The gateway verifies
@@ -165,10 +171,10 @@ On SCOPE, leave the issue in Spec review, read its current body, rewrite the fin
 specification and revise Estimate from the discussion:
 
 ```sh
-npm exec --no -- vmethod read issue 42
-npm exec --no -- vmethod issue edit 42 .tmp/scope.md
-npm exec --no -- vmethod issue estimate 42 8
-npm exec --no -- vmethod scope-review 42 .tmp/scope-changes.md
+vmethod read issue 42
+vmethod issue edit 42 .tmp/scope.md
+vmethod issue estimate 42 8
+vmethod scope-review 42 .tmp/scope-changes.md
 ```
 
 The edit refuses a body changed since your read; re-read and reconcile rather

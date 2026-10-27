@@ -342,9 +342,10 @@ repository in `board.repos`, including open tracks and packs, has adopted the
 required version. An ahead but compatible board gives a notice; an incompatible
 board refuses writes while allowing reads. Upgrade instead of bypassing that guard.
 
-Run `npm exec --no -- vmethod board status` to inspect the current version,
+Run `vmethod board status` to inspect the current version,
 pending migrations and owned-field drift. Preview with `board migrate --dry-run`;
-apply with `board migrate`. These operations require `VMETHOD_ROLE=orchestrator`.
+apply with `board migrate`. These operations are orchestrator-only (the gateway reads
+the role from the environment; never prefix it on the command).
 `--steal` is only for a stale lock (a holder line over one hour old) or an
 orphan. A lock field younger than a minute with no holder line is still being
 acquired: it is refused (`Migration lock being acquired`) and never stealable,

@@ -141,7 +141,8 @@ test("built CLI initializes and checks the verbatim public vecs TSV registry off
   expect(checked.stdout).toBe(
     ["sol", "luna", "astra", "sonnet", "opus", "glm", "glm-flash", "big-pickle"]
       .map((family) => `WARN models.yaml: ${family} has no price; delivery usd is null\n`)
-      .join("")
+      .join("") +
+      "WARN vmethod is not on PATH; write it with npm exec --no -- vmethod init --launcher\n"
   );
   expect(run(["init"]).stdout).toContain("Already initialized");
   expect(readFileSync(join(root, "models.tsv"))).toEqual(
@@ -228,7 +229,8 @@ test("CI self-check skips absent config and explicitly defers only missing owner
     ["sol", "astra", "sonnet", "glm", "big-pickle"]
       .map((family) => `WARN models.yaml: ${family} has no price; delivery usd is null\n`)
       .join("") +
-      "WARN permissions deferred (prerelease 0.0.0-dev): .claude/settings.json not installed\n"
+      "WARN permissions deferred (prerelease 0.0.0-dev): .claude/settings.json not installed\n" +
+      "WARN vmethod is not on PATH; write it with npm exec --no -- vmethod init --launcher\n"
   );
   writeFileSync(join(root, "people.yaml"), "invalid: config");
   expect(run(root).status).toBe(1);

@@ -36,23 +36,55 @@ export const verbs = [
   { name: "check-markdown", stub: "scripts/agent/check-markdown.sh" },
 ] as const;
 
+export const launcherMark = "# vmethod launcher";
+
+/** Checkout discovery shared by the registered stubs and the PATH launcher. */
+const discoverCheckout = `root=\${VMETHOD_ROOT:-}
+if [ -z "$root" ] && command -v git >/dev/null 2>&1; then
+  if ! root=$(git rev-parse --show-toplevel); then
+    echo "vmethod: git could not find a repository; set VMETHOD_ROOT" >&2
+    root=
+  fi
+fi`;
+
+/** One stub per verb; the PATH launcher uses the same discovery and install test. */
 export function stub(verb: string): string {
   if (!/^[a-z][a-z-]*( [a-z][a-z-]*)*$/.test(verb)) {
     throw new Error("Unsafe registered verb");
   }
   return `#!/bin/sh
 # vmethod stub
-root=\${VMETHOD_ROOT:-}
-if [ -z "$root" ] && command -v git >/dev/null 2>&1; then
-  if ! root=$(git rev-parse --show-toplevel); then
-    echo "vmethod: git could not find a repository; set VMETHOD_ROOT" >&2
-    root=
-  fi
-fi
+${discoverCheckout}
 if [ -z "$root" ] || [ ! -x "$root/node_modules/.bin/vmethod" ]; then
   echo "vmethod: run npm ci (set VMETHOD_ROOT when no repository is available)" >&2
   exit 2
 fi
 exec "$root/node_modules/.bin/vmethod" ${verb} "$@"
+`;
+}
+
+/** The per-machine `vmethod` on PATH: an installed consumer checkout runs its own bin,
+ * vmethod's own checkout runs its build output, and anything else fails like a stub.
+ */
+export function launcher(): string {
+  return `#!/bin/sh
+${launcherMark}
+${discoverCheckout}
+if [ -z "$root" ]; then
+  echo "vmethod: run npm ci (set VMETHOD_ROOT when no repository is available)" >&2
+  exit 2
+fi
+if node -e 'const fs = require("node:fs"); try { process.exit(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).name === "@vworlds/vmethod" ? 0 : 1); } catch { process.exit(1); }' -- "$root/package.json"; then
+  if [ ! -f "$root/dist/vmethod.mjs" ]; then
+    echo "vmethod: run npm ci (set VMETHOD_ROOT when no repository is available)" >&2
+    exit 2
+  fi
+  exec node "$root/dist/vmethod.mjs" "$@"
+fi
+if [ ! -x "$root/node_modules/.bin/vmethod" ]; then
+  echo "vmethod: run npm ci (set VMETHOD_ROOT when no repository is available)" >&2
+  exit 2
+fi
+exec "$root/node_modules/.bin/vmethod" "$@"
 `;
 }

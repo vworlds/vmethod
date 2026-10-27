@@ -2589,7 +2589,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
       !(policy[operation] as readonly string[]).includes(ctx.role)
     ) {
       throw new Error(
-        "Gateway operation denied for client role; check VMETHOD_ROLE and VMETHOD_TASK_PR in the command prefix"
+        "Gateway operation denied for client role; check the checkout's VMETHOD_ROLE and VMETHOD_TASK_PR in .vmethod/.env"
       );
     }
     const ciLearningIdentity = await server.authenticate(ctx, operation);
