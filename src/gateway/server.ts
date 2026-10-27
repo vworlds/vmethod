@@ -1637,9 +1637,10 @@ class GatewayServer {
       time: threadTime(content.createdAt),
       login: author.login,
       role: author.role,
-      content: `state ${content.state}, draft ${content.isDraft}, head ${content.headRefOid}\n\n${untrusted(
-        [content.title, content.body].filter((part) => typeof part === "string").join("\n\n")
-      )}`,
+      // The state line hashes separately from the body: a push re-reports the
+      // head without re-delivering the title and the task body (issue #284).
+      metaLine: `state ${content.state}, draft ${content.isDraft}, head ${content.headRefOid}`,
+      content: threadContent(content),
     });
     for (const meta of await this.collection(String(item.id), "PullRequest", "comments")) {
       if (!this.filter.accept(meta, repoOf(meta).owner, link)) {

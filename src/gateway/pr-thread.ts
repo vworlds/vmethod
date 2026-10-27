@@ -13,11 +13,13 @@ export interface ThreadItem {
   time: string;
   login: string;
   role: string;
-  /** The delivered body: untrusted fence, plus the PR's structured state line. */
+  /** The delivered body part: untrusted fence; for the pr item everything after the state line. */
   content: string;
+  /** pr items only: the structured state line, hashed separately from the body. */
+  metaLine?: string;
 }
 
-/** A snapshot record: the item's header data plus the hash of its whole section. */
+/** A snapshot record: the item's header data plus its body hash (and the pr item's state-line hash). */
 export interface SnapshotRecord {
   kind: ThreadItem["kind"];
   id: string;
@@ -25,6 +27,7 @@ export interface SnapshotRecord {
   login: string;
   role: string;
   hash: string;
+  meta?: string;
 }
 
 export type ThreadSnapshot =
@@ -58,7 +61,9 @@ function threadHeader(
 }
 
 export function threadSection(item: ThreadItem): string {
-  return `${threadHeader(item)}\n\n${item.content}`;
+  return `${threadHeader(item)}\n\n${
+    item.metaLine === undefined ? "" : `${item.metaLine}\n\n`
+  }${item.content}`;
 }
 
 /** Minute-precision UTC time exactly like `2026-10-27T09:12Z`; the first parseable value wins. */
@@ -87,7 +92,12 @@ export function threadId(value: unknown, kind: ThreadItem["kind"]): string {
 }
 
 function itemHash(item: ThreadItem): string {
-  return bodyHash(threadSection(item));
+  return bodyHash(`${threadHeader(item)}\n\n${item.content}`);
+}
+
+/** The structured state line hash; absent for every non-pr item. */
+function metaHash(item: ThreadItem): string | undefined {
+  return item.metaLine === undefined ? undefined : bodyHash(item.metaLine);
 }
 
 /** `.tmp/<n>-thread.md` under the checkout root; same-org foreign threads keep a repo-qualified name. */
@@ -118,6 +128,7 @@ export function saveThreadSnapshot(root: string, base: string, items: readonly T
         login: item.login,
         role: item.role,
         hash: itemHash(item),
+        ...(metaHash(item) === undefined ? {} : { meta: metaHash(item) }),
       }))
     )
   );
@@ -174,6 +185,18 @@ export function readThreadSnapshot(root: string, base: string): ThreadSnapshot {
     ) {
       return { state: "unreadable", reason: "invalid index entry" };
     }
+    const meta: unknown = entry.meta;
+    // The pr item hashes its state line separately from its body; an old-format
+    // pr record without it is unreadable, so a push never diffs on a stale guess.
+    const stateHash =
+      kind === "pr"
+        ? typeof meta === "string" && /^[0-9a-f]{64}$/.test(meta)
+          ? meta
+          : undefined
+        : null;
+    if (kind === "pr" ? stateHash === undefined : meta !== undefined) {
+      return { state: "unreadable", reason: "invalid index entry" };
+    }
     const record: SnapshotRecord = {
       kind: kind as ThreadItem["kind"],
       id,
@@ -181,6 +204,7 @@ export function readThreadSnapshot(root: string, base: string): ThreadSnapshot {
       login,
       role,
       hash,
+      ...(stateHash === null || stateHash === undefined ? {} : { meta: stateHash }),
     };
     const key = itemKey(record);
     if (seen.has(key)) {
@@ -213,11 +237,27 @@ export function threadDiff(
     const record = prior.get(itemKey(item));
     if (!record) {
       sections.push(threadSection(item));
-    } else if (record.hash === itemHash(item)) {
-      unchanged++;
-    } else {
-      sections.push(`${threadHeader(item, "edited")}\n\n${item.content}`);
+      continue;
     }
+    // The pr item prints only the changed part: its state line alone, or its
+    // body alone, or both; everything unchanged stays omitted.
+    const metaChanged = record.meta !== metaHash(item);
+    const bodyChanged = record.hash !== itemHash(item);
+    if (!metaChanged && !bodyChanged) {
+      unchanged++;
+      continue;
+    }
+    const parts: string[] = [];
+    if (metaChanged) {
+      if (item.metaLine === undefined) {
+        throw new Error(`State hash without a state line for ${itemKey(item)}`);
+      }
+      parts.push(item.metaLine);
+    }
+    if (bodyChanged) {
+      parts.push(item.content);
+    }
+    sections.push(`${threadHeader(item, "edited")}\n\n${parts.join("\n\n")}`);
   }
   const current = new Set(items.map((item) => itemKey(item)));
   for (const record of records) {

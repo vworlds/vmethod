@@ -121,6 +121,7 @@ test("read pr prints one fenced section per item and saves the snapshot with its
     login: string;
     role: string;
     hash: string;
+    meta?: string;
   }[];
   expect(keys(index)).toEqual(["pr 291", "comment 6437236013"]);
   expect(index[0]).toEqual({
@@ -130,6 +131,7 @@ test("read pr prints one fenced section per item and saves the snapshot with its
     login: "worker",
     role: "worker",
     hash: expect.stringMatching(/^[0-9a-f]{64}$/) as unknown,
+    meta: expect.stringMatching(/^[0-9a-f]{64}$/) as unknown,
   });
   f.done();
 }, 15000);
@@ -253,7 +255,7 @@ test("a deleted comment prints only its marked header and the unchanged count", 
   f.done();
 }, 15000);
 
-test("the pr item itself reports as edited when the head moves", async () => {
+test("a head move alone prints exactly the edited header and the state line, without the body", async () => {
   const moved = "b".repeat(40);
   const f = workerFixtureServer([
     ...threadRequests({}),
@@ -262,8 +264,60 @@ test("the pr item itself reports as edited when the head moves", async () => {
   await read(f);
   expect(keys(records(f.root))).toEqual(["pr 291"]);
   const output = await read(f, "--new");
-  expect(output).toBe(`${prSection(moved, false, " (edited)")}\n\n0 unchanged`);
-  expect(output).toContain(`### pr 291, worker (worker), ${stamp} (edited)`);
+  expect(output).toBe(
+    `### pr 291, worker (worker), ${stamp} (edited)\n\nstate OPEN, draft false, head ${moved}\n\n0 unchanged`
+  );
+  expect(output).not.toContain("UNTRUSTED DATA");
+  expect(output).not.toContain("Task");
+  f.done();
+}, 15000);
+
+test("a body edit prints the full body without the unchanged state line", async () => {
+  const f = workerFixtureServer([
+    ...threadRequests({}),
+    ...threadRequests({ pr: prItem({ title: "Task (renamed)" }) }),
+  ]);
+  await read(f);
+  const output = await read(f, "--new");
+  expect(output).toBe(
+    `### pr 291, worker (worker), ${stamp} (edited)\n\n${fence(
+      "Task (renamed)\n\nTask body."
+    )}\n\n0 unchanged`
+  );
+  expect(output).not.toContain("state OPEN");
+  f.done();
+}, 15000);
+
+test("a state and body edit together prints both parts once", async () => {
+  const moved = "c".repeat(40);
+  const f = workerFixtureServer([
+    ...threadRequests({}),
+    ...threadRequests({ pr: prItem({ headRefOid: moved, title: "Task (renamed)" }) }),
+  ]);
+  await read(f);
+  const output = await read(f, "--new");
+  expect(output).toBe(
+    `### pr 291, worker (worker), ${stamp} (edited)\n\nstate OPEN, draft false, head ${moved}\n\n${fence(
+      "Task (renamed)\n\nTask body."
+    )}\n\n0 unchanged`
+  );
+  f.done();
+}, 15000);
+
+test("the snapshot only moves the unchanged count when the state line stays put", async () => {
+  // A body-only edit leaves the pr item's other items untouched: the comment is unchanged.
+  const first = comment(6437236013, "First reply.");
+  const f = workerFixtureServer([
+    ...threadRequests({ comments: [first] }),
+    ...threadRequests({ comments: [first], pr: prItem({ title: "Task (renamed)" }) }),
+  ]);
+  await read(f);
+  const output = await read(f, "--new");
+  expect(output).toBe(
+    `### pr 291, worker (worker), ${stamp} (edited)\n\n${fence(
+      "Task (renamed)\n\nTask body."
+    )}\n\n1 unchanged`
+  );
   f.done();
 }, 15000);
 
@@ -293,6 +347,21 @@ test.each([
       rmSync(snapshotFiles(root).thread);
     },
     reason: "thread file missing",
+  },
+  {
+    case: "an old-format index",
+    corrupt(root: string) {
+      const file = snapshotFiles(root).index;
+      const old = (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>[]).map(
+        (record) => {
+          const old = { ...record };
+          delete old.meta;
+          return old;
+        }
+      );
+      writeFileSync(file, JSON.stringify(old));
+    },
+    reason: "invalid index entry",
   },
 ])(
   "an unusable snapshot is never reported as nothing new: $case",

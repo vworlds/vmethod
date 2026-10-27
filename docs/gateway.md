@@ -85,11 +85,16 @@ and explicit `repos` bindings. See [shared learnings](learnings.md).
   fenced as untrusted text, and filtering is unchanged — items the gateway drops
   never appear. Each full read also saves the thread as `.tmp/<n>-thread.md`
   under the checkout root (git-ignored) beside an index of item id → content
-  hash, and every checkout or worktree keeps its own snapshot.
+  hashes (the body, plus the PR item's state line), and every
+  checkout or worktree keeps its own snapshot.
   `read pr <n> --new` prints only the difference since that snapshot, by item id:
   new items under their header, edited items with `(edited)` and the full new
   body, deleted items with `(deleted)`, and one closing `<k> unchanged` line for
-  the omitted items. It then replaces the snapshot. When nothing changed it
+  the omitted items. The PR item hashes its structured `state …, draft …, head …`
+  line separately from its fenced body, so a pushed head re-reports only the
+  state line and title and body re-appear only when they changed; an old-format
+  index without that separation is `snapshot unreadable`. It then replaces the
+  snapshot. When nothing changed it
   prints exactly `#<n>: nothing new since your last read (<k> unchanged)`, exits
   0 and leaves the snapshot untouched. `--new` with no earlier read, or with an
   unreadable snapshot, falls back to printing the full thread under an explicit
