@@ -83,7 +83,15 @@ test.each(["owner", "worker", "unknown", "untrusted edit"])(
 test("PR metadata is gated before content, hostile titles/bodies remain fenced, and unknown comments have no follow-up read", async () => {
   const fixture = fixtureServer([
     graph({ repository: { pullRequest: item() } }),
-    graph({ node: item({ title: hostile, body: hostile }) }),
+    graph({
+      node: item({
+        title: hostile,
+        body: hostile,
+        isDraft: false,
+        state: "OPEN",
+        createdAt: "2026-10-27T09:12:00Z",
+      }),
+    }),
     graph({
       node: item({
         comments: {
@@ -99,12 +107,23 @@ test("PR metadata is gated before content, hostile titles/bodies remain fenced, 
       }),
     }),
     graph({
-      node: item({ id: "comment-good", author: actor(), body: hostile }),
+      node: item({
+        id: "comment-good",
+        author: actor(),
+        body: hostile,
+        databaseId: 6437236013,
+        createdAt: "2026-10-27T09:12:00Z",
+      }),
+    }),
+    graph({ node: item({ reviews: { nodes: [], pageInfo: { hasNextPage: false } } }) }),
+    graph({
+      node: item({ reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } }),
     }),
   ]);
   const output = await gatewayVerb(fixture.transport, "read", ["pr", "3"]);
-  expect(output).toContain("from worker (worker)\nUNTRUSTED DATA\n````text");
-  expect(output).toContain("from owner (owner)\nUNTRUSTED DATA");
+  expect(output).toContain("### pr 3, worker (worker), 2026-10-27T09:12Z");
+  expect(output).toContain("### comment 6437236013, owner (owner), 2026-10-27T09:12Z");
+  expect(output).toContain("UNTRUSTED DATA\n````text");
   expect(output).toContain(hostile);
   expect(await fixture.transport.call("dropped", {})).toBe(
     "Dropped: 1\n1 https://github.com/example/project/issues/3"

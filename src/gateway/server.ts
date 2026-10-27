@@ -40,6 +40,18 @@ import {
 import { tokenIdentity, tokenViewer } from "./identity.js";
 import { isOwnerApproved } from "./approval.js";
 import { bodyHash, ScopeReader, legacyScopeCutoff } from "./scope.js";
+import {
+  itemKey,
+  readThreadSnapshot,
+  saveThreadSnapshot,
+  snapshotBase,
+  threadContent,
+  threadDiff,
+  threadId,
+  threadSection,
+  threadTime,
+  type ThreadItem,
+} from "./pr-thread.js";
 import { AutopilotReader, inheritAutopilot, type AutopilotState } from "./autopilot.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { setTurn, turnAssignees } from "./turn.js";
@@ -1516,6 +1528,201 @@ class GatewayServer {
     }
   }
 
+  /** The pull request's review comments, one listing per resolved review thread; item
+   * identity is filtered per comment exactly like the conversation comments. */
+  private async reviewThreadComments(prId: string): Promise<ObjectData[]> {
+    const comments: ObjectData[] = [];
+    let cursor: string | null = null;
+    const seen = new Set<string>();
+    for (;;) {
+      const result = object(
+        await this.github.graphql(
+          `query($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequest { reviewThreads(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { comments(first: 100) { nodes { ${identityFields} } pageInfo { hasNextPage endCursor } } } } } } }`,
+          { id: prId, cursor }
+        )
+      );
+      const connection = object(object(result.node).reviewThreads);
+      const page = object(connection.pageInfo);
+      if (!Array.isArray(connection.nodes)) {
+        throw new Error("Missing GitHub connection nodes");
+      }
+      for (const value of connection.nodes) {
+        const thread = object(object(value).comments);
+        const info = object(thread.pageInfo);
+        if (!Array.isArray(thread.nodes) || typeof info.hasNextPage !== "boolean") {
+          throw new Error("Invalid review-thread comments");
+        }
+        if (info.hasNextPage) {
+          throw new Error("Review-thread comments exceeded one page");
+        }
+        comments.push(...thread.nodes.map(object));
+      }
+      if (page.hasNextPage === false) {
+        return comments;
+      }
+      if (
+        page.hasNextPage !== true ||
+        typeof page.endCursor !== "string" ||
+        seen.has(page.endCursor)
+      ) {
+        throw new Error("Invalid GitHub pagination cursor");
+      }
+      cursor = page.endCursor;
+      seen.add(cursor);
+    }
+  }
+
+  /** One thread item's body read: verified identity, REST id, time and fenced body. */
+  private async threadEntry(
+    kind: "comment" | "review" | "review comment",
+    meta: ObjectData,
+    link: string,
+    fields: string,
+    type: string
+  ): Promise<ThreadItem | undefined> {
+    const read = await this.node(String(meta.id), fields, type);
+    const person = this.filter.accept(read, repoOf(read).owner, link);
+    if (!person) {
+      // A race between listing and body read is today's filtered delivery: skipped.
+      return undefined;
+    }
+    return {
+      kind,
+      id: threadId(read.databaseId, kind),
+      time: threadTime(read.submittedAt, read.createdAt),
+      login: person.login,
+      role: person.role,
+      content: threadContent(read),
+    };
+  }
+
+  /** The whole PR thread as one item per section: the PR (title, state, draft, head
+   * and body), then each comment, review and review comment. Every step filters
+   * identities exactly like the labelled reads; a dropped author's read is skipped. */
+  private async prThread(
+    item: ObjectData,
+    link: string,
+    target: ThreadRef
+  ): Promise<ThreadItem[] | undefined> {
+    const content = await this.node(
+      String(item.id),
+      "title body isDraft state headRefOid createdAt",
+      "PullRequest"
+    );
+    const author = this.filter.accept(content, repoOf(content).owner, link);
+    if (!author) {
+      // Today's read: the re-filtered PR body returning nothing means no thread.
+      return undefined;
+    }
+    if (
+      typeof content.isDraft !== "boolean" ||
+      typeof content.state !== "string" ||
+      typeof content.headRefOid !== "string"
+    ) {
+      throw new Error("Missing PR thread metadata");
+    }
+    const items: ThreadItem[] = [];
+    const seen = new Set<string>();
+    const add = (entry: ThreadItem): void => {
+      const key = itemKey(entry);
+      if (seen.has(key)) {
+        throw new Error(`Duplicate thread item ${key}`);
+      }
+      seen.add(key);
+      items.push(entry);
+    };
+    add({
+      kind: "pr",
+      id: String(target.number),
+      time: threadTime(content.createdAt),
+      login: author.login,
+      role: author.role,
+      content: `state ${content.state}, draft ${content.isDraft}, head ${content.headRefOid}\n\n${untrusted(
+        [content.title, content.body].filter((part) => typeof part === "string").join("\n\n")
+      )}`,
+    });
+    for (const meta of await this.collection(String(item.id), "PullRequest", "comments")) {
+      if (!this.filter.accept(meta, repoOf(meta).owner, link)) {
+        continue;
+      }
+      const entry = await this.threadEntry(
+        "comment",
+        meta,
+        link,
+        "body databaseId createdAt",
+        "IssueComment"
+      );
+      if (entry) {
+        add(entry);
+      }
+    }
+    for (const review of await this.collection(String(item.id), "PullRequest", "reviews")) {
+      if (!this.filter.accept(review, repoOf(review).owner, link)) {
+        continue;
+      }
+      const entry = await this.threadEntry(
+        "review",
+        review,
+        link,
+        "body databaseId createdAt submittedAt",
+        "PullRequestReview"
+      );
+      if (entry) {
+        add(entry);
+      }
+    }
+    for (const comment of await this.reviewThreadComments(String(item.id))) {
+      if (!this.filter.accept(comment, repoOf(comment).owner, link)) {
+        continue;
+      }
+      const entry = await this.threadEntry(
+        "review comment",
+        comment,
+        link,
+        "body databaseId createdAt",
+        "PullRequestReviewComment"
+      );
+      if (entry) {
+        add(entry);
+      }
+    }
+    return items;
+  }
+
+  /** Print the per-item thread; `--new` diffs against the checkout-local snapshot. */
+  private async prReport(
+    ref: string,
+    item: ObjectData,
+    link: string,
+    option: ReadInput["option"]
+  ): Promise<string> {
+    const target = reference(ref, this.config);
+    const items = await this.prThread(item, link, target);
+    if (!items) {
+      return "No accepted thread";
+    }
+    const base = snapshotBase(target, String(this.config.repo));
+    if (option !== "--new") {
+      saveThreadSnapshot(this.root, base, items);
+      return items.map(threadSection).join("\n\n");
+    }
+    const snapshot = readThreadSnapshot(this.root, base);
+    if (snapshot.state === "ok") {
+      const delta = threadDiff(items, snapshot.records);
+      if (delta.nothing) {
+        return `#${target.number}: nothing new since your last read (${delta.unchanged} unchanged)`;
+      }
+      saveThreadSnapshot(this.root, base, delta.next);
+      return [...delta.sections, `${delta.unchanged} unchanged`].join("\n\n");
+    }
+    saveThreadSnapshot(this.root, base, items);
+    const prefix =
+      snapshot.state === "missing"
+        ? `#${target.number}: no earlier read; full thread follows`
+        : `#${target.number}: snapshot unreadable (${snapshot.reason}); full thread follows`;
+    return [prefix, ...items.map(threadSection)].join("\n\n");
+  }
+
   private async checks(item: ObjectData, link: string): Promise<string> {
     const scope = repoOf(item);
     const sha = String(item.headRefOid);
@@ -1551,7 +1758,8 @@ class GatewayServer {
     if (
       !["pr", "issue", "comment", "checks", "registry"].includes(kind) ||
       (option !== undefined &&
-        (kind !== "pr" || !["--files", "--diff", "--reviews", "--checks"].includes(option)))
+        (kind !== "pr" ||
+          !["--files", "--diff", "--reviews", "--checks", "--new"].includes(option)))
     ) {
       throw new Error("Unsupported read kind or option");
     }
@@ -1636,6 +1844,9 @@ class GatewayServer {
         }
       }
       return labelled(person, JSON.stringify(files, null, 2));
+    }
+    if (kind === "pr" && option !== "--reviews") {
+      return this.prReport(ref, item, link, option);
     }
     const output: string[] = [];
     if (option !== "--reviews") {

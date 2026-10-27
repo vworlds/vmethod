@@ -333,22 +333,36 @@ test("pr-comment checks Markdown before every post, guards closers, keeps a lead
 });
 
 test("read-pr delivers the prompt, comments and reviews through filtered labelled reads", async () => {
+  const at = "2026-10-27T09:12:00Z";
   const review = item({
     id: "review",
+    databaseId: 9001,
+    createdAt: at,
+    submittedAt: at,
     author: actor(2),
     body: "[orchestrator] REVIEW",
   });
   const f = fixtureServer([
     task(),
-    graph({ node: item({ title: "Task", body: "Prompt" }) }),
+    graph({
+      node: item({
+        title: "Task",
+        body: "Prompt",
+        isDraft: false,
+        state: "OPEN",
+        createdAt: at,
+      }),
+    }),
     comments([]),
-    task(),
     graph({
       node: item({
         reviews: { nodes: [meta(review)], pageInfo: { hasNextPage: false } },
       }),
     }),
     graph({ node: review }),
+    graph({
+      node: item({ reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } }),
+    }),
   ]);
   const output = await workerVerb(
     f.gateway,
@@ -359,26 +373,39 @@ test("read-pr delivers the prompt, comments and reviews through filtered labelle
     { exec: f.deps.exec, report: f.deps.report }
   );
   expect(output).toContain("Prompt");
-  expect(output).toContain("from worker (worker)");
-  expect(output).toContain("from peer (orchestrator)");
+  expect(output).toContain("worker (worker)");
+  expect(output).toContain("### review 9001, peer (orchestrator), 2026-10-27T09:12Z");
   expect(output).toContain("[orchestrator] REVIEW");
   f.done();
 });
 
 test("read-pr labels a peer project's orchestrator comment as a collaborator, never an amendment", async () => {
+  const at = "2026-10-27T09:12:00Z";
   const answer = item({
     id: "peer-answer",
+    databaseId: 44,
+    createdAt: at,
     author: vecsmasterActor,
     body: "[orchestrator] ANSWER\n\nPeer answer.",
   });
   const f = orchestratorFixture(
     [
       task(),
-      graph({ node: item({ title: "Task", body: "Prompt" }) }),
+      graph({
+        node: item({
+          title: "Task",
+          body: "Prompt",
+          isDraft: false,
+          state: "OPEN",
+          createdAt: at,
+        }),
+      }),
       comments([meta(answer)]),
       graph({ node: answer }),
-      task(),
       graph({ node: item({ reviews: { nodes: [], pageInfo: { hasNextPage: false } } }) }),
+      graph({
+        node: item({ reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } }),
+      }),
     ],
     actor(2),
     [...people, vecsmaster]
@@ -391,7 +418,7 @@ test("read-pr labels a peer project's orchestrator comment as a collaborator, ne
     {},
     { exec: f.deps.exec, report: f.deps.report }
   );
-  expect(output).toContain("from vecsmaster (collaborator)");
-  expect(output).not.toContain("from vecsmaster (orchestrator)");
+  expect(output).toContain("vecsmaster (collaborator)");
+  expect(output).not.toContain("vecsmaster (orchestrator)");
   f.done();
 });

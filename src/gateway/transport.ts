@@ -94,7 +94,7 @@ export interface Operations {
     input: {
       kind: "pr" | "issue" | "comment" | "checks" | "registry";
       ref: string;
-      option?: "--files" | "--diff" | "--reviews" | "--checks";
+      option?: "--files" | "--diff" | "--reviews" | "--checks" | "--new";
     };
     output: string;
   };

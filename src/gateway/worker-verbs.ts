@@ -90,16 +90,8 @@ export async function workerVerb(
     throw new Error(`usage: ${verb}.sh <pr>`);
   }
   if (verb === "read-pr") {
-    const prompt = await transport.call("read", { kind: "pr", ref: args[0] }, ctx);
-    if (prompt === "No accepted thread") {
-      return prompt;
-    }
-    const reviews = await transport.call(
-      "read",
-      { kind: "pr", ref: args[0], option: "--reviews" },
-      ctx
-    );
-    return `${prompt}\n\n${reviews}`;
+    // The whole per-item thread read covers comments, reviews and review comments.
+    return String(await transport.call("read", { kind: "pr", ref: args[0] }, ctx));
   }
   throw new Error("Unknown worker verb");
 }

@@ -1013,7 +1013,7 @@ export class TaskFlow {
   private async wake(ref: string, heading: string): Promise<string | void> {
     return this.deps.workers?.resume(
       this.number(ref),
-      `[orchestrator] ${heading} is on your PR; read it with vmethod read pr ${ref} and act.`
+      `[orchestrator] ${heading} is on your PR; read it with vmethod read pr ${ref} --new and act.`
     );
   }
 
