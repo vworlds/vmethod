@@ -1155,8 +1155,13 @@ Watcher terminal events are `RESOLVED #n (step k)`,
 `MERGED #n (conflict-only, approval carried)`,
 `conflict on #n resolved outside the fixer`, or
 `BLOCKED #n: conflict escalated (<reason>)`. Pending work does not wake the
-orchestrator just to repeat CONFLICT. State and locks live under the configured
-per-user state root, not in the package checkout.
+orchestrator just to repeat CONFLICT. An up-to-date PR closes quietly: the
+`nothing to resolve for #n` result — the fetched base is already merged in,
+including the end of a clean `refresh-checks` update, or update-branch answers
+422 because there are no new base commits — still books its record as resolved
+and emits no event, so a base move without conflict wakes nobody. State and
+locks live under the configured per-user state root, not in the package
+checkout.
 
 The per-PR lock is owned like the watcher's: a `0700` file holding the
 reconciling process's pid and process start time. A reconcile clears a lock

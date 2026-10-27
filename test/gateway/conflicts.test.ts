@@ -155,6 +155,7 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     createService,
     hooks,
     deps,
+    env,
     snapshot,
     card: () => card,
     setCard: (
@@ -537,6 +538,43 @@ test.each([false, true])(
   },
   15000
 );
+
+test("a waiting record whose head already contains the base closes as resolved with no news", async () => {
+  const f = await setup(false, true);
+  await f.makeUpToDate();
+  // The waiting step-1 record a clean refresh-checks update left on the pushed head.
+  mkdirSync(join(f.env.XDG_STATE_HOME, "vmethod/conflict-test/conflicts"), { recursive: true });
+  writeFileSync(
+    f.record(),
+    JSON.stringify({
+      head: f.snapshot.head,
+      base: f.snapshot.baseSha,
+      branch: f.snapshot.branch,
+      approved: false,
+      files: [],
+      step: 1,
+      phase: "waiting",
+      started: 0,
+    })
+  );
+  expect(f.service.pending(31)).toBe(true);
+  expect(await f.service.resolve(31)).toBe("nothing to resolve for #31");
+  expect(f.service.pending(31)).toBe(false);
+  expect(JSON.parse(readFileSync(f.record(), "utf8"))).toMatchObject({
+    phase: "resolved",
+    resolvedHead: f.snapshot.head,
+  });
+  for (const hook of [
+    f.hooks.approved,
+    f.hooks.update,
+    f.hooks.wait,
+    f.hooks.fix,
+    f.hooks.stop,
+    f.hooks.blocked,
+  ]) {
+    expect(hook).not.toHaveBeenCalled();
+  }
+}, 15000);
 
 test.each([
   "There are no new commits on the base branch.",

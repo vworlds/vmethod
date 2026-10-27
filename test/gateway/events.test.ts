@@ -2629,6 +2629,51 @@ test.each([
   f.done();
 });
 
+test("a base move without conflict produces no event: nothing to resolve", async () => {
+  const f = setup();
+  f.task();
+  f.baseMoved = true;
+  const resolve = vi.fn(async () => "nothing to resolve for #24");
+  f.resolveConflicts = resolve;
+  // No cards: the board poll cannot touch the seed, so the end state is settleConflicts' doing.
+  f.cards = [];
+  mkdirSync(f.dir, { recursive: true });
+  writeFileSync(join(f.dir, "pending-progress-24"), JSON.stringify({ state: "working" }));
+  const loop = f.loop();
+  const events = await f.tick(loop);
+  expect(events).toEqual([]);
+  // The dispatch still ran; only its no-op result stays quiet.
+  expect(resolve).toHaveBeenCalledExactlyOnceWith(24);
+  // A no-op result is not terminal: pending-progress cleanup stays tied to the
+  // terminal results (RESOLVED, MERGED, BLOCKED, resolved outside the fixer).
+  expect(existsSync(join(f.dir, "pending-progress-24"))).toBe(true);
+  for (let i = 0; i < 3; i++) {
+    f.advance();
+    expect(await f.tick(loop)).toEqual([]);
+  }
+  expect(f.resolveConflicts).toHaveBeenCalledTimes(1);
+  f.done();
+});
+
+test("an active record closing as resolved after a clean update wakes nobody", async () => {
+  const f = setup();
+  f.task();
+  f.conflictPending = () => true;
+  const resolve = vi.fn(async () => "nothing to resolve for #24");
+  f.resolveConflicts = resolve;
+  const loop = f.loop();
+  const events = await f.tick(loop);
+  expect(events).toEqual([]);
+  expect(resolve).toHaveBeenCalledWith(24);
+  for (let i = 0; i < 3; i++) {
+    f.advance();
+    expect(await f.tick(loop)).toEqual([]);
+  }
+  // Reconciliation kept running on every poll without waking anybody.
+  expect(resolve.mock.calls.length).toBeGreaterThan(3);
+  f.done();
+});
+
 test("a pending resolution result keeps its queued conflict card move", async () => {
   const f = setup();
   f.task();
