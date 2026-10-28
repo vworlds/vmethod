@@ -651,6 +651,111 @@ test.each([
   f.done();
 });
 
+test("open-task without a card Model prints suggest-model's advice and evidence first", async () => {
+  const f = fixture();
+  f.host.modelSuggestion = async (issue) => {
+    expect(issue).toBe(8);
+    return { family: "glm", tier: "standard", reason: "Estimate 1, kind bug" };
+  };
+  f.host.learningEvidence = (family) =>
+    family === "glm" ? { usdPerPoint: 0.4234, deliveries: 3 } : undefined;
+  await expect(f.flow().open({ issue: "8", model: "sol" })).resolves.toBe(
+    `suggest-model #8: glm (Estimate 1, kind bug; glm averages $0.42/point over 3 graded tasks)\n` +
+      `Opened draft PR #27 (8-task)`
+  );
+  f.done();
+});
+
+test("open-task with a card Model prints no advisory lines and never reads the suggestion", async () => {
+  const f = fixture();
+  f.cards[0].values.Model = "sol";
+  f.host.modelSuggestion = async () => {
+    throw new Error("advice must not run when the card already has a Model");
+  };
+  await expect(f.flow().open({ issue: "8" })).resolves.toBe("Opened draft PR #27 (8-task)");
+  f.done();
+});
+
+test("open-task notes a more expensive chosen tier with the chosen family's evidence", async () => {
+  const f = fixture();
+  f.host.modelSuggestion = async () => ({
+    family: "glm",
+    tier: "standard",
+    reason: "Estimate 1, kind bug",
+  });
+  f.host.learningEvidence = (family) =>
+    family === "glm"
+      ? { usdPerPoint: 0.4234, deliveries: 3 }
+      : family === "astra"
+        ? { usdPerPoint: 1.239, deliveries: 2 }
+        : undefined;
+  await expect(f.flow().open({ issue: "8", model: "astra", ownerApproved: true })).resolves.toBe(
+    `suggest-model #8: glm (Estimate 1, kind bug; glm averages $0.42/point over 3 graded tasks)\n` +
+      `note: astra is a more expensive tier than the suggestion (astra averages $1.24/point over 2 tasks)\n` +
+      `Opened draft PR #27 (8-task)`
+  );
+  f.done();
+});
+
+test.each(["standard", "expensive"] as const)(
+  "open-task skips the cheaper-tier note when the suggestion's tier is %s or cheaper",
+  async (tier) => {
+    const f = fixture();
+    f.host.modelSuggestion = async () => ({ family: "glm", tier, reason: "Estimate 1, kind bug" });
+    f.host.learningEvidence = () => ({ usdPerPoint: 0.4, deliveries: 1 });
+    await expect(f.flow().open({ issue: "8", model: "glm" })).resolves.toBe(
+      `suggest-model #8: glm (Estimate 1, kind bug; glm averages $0.40/point over 1 graded tasks)\n` +
+        `Opened draft PR #27 (8-task)`
+    );
+    f.done();
+  }
+);
+
+test("without learnings data, open-task's advisory line omits the evidence", async () => {
+  const f = fixture();
+  f.host.modelSuggestion = async () => ({
+    family: "glm",
+    tier: "standard",
+    reason: "Estimate 1, kind bug",
+  });
+  f.host.learningEvidence = () => undefined;
+  await expect(f.flow().open({ issue: "8", model: "glm" })).resolves.toBe(
+    `suggest-model #8: glm (Estimate 1, kind bug)\nOpened draft PR #27 (8-task)`
+  );
+  f.done();
+});
+
+test("open-task proceeds when the suggestion read fails, reporting instead of refusing", async () => {
+  const f = fixture();
+  f.host.modelSuggestion = async () => {
+    throw new Error("lookup failed");
+  };
+  await expect(f.flow().open({ issue: "8", model: "glm" })).resolves.toBe(
+    "Opened draft PR #27 (8-task)"
+  );
+  expect(f.events).toContain("report Model suggestion unavailable: lookup failed");
+  f.done();
+});
+
+test("failing evidence reads only shorten the advisory lines", async () => {
+  const f = fixture();
+  f.host.modelSuggestion = async () => ({
+    family: "glm",
+    tier: "standard",
+    reason: "Estimate 1, kind bug",
+  });
+  f.host.learningEvidence = () => {
+    throw new Error("records corrupted");
+  };
+  await expect(f.flow().open({ issue: "8", model: "astra", ownerApproved: true })).resolves.toBe(
+    `suggest-model #8: glm (Estimate 1, kind bug)\n` +
+      `note: astra is a more expensive tier than the suggestion\n` +
+      `Opened draft PR #27 (8-task)`
+  );
+  expect(f.events).toContain("report Learnings evidence unavailable: records corrupted");
+  f.done();
+});
+
 test("taskModelOverride reads only the structured marker and refuses malformed overrides", () => {
   expect(taskModelOverride('<!-- vmethod-task {"issues":[8]} -->')).toBeUndefined();
   expect(

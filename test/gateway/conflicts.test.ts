@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { fixture, ghConfig } from "../helpers.js";
 import { proc } from "./watch-fake.js";
@@ -17,7 +17,127 @@ import { verifyConflictHead } from "../../src/gateway/verify-hook.js";
 
 const exec = promisify(execFile);
 
-async function setup(conflict: boolean, approved: boolean, bad = false, escalated = false) {
+test.each([
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "packages/app/package-lock.json",
+])(
+  "lockfile-only regeneration outside conflict hunks resolves: %s",
+  async (file) => {
+    const f = await setup(true, true, true, false, [file]);
+    const original = f.deps.exec;
+    const sync = vi.fn(async (cwd: string | undefined) => {
+      expect(cwd).toBeDefined();
+      return "";
+    });
+    f.deps.exec = async (command, args, options) =>
+      command === "npm" ? sync(options?.cwd) : original(command, args, options);
+    await f.service.resolve(31);
+    expect(await f.service.resolve(31)).toBe("MERGED #31 (conflict-only, approval carried)");
+    expect(sync).toHaveBeenCalledOnce();
+    expect(sync).toHaveBeenCalledWith(join(f.root, dirname(file)));
+    expect(f.hooks.verify).toHaveBeenCalledOnce();
+    expect(f.hooks.merge).toHaveBeenCalledWith(
+      31,
+      expect.stringContaining("lockfile sync"),
+      f.snapshot.head
+    );
+    expect(f.hooks.blocked).not.toHaveBeenCalled();
+  },
+  15000
+);
+
+test("step-2 regeneration checks additional lockfile directories and runs merge verification", async () => {
+  const f = await setup(true, false, true, false, ["package-lock.json"]);
+  const fix = f.hooks.fix;
+  f.hooks.fix = async (...args) => {
+    await fix(...args);
+    mkdirSync(join(f.root, "nested"));
+    writeFileSync(join(f.root, "nested/yarn.lock"), "regenerated lockfile\n");
+    await f.git("add", ".");
+    await f.git("commit", "--amend", "--no-edit");
+    f.snapshot.head = (await f.git("rev-parse", "HEAD")).trim();
+    await f.git("update-ref", "refs/remotes/origin/task", f.snapshot.head);
+    return 2;
+  };
+  const original = f.deps.exec;
+  const sync = vi.fn(async (cwd: string | undefined) => {
+    expect(cwd).toBeDefined();
+    return "";
+  });
+  f.deps.exec = async (command, args, options) =>
+    command === "npm" ? sync(options?.cwd) : original(command, args, options);
+  await f.service.resolve(31);
+  expect(await f.service.resolve(31)).toBe("RESOLVED #31 (step 2)");
+  expect(sync.mock.calls).toEqual([[f.root], [join(f.root, "nested")]]);
+  expect(f.hooks.verify).toHaveBeenCalledOnce();
+}, 15000);
+
+test.each(["sync", "CI", "verify", "non-lockfile"])(
+  "lockfile-only resolution escalates with the failed condition: %s",
+  async (failure) => {
+    const f = await setup(true, false, true, false, ["package-lock.json"]);
+    const original = f.deps.exec;
+    f.deps.exec = async (command, args, options) => {
+      if (command === "npm") {
+        expect(args).toEqual(["ci", "--dry-run", "--no-audit", "--no-fund", "--ignore-scripts"]);
+        expect(options?.cwd).toBe(f.root);
+        if (failure === "sync") {
+          throw new Error("lockfile out of sync");
+        }
+        return "";
+      }
+      return original(command, args, options);
+    };
+    await f.service.resolve(31);
+    if (failure === "CI") {
+      f.snapshot.green = false;
+      f.snapshot.runs = [{ status: "completed", conclusion: "failure" }] as CiSnapshot["runs"];
+    }
+    if (failure === "verify") {
+      vi.mocked(f.hooks.verify).mockResolvedValue(false);
+    }
+    if (failure === "non-lockfile") {
+      writeFileSync(join(f.root, "unrelated.txt"), "extra edit\n");
+      await f.git("add", ".");
+      await f.git("commit", "--amend", "--no-edit");
+      f.snapshot.head = (await f.git("rev-parse", "HEAD")).trim();
+      await f.git("update-ref", "refs/remotes/origin/task", f.snapshot.head);
+    }
+    const reason = {
+      sync: "lockfile sync check failed",
+      CI: "CI red",
+      verify: "merge verify hook failed",
+      "non-lockfile": "remerge diff limited to lockfiles",
+    }[failure];
+    expect(await f.service.resolve(31)).toContain(reason);
+    expect(f.hooks.blocked).toHaveBeenCalledOnce();
+    expect(f.hooks.merge).not.toHaveBeenCalled();
+  },
+  15000
+);
+
+test.each([false, true])(
+  "mixed lockfile/source conflict retains hunk proof (outside edit: %s)",
+  async (bad) => {
+    const f = await setup(true, false, bad, false, ["package-lock.json", "source.ts"]);
+    await f.service.resolve(31);
+    expect(await f.service.resolve(31)).toContain(
+      bad ? "remerge diff is not limited to conflicted hunks" : "RESOLVED"
+    );
+  },
+  15000
+);
+
+async function setup(
+  conflict: boolean,
+  approved: boolean,
+  bad = false,
+  escalated = false,
+  files = ["conflict.txt"]
+) {
   const root = fixture();
   const env = {
     ...process.env,
@@ -37,14 +157,20 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     return (await git("rev-parse", "HEAD")).trim();
   };
   await git("init", "-b", "dev");
-  await commit("conflict.txt", "keep prefix\ninitial\nkeep suffix\n");
+  for (const file of files) {
+    mkdirSync(join(root, file, ".."), { recursive: true });
+    await commit(file, "keep prefix\ninitial\nkeep suffix\n");
+  }
   await git("checkout", "-b", "task");
-  const head = await commit("conflict.txt", "keep prefix\ntask\nkeep suffix\n");
+  for (const file of files) {
+    await commit(file, "keep prefix\ntask\nkeep suffix\n");
+  }
+  const head = (await git("rev-parse", "HEAD")).trim();
   await git("checkout", "dev");
-  const baseSha = await commit(
-    conflict ? "conflict.txt" : "base.txt",
-    conflict ? "keep prefix\nbase\nkeep suffix\n" : "base addition\n"
-  );
+  for (const file of conflict ? files : ["base.txt"]) {
+    await commit(file, conflict ? "keep prefix\nbase\nkeep suffix\n" : "base addition\n");
+  }
+  const baseSha = (await git("rev-parse", "HEAD")).trim();
   await git("checkout", "task");
   await git("update-ref", "refs/remotes/origin/dev", baseSha);
   await git("update-ref", "refs/remotes/origin/task", head);
@@ -69,10 +195,15 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
   const resolve = async () => {
     if (conflict) {
       await expect(git("merge", "--no-edit", snapshot.baseSha)).rejects.toThrow();
-      snapshot.head = await commit(
-        "conflict.txt",
-        `${bad ? "changed prefix" : "keep prefix"}\ntask\nbase\nkeep suffix\n`
-      );
+      for (const file of files) {
+        writeFileSync(
+          join(root, file),
+          `${bad ? "changed prefix" : "keep prefix"}\ntask\nbase\nkeep suffix\n`
+        );
+      }
+      await git("add", ".");
+      await git("commit", "-qm", "resolution");
+      snapshot.head = (await git("rev-parse", "HEAD")).trim();
     } else {
       await git("merge", "--no-edit", snapshot.baseSha);
       snapshot.head = (await git("rev-parse", "HEAD")).trim();
@@ -156,6 +287,8 @@ async function setup(conflict: boolean, approved: boolean, bad = false, escalate
     hooks,
     deps,
     env,
+    git,
+    root,
     snapshot,
     card: () => card,
     setCard: (

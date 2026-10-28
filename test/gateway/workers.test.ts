@@ -850,7 +850,7 @@ test("conflict turn switches the existing session to the cheapest family and res
         path: "/api/session/ses_fake/prompt",
         method: "POST",
         body: {
-          text: "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY",
+          text: lockfileConflictLine,
           delivery: "queue",
         },
       },
@@ -981,6 +981,8 @@ test("session-less conflict starts a fixed generic fixer even for a non-draft di
   expect(f.prompts[0]).toContain(
     "Produce exactly one merge commit resolving the conflict; make no other commits or edits (no changelog fragments, no formatting fixes); if CI fails for any other reason, post [worker] BLOCKED."
   );
+  expect(f.prompts[0]).toContain(lockfileConflictLine);
+  expect(f.prompts[0]).toContain("Except for the lockfile-only regeneration rule above");
   expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
     1,
     31,
@@ -1044,7 +1046,7 @@ test.each(["idle drain", "stop"])(
               path: "/api/session/ses_fake/prompt",
               method: "POST",
               body: {
-                text: "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY",
+                text: lockfileConflictLine,
                 delivery: "queue",
               },
             },
@@ -1066,14 +1068,16 @@ test.each(["idle drain", "stop"])(
   }
 );
 
+const lockfileConflictLine =
+  "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY. If every conflicted file is package-lock.json, npm-shrinkwrap.json, yarn.lock or pnpm-lock.yaml (at any path), do not hand-merge: keep package.json manifests as merged by git and regenerate the lockfiles with npm install --package-lock-only or the configured equivalent in postMerge.install. Commit the regeneration as the merge resolution; the remerge diff may touch only lockfiles, lockfile sync must pass and configured checks must be green. Mixed conflicts retain the conflicted-hunk rule.";
+
 const staleTimes = ["2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z", "2026-01-01T00:03:00Z"];
 test.each(["queued", "direct", "direct with REVIEW during conflict"])(
   "%s conflict send preserves REVIEW round 2 across the fixer's READY",
   async (mode) => {
     const reviewWake =
       "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 --new and act.";
-    const conflictLine =
-      "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+    const conflictLine = lockfileConflictLine;
     const busy = measuredStatus().map((request) =>
       request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
     );
@@ -1201,8 +1205,7 @@ test("an idle drain drops wakes older than the latest reply, while a conflict wa
     "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
   const reviewWake =
     "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 and act.";
-  const conflictLine =
-    "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+  const conflictLine = lockfileConflictLine;
   const switchTo = (id: string): Request[] => [
     {
       path: "/api/session/ses_fake/model",
@@ -1297,8 +1300,7 @@ test("fixer replies do not make queued wakes stale: the queued ANSWER is deliver
     "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
   const reviewWake =
     "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 and act.";
-  const conflictLine =
-    "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+  const conflictLine = lockfileConflictLine;
   const times = [
     "2026-01-01T00:00:00Z",
     "2026-01-01T00:01:00Z",
@@ -2807,6 +2809,58 @@ test("status distinguishes permission, running, unknown and idle without an auth
   f.done();
 });
 
+test("status shows each pending permission as bounded untrusted data", async () => {
+  // OpenCode V2 Permission.Request projection: action/resources, from
+  // https://opencode.ai/v2/openapi.json (2026-10-28). Metadata is not displayed.
+  const f = fixture([
+    ...start,
+    ...status(
+      true,
+      [],
+      [
+        { id: "per_read", sessionID: "ses_fake", action: "read", resources: ["apps/api/.env"] },
+        {
+          id: "per_shell",
+          sessionID: "ses_fake",
+          action: "shell",
+          resources: ["echo " + "x".repeat(250)],
+          metadata: { secret: "hidden" },
+        },
+      ]
+    ),
+  ]);
+  await f.service.command(["start", "31"]);
+  const output = String(await f.service.command(["status", "31"]));
+  expect(output).toContain('untrusted permission: «read: ["apps/api/.env"]»');
+  const details = [...output.matchAll(/untrusted permission: «([^»]*)»/g)].map((m) => m[1]);
+  expect(details).toHaveLength(2);
+  expect(details[1]).toHaveLength(200);
+  expect(details[1]).toContain("shell: ");
+  expect(output).not.toContain("hidden");
+  f.done();
+});
+
+test.each([false, true])(
+  "lock refusal identifies the holder and preserves the lock (dead=%s)",
+  async (dead) => {
+    const f = fixture();
+    const lock = join(f.root, "state/vmethod/example-state/workers/31.lock");
+    mkdirSync(lock, { recursive: true });
+    const holder = {
+      operation: "start",
+      pid: dead ? 2147483647 : process.pid,
+      at: new Date(0).toISOString(),
+    };
+    writeFileSync(join(lock, "holder.json"), JSON.stringify(holder));
+    await f.deps.sleep(125000);
+    await expect(f.service.command(["status", "31"])).rejects.toThrow(
+      `Worker #31 is locked: held by start (pid ${holder.pid}) for 125s${dead ? " (process not running; stale)" : ""}`
+    );
+    expect(JSON.parse(readFileSync(join(lock, "holder.json"), "utf8"))).toEqual(holder);
+    f.done();
+  }
+);
+
 test("unknown session starts a re-entry session with onboarding and a fresh PR read", async () => {
   const f = fixture([
     ...start,
@@ -2961,6 +3015,21 @@ test("suggest-model prints Estimate/kind, local learning and owner gate without 
   f.done();
 });
 
+test("recommend returns the structured suggestion behind suggest-model for open-task's lines", async () => {
+  const f = fixture();
+  vi.mocked(f.hooks.issue).mockResolvedValue({ estimate: 1, kind: "tooling" });
+  await expect(f.service.recommend(9)).resolves.toEqual({
+    model: expect.objectContaining({ family: "glm", tier: "cheap" }),
+    reason: "Estimate 1, kind tooling",
+  });
+  vi.mocked(f.hooks.issue).mockResolvedValue({ estimate: 13, kind: "architecture" });
+  await expect(f.service.recommend(9)).resolves.toEqual({
+    model: expect.objectContaining({ family: "sol", tier: "expensive", gate: "owner" }),
+    reason: "Estimate 13, kind architecture",
+  });
+  f.done();
+});
+
 test("OpencodeClient status(directory, id) preserves explicit worker session status", async () => {
   const f = fixture([
     { path: "/api/session/active", data: { ses_fake: { location: { directory: "/task" } } } },
@@ -3042,9 +3111,19 @@ test("simultaneous starts are serialized by an exclusive per-PR lock", async () 
   });
   const first = f.service.command(["start", "31"]);
   await preparing;
-  await expect(f.service.command(["start", "31"])).rejects.toThrow("locked");
+  const lock = join(f.root, "state/vmethod/example-state/workers/31.lock");
+  const holder = JSON.parse(readFileSync(join(lock, "holder.json"), "utf8"));
+  expect(holder).toMatchObject({
+    operation: "start",
+    pid: process.pid,
+    at: new Date(0).toISOString(),
+  });
+  await expect(f.service.command(["start", "31"])).rejects.toThrow(
+    `held by start (pid ${process.pid}) for 0s`
+  );
   release();
   await first;
+  expect(existsSync(lock)).toBe(false);
   f.done();
 });
 

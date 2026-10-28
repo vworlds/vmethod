@@ -5,6 +5,7 @@ import { expect, test, vi } from "vitest";
 import {
   assertLockfileInSync,
   lockfileCheckable,
+  lockfilesOnly,
   lockfileOutOfSync,
   npmCiCheckArguments,
   npmCiEnvironment,
@@ -12,6 +13,19 @@ import {
 import { ghConfig } from "../helpers.js";
 
 const invalid = "npm error Invalid: lock file's yaml@2.9.1 does not satisfy yaml@2.9.0";
+
+test.each<[string[], boolean]>([
+  [[], false],
+  [
+    ["package-lock.json", "packages/app/npm-shrinkwrap.json", "yarn.lock", "nested/pnpm-lock.yaml"],
+    true,
+  ],
+  [["package-lock.json", "source.ts"], false],
+  [["not-package-lock.json"], false],
+  [["package-lock.json/source.ts"], false],
+])("lockfile-only classification for %j is %s", (files, expected) => {
+  expect(lockfilesOnly(files)).toBe(expected);
+});
 const missing = "npm error Missing: yaml@2.9.1 from lock file";
 const refusal = [
   "npm error code EUSAGE",

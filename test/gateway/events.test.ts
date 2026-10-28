@@ -1950,7 +1950,8 @@ test.each(["later Progress", "same-second Progress", "later assignment"])(
       card.progress = { text: "👤❓", updatedAt: f.iso(newer === "later Progress" ? 1_000 : 0) };
     }
     const events = await f.tick(loop);
-    expect(events.map((event) => event.kind)).toEqual(["board", "next"]);
+    // #320: the ask keeps the owner's turn, so the card is not selected as NEXT.
+    expect(events.map((event) => event.kind)).toEqual(["board"]);
     expect(object(card.progress).text).toBe("👤❓");
     expect(object(card.content).assignees).toEqual({ nodes: [{ login: "owner" }] });
     expect(f.writes).toEqual([]);
@@ -2392,6 +2393,68 @@ test("board Scoping/Executing, NEXT, LAUNCH, assignments and owner completion wa
   expect(events.map((e) => e.kind)).toEqual(["assigned"]);
   expect(events[0].line).toContain("other/project#7");
   expect(f.writes.every((write) => write.itemId !== "PVTI_7")).toBe(true);
+});
+
+test("NEXT skips a Scoping card waiting on the owner and names the next orchestrator-turn card (#320)", async () => {
+  const f = setup();
+  const top = f.card(8, "Scoping");
+  const asked = f.card(6, "Scoping");
+  asked.progress = { text: "👤❓" };
+  object(asked.content).assignees = { nodes: [{ login: "owner" }] };
+  const queued = f.card(7, "Scoping");
+  f.cards = [top, asked, queued];
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  // The owner retires the top card (not planned): the owner's question becomes
+  // the top Scoping card, but its turn is still the owner's.
+  object(top.content).state = "CLOSED";
+  object(top.content).stateReason = "NOT_PLANNED";
+  object(top.content).closedAt = f.iso();
+  const events = await f.tick(loop);
+  expect(events.map((event) => event.kind)).toEqual(["closed", "next"]);
+  expect(events.at(-1)?.line).toContain("NEXT #7");
+  expect(object(JSON.parse(f.marker("board/next"))).number).toBe(7);
+  await f.ack(loop, events);
+  f.advance();
+  // The owner hands the card back by removing themselves; the watcher releases
+  // the owner turn and the card becomes NEXT again, as the top of the queue.
+  object(asked.content).assignees = { nodes: [] };
+  f.assignmentEvents = [
+    {
+      ...recordedActions.timelineItems.nodes[1],
+      createdAt: f.iso(),
+      actor: actor(0),
+      assignee: actor(0),
+    },
+  ];
+  const handback = await f.tick(loop);
+  expect(handback.map((event) => event.kind)).toEqual(["owner-done", "next"]);
+  expect(handback.at(-1)?.line).toContain("NEXT #6");
+  expect(object(asked.progress).text).toBe("🧭🔍");
+  expect(object(object(asked.content).assignees).nodes).toEqual([{ login: "peer" }]);
+  await f.ack(loop, handback);
+  f.advance();
+  expect(await f.tick(loop)).toEqual([]);
+  expect(object(JSON.parse(f.marker("board/next"))).number).toBe(6);
+  expect(f.reports).toEqual([]);
+  loop.close();
+});
+
+test("an owner ask on the top Scoping card clears its NEXT selection (#320)", async () => {
+  const f = setup();
+  const asked = f.card(6, "Scoping");
+  f.cards = [asked];
+  const loop = f.loop();
+  await f.tick(loop);
+  f.advance();
+  asked.progress = { text: "👤❓", updatedAt: f.iso() };
+  object(asked.content).assignees = { nodes: [{ login: "owner" }] };
+  const events = await f.tick(loop);
+  expect(events.filter((event) => event.kind === "next")).toEqual([]);
+  expect(f.marker("board/next")).toBe("");
+  expect(f.reports).toEqual([]);
+  loop.close();
 });
 
 test.each([
@@ -3017,7 +3080,7 @@ test("a locked worker is skipped without an event or worker poll error", async (
   const f = setup();
   f.task();
   f.worktree();
-  f.staleWorker = new Error("Worker #24 is locked; another operation is active");
+  f.staleWorker = new Error("Worker #24 is locked: held by start (pid 123) for 125s");
   const loop = f.loop();
   let events: WatchEvent[] = [];
   for (let i = 0; i < 6; i++) {
@@ -3107,7 +3170,9 @@ test("secondary budget wakes without blocking until Retry-After", async () => {
 test("exclusive lock checks PID plus process start (including PID 1 reuse)", async () => {
   const f = setup();
   const loop = f.loop();
+  const at = f.iso();
   await f.tick(loop);
+  expect(JSON.parse(f.marker("lock"))).toMatchObject({ operation: "watch", pid: 1, start: 42, at });
   await expect(f.tick(f.loop())).rejects.toThrow("another watcher (pid 1)");
   f.processStart = 99;
   expect(await f.tick(f.loop())).toEqual([]);
@@ -3646,7 +3711,7 @@ test("recorded-worker poll failures are once per status and do not block a healt
 });
 
 test.each(["permission", "failed"])(
-  "WORKER %s is reported once per stop, again after resumption, never leaks detail",
+  "WORKER %s is reported once per stop, again after resumption, bounds permission detail",
   async (state) => {
     const f = setup();
     f.task();
@@ -3659,7 +3724,12 @@ test.each(["permission", "failed"])(
     const loop = f.loop();
     let events = await f.tick(loop);
     expect(events.map((e) => e.kind)).toEqual(["worker"]);
-    expect(events[0].line).not.toContain("unsafe");
+    if (state === "permission") {
+      expect(events[0].line).toContain("untrusted permission: «unsafe");
+      expect(events[0].line).not.toContain("\n");
+    } else {
+      expect(events[0].line).not.toContain("unsafe");
+    }
     await f.ack(loop, events);
     for (let i = 0; i < 4; i++) {
       expect(await f.tick(loop)).toEqual([]);
@@ -3685,6 +3755,38 @@ test.each(["permission", "failed"])(
     expect(wakes.map((e) => e.kind)).toEqual(["worker"]);
   }
 );
+
+test("recorded permissions are bounded untrusted events and changes produce a new stop", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  let details = ['read: ["apps/api/.env"]', "shell: " + "x".repeat(250)];
+  f.workerStatus = async () => ({
+    reason: "permission-wait",
+    active: true,
+    permissionDetails: details,
+  });
+  const loop = f.loop();
+  const events = await f.once(loop);
+  expect(events).toHaveLength(1);
+  expect(events[0].line).toContain('untrusted permission: «read: ["apps/api/.env"]»');
+  expect(
+    [...events[0].line.matchAll(/untrusted permission: «([^»]*)»/g)].map((m) => m[1].length)
+  ).toEqual(['read: ["apps/api/.env"]'.length, 200]);
+  await f.ack(loop, events);
+  details = ['read: ["changed.env"]'];
+  const changed: WatchEvent[] = [];
+  // Workers are polled once every six board cycles, independently of wall time.
+  for (let i = 0; i < 6; i++) {
+    f.advance();
+    const next = await f.once(loop);
+    changed.push(...next);
+    await f.ack(loop, next);
+  }
+  expect(changed.map((event) => event.line)).toEqual([
+    expect.stringContaining('untrusted permission: «read: ["changed.env"]»'),
+  ]);
+});
 
 test("vmethod subscriptions deliver new issues/PRs, peer comments and assignments", async () => {
   const f = setup();

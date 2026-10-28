@@ -1,3 +1,5 @@
+import { lockHolder } from "./lock-holder.js";
+import { renderPermissions } from "./permission-detail.js";
 import {
   appendFileSync,
   closeSync,
@@ -98,7 +100,8 @@ export interface WatchEvent {
   /** Ack key: the event's dedup key for once events, stable across restarts. */
   id: string;
   kind: string;
-  /** One printed line: metadata only, plus the owner's opt-in untrusted preview. */
+  /** One printed line: metadata, bounded untrusted permission diagnostics, and
+   * the owner's opt-in untrusted content preview. */
   line: string;
   /** Minor-event lines riding this event (the quiet digest), printed before it. */
   quiet?: string[];
@@ -925,11 +928,7 @@ export class EventLoop {
         const fd = openSync(path, "wx", 0o600);
         writeFileSync(
           fd,
-          `${JSON.stringify({
-            pid: this.host.deps.pid,
-            start,
-            at: new Date(this.host.deps.now()).toISOString(),
-          })}\n`,
+          `${JSON.stringify(lockHolder("watch", this.host.deps.pid, this.host.deps.now(), start))}\n`,
           { mode: 0o600 }
         );
         closeSync(fd);
@@ -3788,6 +3787,17 @@ export class EventLoop {
     }
   }
 
+  /** A card whose turn is with the owner: owner-assigned or carrying an owner
+   * Progress state (`👤…`). NEXT never names such a Scoping card until the owner
+   * hands the turn back (#320): retiring another card only brings it to the top
+   * of the queue, which still leaves the move to the owner. */
+  private ownerTurn(card: CardInfo): boolean {
+    return (
+      card.assignees.some((login) => this.owners.has(login.toLowerCase())) ||
+      ["owner-review", "owner-question"].includes(parseProgress(card.progress).state ?? "")
+    );
+  }
+
   private async watchNext(
     ready: CardInfo[],
     approved: CardInfo[],
@@ -3813,8 +3823,12 @@ export class EventLoop {
     if (recheck) {
       remove(join(this.dir, "recheck-next"));
     }
-    const next = ready[0]
-      ? { number: ready[0].number, kind: ready[0].kind, repo: ready[0].repo }
+    // Select the first Scoping card whose turn is the orchestrator's; cards
+    // waiting on the owner stay unselected (#320) and rejoin the queue when the
+    // owner hands the turn back.
+    const selected = ready.find((card) => !this.ownerTurn(card));
+    const next = selected
+      ? { number: selected.number, kind: selected.kind, repo: selected.repo }
       : null;
     const candidates = approved.filter((card) => !this.launchedIssues.has(card.number));
     const scopes = await new ScopeReader(
@@ -3901,7 +3915,11 @@ export class EventLoop {
       return { state: "failed", detail: status.error };
     }
     if (status.reason === "permission-wait") {
-      return { state: "permission" };
+      return {
+        state: "permission",
+        detail: JSON.stringify(status.permissionDetails ?? []),
+        permissionDetails: status.permissionDetails,
+      };
     }
     const prompt = object(safeJson(this.readMarker(`worker-prompt-${number}`)));
     const review = this.readReview(number);
@@ -4092,7 +4110,7 @@ export class EventLoop {
         }
       } catch (error) {
         const message = (error as Error).message;
-        if (/^Worker #\d+ is locked;/.test(message)) {
+        if (/^Worker #\d+ is locked:/.test(message)) {
           continue;
         }
         const signature = message.split(": ")[0];
@@ -4128,7 +4146,7 @@ export class EventLoop {
           this.emit(
             `w-${pr.number}@${this.host.deps.now()}`,
             "worker",
-            `WORKER #${pr.number} (${pr.branch}): waits for a permission; see ${dir}`
+            `WORKER #${pr.number} (${pr.branch}): waits for a permission; see ${dir}${renderPermissions(status.permissionDetails)}`
           )
         ) {
           this.queueProgress(pr.number, {

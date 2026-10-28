@@ -1507,6 +1507,13 @@ class GatewayServer {
         return state?.approved === true;
       },
       modelApproval: (issue, family) => this.modelApproval(family, { issue }),
+      // #339: open-task's advisory lines reuse suggest-model's recommendation and the
+      // per-family learnings aggregate; informational only, never a refusal source.
+      modelSuggestion: async (issue) => {
+        const { model, reason } = await this.workers.recommend(issue);
+        return { family: model.family, tier: model.tier, reason };
+      },
+      learningEvidence: (family) => this.learningService().familyEvidence(family),
       ownerAgreement: async (ref, url, since, handback, kind = "pr") => {
         const match =
           /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:pull|issues)\/([1-9]\d*)#issuecomment-([1-9]\d*)$/.exec(

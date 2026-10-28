@@ -808,6 +808,33 @@ test.each(gateScenarios)(
         graph({ node: item({ comments: scopeConnection(scenario.metas) }) }),
         ...scenario.bodies,
         ...(readsCard ? [cardRead(scenario.card)] : []),
+        // #339: once the gate passes, the launch's advisory advice re-reads the issue
+        // through suggest-model's path; the card carries only an Estimate, and with no
+        // local learnings the line prints without its evidence clause.
+        ...(scenario.authorized
+          ? [
+              graph({ repository: { issue: item() } }),
+              graph({
+                node: item({
+                  body: "Issue",
+                  labels: { nodes: [], pageInfo: { hasNextPage: false } },
+                  projectItems: {
+                    nodes: [
+                      {
+                        id: "card-1",
+                        project: { number: 1, owner: { login: "example" } },
+                        fieldValues: {
+                          nodes: [{ field: { name: "Estimate" }, number: 1 }],
+                          pageInfo: { hasNextPage: false },
+                        },
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false },
+                  },
+                }),
+              }),
+            ]
+          : []),
       ],
       actor(2),
       [...people, secondOwner],
