@@ -1,0 +1,33 @@
+{
+  "attached": {
+    "data": {
+      "repository": {
+        "issue": {
+          "parent": {
+            "id": "I_kwDOVMIbYc8AAAABaqCEiQ",
+            "number": 342,
+            "repository": { "nameWithOwner": "vworlds/vmethod" }
+          }
+        }
+      }
+    }
+  },
+  "unattached": { "data": { "repository": { "issue": { "parent": null } } } },
+  "removeSubIssue": {
+    "data": { "removeSubIssue": { "issue": { "number": 342 }, "subIssue": { "number": 355 } } }
+  },
+  "addSubIssue": {
+    "data": { "addSubIssue": { "issue": { "number": 342 }, "subIssue": { "number": 355 } } }
+  },
+  "duplicate": {
+    "data": { "addSubIssue": null },
+    "errors": [
+      {
+        "type": "VALIDATION",
+        "path": ["addSubIssue"],
+        "locations": [{ "line": 1, "column": 45 }],
+        "message": "Failed to add sub-issue #355 to parent #342. Issue may not contain duplicate sub-issues and Sub issue may only have one parent"
+      }
+    ]
+  }
+}

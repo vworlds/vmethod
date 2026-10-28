@@ -9,7 +9,15 @@ export interface Operations {
   learnings: { input: LearningInput; output: string };
   learningCheck: { input: { ref: string; label?: boolean }; output: string };
   issueCreate: {
-    input: { title: string; file: string; labels?: string[]; estimate?: number; status?: string };
+    input: {
+      title: string;
+      file: string;
+      labels?: string[];
+      estimate?: number;
+      status?: string;
+      /** Attach the fresh issue to a configured-repository epic after creation. */
+      parent?: string;
+    };
     output: string;
   };
   issueClose: { input: { ref: string; comment?: string }; output: string };
@@ -23,6 +31,10 @@ export interface Operations {
   issueBlock: { input: { ref: string; blocker: string }; output: string };
   /** Clear a blocked-by relation on a configured-repository issue. */
   issueUnblock: { input: { ref: string; blocker: string }; output: string };
+  /** Attach configured-repository issue <n> beneath configured-repository epic <epic> (#327). */
+  issueParent: { input: { ref: string; epic: string }; output: string };
+  /** Detach configured-repository issue <n> from configured-repository epic <epic> (#327). */
+  issueUnparent: { input: { ref: string; epic: string }; output: string };
   /** Set an existing issue card's Estimate on the shared points scale; never a PR card. */
   issueEstimate: { input: { ref: string; points: number }; output: string };
   /** Publish body-bound scope review and give the owner the issue turn. */
@@ -47,6 +59,13 @@ export interface Operations {
   suggestModel: { input: { ref: string }; output: string };
   grade: { input: { ref: string; points?: number }; output: string };
   openTask: { input: OpenTaskInput; output: string };
+  /** Open an already-pushed non-task branch against baseBranch; orchestrator only. */
+  prOpen: {
+    input: { branch: string; title: string; file: string; draft?: boolean };
+    output: string;
+  };
+  /** Squash a non-task PR with exact-head owner or delegated review and normal CI/base gates. */
+  prMerge: { input: { ref: string }; output: string };
   reviewTask: { input: ReviewInput; output: string };
   askIssue: { input: { ref: string; file: string }; output: string };
   mergeTask: {
@@ -112,7 +131,11 @@ export interface Operations {
   };
   /** Post exact file content; discussion_r reply URLs route to the inline thread. */
   post: { input: { ref: string; file: string; replyTo?: string }; output: string };
-  push: { input: { worktree: string; branch: string; commit?: string }; output: string };
+  /** task explicitly targets an open task PR (orchestrator only); its branch defaults to the PR head. */
+  push: {
+    input: { worktree: string; branch?: string; commit?: string; task?: number };
+    output: string;
+  };
   task: {
     input: { ref: string; fetch?: boolean };
     output: { branch: string; base: string };

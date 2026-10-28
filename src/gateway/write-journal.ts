@@ -186,6 +186,30 @@ export class WriteJournal {
     }
   }
 
+  /** Attribute a successful git ref update to this orchestrator's journal, not worker activity. */
+  recordPush(repo: string, number: number, head: string): void {
+    this.append({
+      at: new Date(this.now()).toISOString(),
+      kind: "push",
+      repo,
+      number,
+      field: "Head",
+      value: head,
+    });
+  }
+
+  /** Exact commit identity remains attributable throughout journal retention, even after a delayed poll. */
+  pushed(repo: string, number: number, head: string): boolean {
+    return this.read().some(
+      (entry) =>
+        entry.kind === "push" &&
+        entry.repo.toLowerCase() === repo.toLowerCase() &&
+        entry.number === number &&
+        entry.field === "Head" &&
+        entry.value === head
+    );
+  }
+
   private append(entry: WriteRecord): void {
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
     // Do not lose a simultaneous writer's append during pruning. The critical

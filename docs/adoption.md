@@ -16,7 +16,8 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       `npm exec --no -- vmethod init --launcher` writes a marked `vmethod` script to
       `~/.local/bin` by default (pass a different `dir` when needed), mode 755. Keep
       the directory on `PATH`; `vmethod check` reports whether the `vmethod` on PATH
-      is this launcher. From then on commands are `vmethod <verb>` with no
+      is this launcher (the report is skipped inside npm scripts, where
+      `npm_lifecycle_event` is set). From then on commands are `vmethod <verb>` with no
       `VMETHOD_ROLE`/`VMETHOD_ROOT` prefix. The launcher resolves the checkout the
       commands run in and never executes another checkout's installation; it replaces
       an older launcher and refuses to overwrite any file that does not carry its
@@ -116,6 +117,14 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       or resuming its worker. Body model lines are not a fallback. Fresh contexts
       receive a generated first prompt pointing to the pinned worker guide; live
       sessions keep their context without receiving onboarding again.
+
+- [ ] Deliver the adoption as one reviewed non-task PR: push the adoption branch,
+      then run `vmethod pr open <branch> "chore: adopt vmethod" <body-file>`.
+      Use `review <n> owner <file>` for the owner handover and `vmethod pr merge <n>`
+      after approval and green checks on the exact head/current base. Identity and
+      permission changes need the owner's approval even under autopilot. See
+      [non-task PR commands](gateway.md#non-task-pr-commands); no direct GitHub CLI
+      PR creation or merge is needed.
 
 ## Legacy worker transition
 

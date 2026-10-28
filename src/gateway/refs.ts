@@ -33,6 +33,12 @@ export function blockerReference(value: string, config: Config): ThreadRef {
   return reference(value.startsWith("#") ? value.slice(1) : value, config);
 }
 
+/** Parent `<epic>` arguments accept the same spellings as blockers (`#m`, `m`); the
+ * caller enforces the configured-repository restriction a parent requires. */
+export function parentReference(value: string, config: Config): ThreadRef {
+  return blockerReference(value, config);
+}
+
 /** Same-repository blockers read as `#n`; cross-repository blockers keep their `org/repo#n`. */
 export function blockerLabel(ref: ThreadRef, config: Config): string {
   return ref.repo.toLowerCase() === String(config.repo).toLowerCase()

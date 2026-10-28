@@ -9,6 +9,19 @@ export async function taskFlowVerb(
   env: NodeJS.ProcessEnv
 ): Promise<string> {
   const ctx = context(env);
+  if (verb === "pr") {
+    if (args[0] === "merge" && args.length === 2 && /^[1-9]\d*$/.test(args[1])) {
+      return transport.call("prMerge", { ref: args[1] }, ctx);
+    }
+    if (args[0] === "open" && (args.length === 4 || (args.length === 5 && args[4] === "--draft"))) {
+      return transport.call(
+        "prOpen",
+        { branch: args[1], title: args[2], file: args[3], draft: args.length === 5 },
+        ctx
+      );
+    }
+    throw new Error("Usage: pr open <branch> <title> <body-file> [--draft] or pr merge <n>");
+  }
   if (verb === "resolve-conflicts") {
     if (
       !/^[1-9]\d*$/.test(args[0] ?? "") ||

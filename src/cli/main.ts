@@ -69,6 +69,7 @@ try {
     case "pr-comment":
     case "push":
     case "open-task":
+    case "pr":
     case "review":
     case "ask":
     case "merge-task":
@@ -85,7 +86,7 @@ try {
         exec: async (file, args, options) =>
           (
             await promisify(execFile)(file, [...args], {
-              timeout: ["verify", "merge-task", "resolve-conflicts"].includes(verb)
+              timeout: ["verify", "merge-task", "pr", "resolve-conflicts"].includes(verb)
                 ? 1800000
                 : 30000,
               ...options,
@@ -128,6 +129,7 @@ try {
           })
         : [
               "open-task",
+              "pr",
               "review",
               "ask",
               "merge-task",
@@ -194,7 +196,9 @@ try {
         }
       }
       console.log(result.messages.length ? result.messages.join("\n") : "vmethod check: ok");
-      console.log(launcherReport(process.env));
+      if (process.env.npm_lifecycle_event === undefined) {
+        console.log(launcherReport(process.env));
+      }
       process.exitCode = result.code;
       break;
     }

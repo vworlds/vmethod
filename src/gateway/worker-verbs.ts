@@ -40,6 +40,29 @@ export async function workerVerb(
   }
   const ctx = context(env);
   if (verb === "push") {
+    if (args[0] === "--task") {
+      if (
+        args.length < 2 ||
+        args.length > 4 ||
+        !/^[1-9]\d*$/.test(args[1]) ||
+        !Number.isSafeInteger(Number(args[1])) ||
+        args.slice(2).some((arg) => arg.startsWith("--"))
+      ) {
+        throw new Error("Usage: vmethod push --task <pr> [worktree] [branch]");
+      }
+      if (ctx.role !== "orchestrator") {
+        throw new Error("Only orchestrators may push --task");
+      }
+      return transport.call(
+        "push",
+        {
+          task: Number(args[1]),
+          worktree: resolve(args[2] ?? process.cwd()),
+          ...(args[3] === undefined ? {} : { branch: args[3] }),
+        },
+        ctx
+      );
+    }
     if (args.length > 2) {
       throw new Error("Usage: vmethod push [worktree branch]");
     }

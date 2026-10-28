@@ -7,6 +7,7 @@ export const verbs = [
   { name: "suggest-model", stub: "scripts/orchestrator/suggest-model.sh" },
   { name: "grade", stub: "scripts/orchestrator/grade.sh" },
   { name: "open-task", stub: "scripts/orchestrator/open-task.sh" },
+  { name: "pr", stub: "scripts/orchestrator/pr.sh" },
   { name: "review", stub: "scripts/orchestrator/review.sh" },
   { name: "merge-task", stub: "scripts/orchestrator/merge-task.sh" },
   { name: "close-task", stub: "scripts/orchestrator/close-task.sh" },

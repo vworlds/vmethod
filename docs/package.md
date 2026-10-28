@@ -22,12 +22,18 @@ resolve the checkout from `VMETHOD_ROOT` or git discovery. `vmethod check` verif
 Every verb except `version` and `init --launcher` resolves the project root once per run exactly as the stubs and the launcher do: `VMETHOD_ROOT` first, then `git rev-parse --show-toplevel` from the current directory. The cwd is never assumed to be the root, so commands work from any subdirectory of a checkout. `init --launcher` can also run outside a repository when invoked through an installed bin.
 
 Template identities and model ids are examples, not real credentials or an authoritative allowlist.
+`pr open` and `pr merge` manage orchestrator-authored non-task changes; see
+[non-task PR commands](gateway.md#non-task-pr-commands). `check` skips its PATH
+launcher report when `npm_lifecycle_event` is set because npm scripts intentionally
+resolve the package bin first.
+
 Configure real values before adoption. Mermaid is optional at install time but `check` requires exactly 12.1.0. Diagram validation also uses the installed jsdom peer (24 or newer).
 The permission template denies raw `git push` and allows the `push` compatibility stub and local CLI. See [worker commands](gateway.md#worker-commands) for the six worker verbs, their arguments and branch policy.
 See [CI and integration commands](gateway.md#ci-and-integration-commands) for
 `wait-checks`, `verify`, `refresh-checks`, `check-task-ci` and the project verify hook.
 See [gateway commands](gateway.md#commands) for orchestrator-only `issue create`,
-`issue close`, `issue block`/`issue unblock`, `board add` board-follow-up repair
+`issue close`, `issue block`/`issue unblock`, `issue parent`/`issue unparent`
+epic relations (also `issue create --parent`), `board add` board-follow-up repair
 and `board set` housekeeping
 (including validated Progress and `--clear` for Progress/Estimate, and
 `board set <ref> Assignees owner|orchestrator|--clear` journaled management-turn

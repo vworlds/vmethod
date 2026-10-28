@@ -505,6 +505,12 @@ with their own, from the worker checkout's environment.
 Each consumer repo has a `people.yaml` (project file, owner-approved) listing every GitHub login the
 agents may hear from, with a role:
 
+Several `role: owner` entries are supported. Each has a unique login and numeric id;
+`vmethod check` accepts several owners but refuses duplicate logins or ids. All
+pinned owners have approval authority. Owner turns assign only one person, using
+the most recent owner interaction on the issue or PR, or the first owner in file
+order when none exists; see the [board assignment rule](board.md#status-and-assignee).
+
 ```text
 # login               role          note
 jpeletier           owner         decides
