@@ -826,6 +826,12 @@ class GatewayServer {
 
   boardStatus: Handlers["boardStatus"] = async ({ fix }) =>
     fix ? this.board.fixStatus() : this.board.status();
+  boardInit: Handlers["boardInit"] = async (input) => {
+    if (input.steal !== undefined && typeof input.steal !== "boolean") {
+      throw new Error("Invalid initialization flags");
+    }
+    return this.board.init(input);
+  };
   boardMigrate: Handlers["boardMigrate"] = async (input) => {
     if (
       (input.dryRun !== undefined && typeof input.dryRun !== "boolean") ||
@@ -2862,6 +2868,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     refreshChecks: server.refreshChecks,
     verify: server.verify,
     boardStatus: server.boardStatus,
+    boardInit: server.boardInit,
     boardMigrate: server.boardMigrate,
     boardItem: server.boardItem,
     boardSet: server.boardSet,
@@ -2915,6 +2922,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     refreshChecks: ["orchestrator"],
     verify: ["orchestrator"],
     boardStatus: ["orchestrator"],
+    boardInit: ["orchestrator"],
     boardMigrate: ["orchestrator"],
     boardItem: ["orchestrator"],
     boardSet: ["orchestrator"],

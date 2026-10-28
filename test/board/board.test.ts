@@ -12,8 +12,146 @@ import type { Migration } from "../../src/board/types.js";
 import { baseline, FakeBoard } from "./fake.js";
 import { migrationHolderDead, migrationIdentity } from "../../src/gateway/process-identity.js";
 import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
+import { BoardService } from "../../src/gateway/board.js";
+import { GitHubClient } from "../../src/gateway/client.js";
 
 let fake: FakeBoard;
+test("init journals successful field and README writes at the gateway boundary", async () => {
+  const board = setup();
+  board.fields = [];
+  const github = new GitHubClient(
+    board.config,
+    {
+      GH_CONFIG_DIR: ghConfig("offline"),
+      XDG_STATE_HOME: validProject(),
+    },
+    board.deps
+  );
+  const service = new BoardService(board.config, github, board.deps, [baseline], 1);
+  await service.init();
+  for (const kind of ["createProjectV2Field", "updateProjectV2", "deleteProjectV2Field"]) {
+    expect(
+      github.writes.matches(
+        { kind, repo: "example/project", number: 0 },
+        new Date(board.clock).toISOString()
+      )
+    ).toBe(true);
+  }
+});
+
+test("init repairs fresh defaults, leaves v0 without drift, and permits migration", async () => {
+  const board = setup();
+  board.fields = board.fields.filter(({ name }) => name === "Status");
+  board.fields[0].options = board.fields[0].options.slice(0, 3);
+  expect((await board.service().status()).drift.length).toBeGreaterThan(0);
+  await board.service().init();
+  expect((await board.service().status()).drift).toEqual([]);
+  expect(readState(board.readme).version).toBe(0);
+  expect(board.readme).toContain("Human notes");
+  const fields = structuredClone(board.fields);
+  board.mutations = [];
+  await board.service().init();
+  expect(board.fields).toEqual(fields);
+  expect(board.mutations).not.toContain("BoardOptions");
+  await board.service().migrate({});
+  expect(readState(board.readme).version).toBe(1);
+});
+
+test.each([false, true])("init refuses cards before any write (archived=%s)", async (archived) => {
+  const board = setup();
+  board.card().archived = archived;
+  await expect(board.service().init()).rejects.toThrow("no cards");
+  expect(board.mutations).toEqual([]);
+});
+
+test("init resumes a partial field creation without duplicates", async () => {
+  const board = setup();
+  board.fields = [];
+  const fetch = board.deps.fetch;
+  let fail = true;
+  board.deps.fetch = async (url, init) => {
+    const payload = JSON.parse(String(init?.body ?? "{}"));
+    if (
+      fail &&
+      payload.query?.includes("mutation BoardCreateField") &&
+      payload.variables.input.name === "Estimate"
+    ) {
+      fail = false;
+      return Response.json({ errors: [{ message: "Interrupted initialization" }] });
+    }
+    return fetch(url, init);
+  };
+  await expect(board.service().init()).rejects.toThrow("Interrupted initialization");
+  const modelId = board.fields.find(({ name }) => name === "Model")!.id;
+  await board.service().init();
+  expect((await board.service().status()).drift).toEqual([]);
+  expect(board.fields.find(({ name }) => name === "Model")!.id).toBe(modelId);
+  expect(board.fields.map(({ name }) => name).sort()).toEqual(
+    Object.keys(baseline.expect.fields).sort()
+  );
+});
+
+test.each(["duplicate", "type", "migrated"])(
+  "init refuses %s conflicts without writes",
+  async (conflict) => {
+    const board = setup();
+    if (conflict === "duplicate") {
+      board.fields.push({ ...board.fields[0], id: "duplicate" });
+    }
+    if (conflict === "type") {
+      board.fields[0].type = "text";
+    }
+    if (conflict === "migrated") {
+      board.stamp(1);
+    }
+    await expect(board.service().init()).rejects.toThrow(
+      conflict === "migrated" ? "already migrated" : "conflicting board field"
+    );
+    expect(board.mutations).toEqual([]);
+  }
+);
+
+test("init reconciles a successful field create whose response was lost", async () => {
+  const board = setup();
+  board.fields = [];
+  const fetch = board.deps.fetch;
+  let fail = true;
+  board.deps.fetch = async (url, init) => {
+    const payload = JSON.parse(String(init?.body ?? "{}"));
+    const response = await fetch(url, init);
+    if (
+      fail &&
+      payload.query?.includes("mutation BoardCreateField") &&
+      payload.variables.input.name === "Model"
+    ) {
+      fail = false;
+      return Response.json({ errors: [{ message: "Response lost" }] });
+    }
+    return response;
+  };
+  await expect(board.service().init()).rejects.toThrow("Response lost");
+  const id = board.fields.find(({ name }) => name === "Model")!.id;
+  await board.service().init();
+  expect(board.fields.find(({ name }) => name === "Model")!.id).toBe(id);
+  expect((await board.service().status()).drift).toEqual([]);
+  expect(board.fields).toHaveLength(4);
+});
+
+test.each([404, 403, 500])("adoption configuration HTTP %s is handled narrowly", async (status) => {
+  const board = setup();
+  const fetch = board.deps.fetch;
+  board.deps.fetch = async (url, init) =>
+    String(url).includes("/contents/vmethod.yaml?")
+      ? Response.json({ message: "Not Found" }, { status })
+      : fetch(url, init);
+  await expect(board.service().adoption("1.0.0-rc.2")).rejects.toThrow(
+    status === 404
+      ? "example/project has not adopted vmethod >= 1.0.0-rc.2 on its default branch yet; merge the adoption PR, then rerun board migrate"
+      : `GitHub HTTP ${status}`
+  );
+  expect(board.mutations).toEqual([]);
+});
+
 test("already-present add_option reorders to expect without changing IDs, metadata or values", async () => {
   const board = setup();
   board.stamp(1);
@@ -1649,6 +1787,7 @@ test("new operations use the same orchestrator policy and board CLI transport se
     }
   );
   for (const operation of [
+    "boardInit",
     "boardStatus",
     "boardMigrate",
     "boardItem",
@@ -1670,11 +1809,18 @@ test("new operations use the same orchestrator policy and board CLI transport se
     VMETHOD_ROLE: "orchestrator",
   })) as string;
   expect(JSON.parse(migrate).dryRun).toBe(true);
+  board.cards = [];
+  const initialized = await gatewayVerb(transport, "board", ["init"], {
+    VMETHOD_ROLE: "orchestrator",
+  });
+  expect(JSON.parse(initialized as string).drift).toEqual([]);
   for (const args of [
     [],
     ["status", "--steal"],
     ["migrate", "--unknown"],
     ["migrate", "--steal", "--steal"],
+    ["init", "--dry-run"],
+    ["init", "--steal", "--steal"],
   ]) {
     await expect(gatewayVerb(transport, "board", args)).rejects.toThrow("Usage");
   }
