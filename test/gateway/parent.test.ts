@@ -7,6 +7,7 @@ import { fixtureServer, graph, type Request } from "./helpers.js";
 import { scopeIssue } from "./scope-fixture.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
 import type { ObjectData } from "../../src/gateway/people.js";
+import recorded from "../fixtures/github/sub-issues.json" with { type: "json" };
 
 const issue = () => scopeIssue({ state: "OPEN" });
 
@@ -22,9 +23,12 @@ function queriedFields(query: string): string[] {
 
 /** The sub-issue's own parent read: structural fields only, keyed by the same repository query. */
 function parentQuery(childNumber: number, parent: ObjectData | null): Request {
+  const response: { data: { repository: { issue: { parent: ObjectData | null } } } } =
+    structuredClone(parent === null ? recorded.unattached : recorded.attached);
+  response.data.repository.issue.parent = parent;
   return {
     path: "/graphql",
-    json: { data: { repository: { issue: { parent } } } },
+    json: response,
     checkQuery(query, variables) {
       expect(queriedFields(query)).toEqual([
         "repository",
@@ -56,13 +60,18 @@ function epicNodeQuery(owner: string, name: string, number: number, id: string):
 function subIssueMutation(
   mutation: "addSubIssue" | "removeSubIssue",
   issueId: string,
-  subIssueId: string
+  subIssueId: string,
+  epicNumber = 379,
+  childNumber = 8
 ): Request {
+  const response = structuredClone(recorded[mutation]);
+  const payload =
+    "addSubIssue" in response.data ? response.data.addSubIssue : response.data.removeSubIssue;
+  payload.issue.number = epicNumber;
+  payload.subIssue.number = childNumber;
   return {
     path: "/graphql",
-    json: {
-      data: { [mutation]: { issue: { number: 379 }, subIssue: { number: 8 } } },
-    },
+    json: response,
     checkQuery(query, variables) {
       const names = queriedFields(query);
       expect(names).toContain(mutation);
@@ -73,11 +82,13 @@ function subIssueMutation(
 }
 
 const epicParent = {
+  ...structuredClone(recorded.attached.data.repository.issue.parent),
   id: "epic-node",
   number: 379,
   repository: { nameWithOwner: "example/project" },
 };
 const otherParent = {
+  ...structuredClone(recorded.attached.data.repository.issue.parent),
   id: "other-node",
   number: 400,
   repository: { nameWithOwner: "example/project" },
@@ -106,6 +117,24 @@ test("issue parent is a read-only no-op when the issue is already attached to th
   await expect(f.transport.call("issueParent", { ref: "8", epic: "#379" })).resolves.toBe(
     "Issue #8 is already a sub-issue of epic #379; nothing attached"
   );
+  f.done();
+});
+
+test("a concurrent attachment surfaces GitHub's recorded duplicate validation error", async () => {
+  const f = fixtureServer([
+    graph({ repository: { issue: issue() } }),
+    graph({ node: issue() }),
+    parentQuery(355, null),
+    epicNodeQuery("example", "project", 342, "epic-node"),
+    {
+      ...subIssueMutation("addSubIssue", "epic-node", "node-1", 342, 355),
+      json: structuredClone(recorded.duplicate),
+    },
+  ]);
+  await expect(f.transport.call("issueParent", { ref: "355", epic: "342" })).rejects.toThrow(
+    `GitHub GraphQL (untrusted errors): ${JSON.stringify(recorded.duplicate.errors[0].message)}`
+  );
+  expect(f.sleeps).toEqual([]);
   f.done();
 });
 
@@ -227,7 +256,7 @@ test("issue create --parent attaches the created issue to a configured-repositor
     },
     parentQuery(37, null),
     epicNodeQuery("example", "project", 342, "epic-node-342"),
-    subIssueMutation("addSubIssue", "epic-node-342", "issue-node-37"),
+    subIssueMutation("addSubIssue", "epic-node-342", "issue-node-37", 342, 37),
   ]);
   const config = join(f.root, "vmethod.yaml");
   writeFileSync(config, readFileSync(config, "utf8").replace("enabled: true", "enabled: false"));
@@ -257,7 +286,7 @@ test("a failed create --parent attachment names the issue parent retry and keeps
     graph({ node: issue() }),
     parentQuery(37, null),
     epicNodeQuery("example", "project", 342, "epic-node-342"),
-    subIssueMutation("addSubIssue", "epic-node-342", "node-1"),
+    subIssueMutation("addSubIssue", "epic-node-342", "node-1", 342, 37),
   ]);
   const config = join(f.root, "vmethod.yaml");
   writeFileSync(config, readFileSync(config, "utf8").replace("enabled: true", "enabled: false"));
