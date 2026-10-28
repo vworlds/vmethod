@@ -2747,6 +2747,25 @@ test("a base move without conflict produces no event: nothing to resolve", async
   f.done();
 });
 
+test("a dispatch still waiting for the refresh lock retries on the next detail poll", async () => {
+  const f = setup();
+  f.task();
+  f.mergeable = false;
+  f.conflictPending = () => false;
+  const resolve = vi.fn(async () => "PENDING #24: conflict resolution in progress (pid 1234)");
+  f.resolveConflicts = resolve;
+  const loop = f.loop();
+  await f.tick(loop);
+  expect(resolve).toHaveBeenCalledOnce();
+  resolve.mockResolvedValue("nothing to resolve for #24");
+  for (let i = 0; i < 7; i++) {
+    f.advance();
+    await f.tick(loop);
+  }
+  expect(resolve).toHaveBeenCalledTimes(2);
+  f.done();
+});
+
 test("an active record closing as resolved after a clean update wakes nobody", async () => {
   const f = setup();
   f.task();

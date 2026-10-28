@@ -14,6 +14,7 @@ import { GitTransport } from "./git.js";
 import { runVerifyHook } from "./verify-hook.js";
 import type { Operations, Verdict } from "./transport.js";
 import { liveBaseHead } from "./base-head.js";
+import { reference } from "./refs.js";
 
 /** Orchestrator integration work; project recipes receive no gateway credentials. */
 export class VerificationService {
@@ -23,7 +24,9 @@ export class VerificationService {
     private config: Config,
     private deps: Dependencies,
     private checks: ChecksService,
-    private push: (input: Operations["push"]["input"], pr: number) => Promise<string>
+    private push: (input: Operations["push"]["input"], pr: number) => Promise<string>,
+    /** #373: hold the per-PR conflict lock around refresh-checks' snapshot and push. */
+    private lock: <T>(pr: number, run: () => Promise<T>) => Promise<{ busy: string } | { value: T }>
   ) {}
 
   async verify(input: Operations["verify"]["input"]): Promise<Verdict> {
@@ -48,6 +51,21 @@ export class VerificationService {
   }
 
   async refresh(ref: string): Promise<Verdict> {
+    const target = reference(ref, this.config);
+    if (target.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+      throw new Error("CI operations require the configured repository");
+    }
+    // #373: hold the conflict lock from the snapshot through the push, so the
+    // watcher's conflict dispatch waits for this refresh and then re-reads the
+    // head and base; a live resolution keeps the lock and refresh reports busy.
+    const guarded = await this.lock(target.number, () => this.refreshLocked(ref));
+    if ("busy" in guarded) {
+      return { code: 2, text: `refresh-checks: ${guarded.busy}; run again` };
+    }
+    return guarded.value;
+  }
+
+  private async refreshLocked(ref: string): Promise<Verdict> {
     const snapshot = await this.checks.snapshot(ref);
     if (!snapshot.green || !snapshot.stale) {
       return {

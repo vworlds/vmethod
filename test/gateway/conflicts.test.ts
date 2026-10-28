@@ -14,8 +14,142 @@ import {
 import type { CiSnapshot } from "../../src/gateway/checks.js";
 import { GitHubHttpError } from "../../src/gateway/client.js";
 import { verifyConflictHead } from "../../src/gateway/verify-hook.js";
+import { VerificationService } from "../../src/gateway/verify.js";
+import type { ChecksService } from "../../src/gateway/checks.js";
 
 const exec = promisify(execFile);
+
+test("refresh-checks holds dispatch until its push finishes, then dispatch reads the new head", async () => {
+  const f = await setup(false, false);
+  f.snapshot.stale = true;
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const checks = {
+    snapshot: async () => {
+      await ready;
+      return { ...f.snapshot };
+    },
+  } as unknown as ChecksService;
+  const verification = new VerificationService(
+    f.root,
+    f.env,
+    { repo: "example/project", org: "example" },
+    f.deps,
+    checks,
+    async () => {
+      await f.makeUpToDate();
+      return "pushed";
+    },
+    (pr, run) => f.service.guard(pr, run)
+  );
+  const refresh = verification.refresh("31");
+  expect(existsSync(f.lock)).toBe(true);
+  const sleep = vi.fn(async () => {
+    expect(f.hooks.snapshot).not.toHaveBeenCalled();
+    release();
+    expect((await refresh).code).toBe(0);
+  });
+  f.deps.sleep = sleep;
+  expect(await f.createService().resolve(31, false, 60000)).toBe("nothing to resolve for #31");
+  expect(sleep).toHaveBeenCalledOnce();
+  expect(f.hooks.snapshot).toHaveBeenCalledOnce();
+  expect(f.hooks.fix).not.toHaveBeenCalled();
+  expect(f.hooks.update).not.toHaveBeenCalled();
+  expect(existsSync(f.lock)).toBe(false);
+}, 15000);
+
+test("a head that becomes mergeable while dispatch captures the card never starts a fixer", async () => {
+  const f = await setup(true, false);
+  const prior = f.hooks.cardPrior;
+  f.hooks.cardPrior = async (pr) => {
+    const card = await prior(pr);
+    await f.makeUpToDate();
+    return card;
+  };
+  expect(await f.service.resolve(31)).toBe("conflict on #31 resolved outside the fixer");
+  expect(f.hooks.fix).not.toHaveBeenCalled();
+  expect(f.hooks.cardConflict).not.toHaveBeenCalled();
+  expect(f.service.pending(31)).toBe(false);
+}, 15000);
+
+test("changed refs that still conflict defer the fixer without leaving an interrupted record", async () => {
+  const f = await setup(true, false);
+  const prior = f.hooks.cardPrior;
+  f.hooks.cardPrior = async (pr) => {
+    const card = await prior(pr);
+    await f.nextConflict();
+    return card;
+  };
+  expect(await f.service.resolve(31)).toBe(
+    "PENDING #31: head or base moved before the conflict dispatch; run again"
+  );
+  expect(f.hooks.fix).not.toHaveBeenCalled();
+  expect(f.service.pending(31)).toBe(false);
+}, 15000);
+
+test("dispatch re-reads the PR's current base after a retarget instead of fixing the old base", async () => {
+  const f = await setup(true, false);
+  const prior = f.hooks.cardPrior;
+  f.hooks.cardPrior = async (pr) => {
+    const card = await prior(pr);
+    f.snapshot.base = "new-base";
+    f.snapshot.baseSha = f.snapshot.head;
+    f.snapshot.conflict = false;
+    await f.git("update-ref", "refs/remotes/origin/new-base", f.snapshot.head);
+    return card;
+  };
+  expect(await f.service.resolve(31)).toBe("conflict on #31 resolved outside the fixer");
+  expect(f.hooks.fix).not.toHaveBeenCalled();
+  expect(f.service.pending(31)).toBe(false);
+}, 15000);
+
+test("dispatch waits a bounded interval for a live refresh lock without reading stale refs", async () => {
+  const f = await setup(true, false);
+  f.seedLock(JSON.stringify({ pid: f.deps.pid, start: 42 }));
+  let now = 0;
+  f.deps.now = () => now;
+  f.deps.sleep = vi.fn(async (ms) => {
+    now += ms;
+  });
+  expect(await f.service.resolve(31, false, 2000)).toContain("conflict resolution in progress");
+  expect(now).toBe(2000);
+  expect(f.hooks.snapshot).not.toHaveBeenCalled();
+  expect(f.hooks.fix).not.toHaveBeenCalled();
+  expect(existsSync(f.lock)).toBe(true);
+}, 15000);
+
+test("refresh refuses a busy conflict lock and releases its own lock on failure", async () => {
+  const f = await setup(false, false);
+  f.seedLock(JSON.stringify({ pid: f.deps.pid, start: 42 }));
+  const run = vi.fn(async () => {
+    throw new Error("refresh failed");
+  });
+  expect(await f.service.guard(31, run)).toHaveProperty("busy");
+  expect(run).not.toHaveBeenCalled();
+  expect(existsSync(f.lock)).toBe(true);
+  // A different PR can still refresh, and a failing body cannot strand its lock.
+  await expect(f.service.guard(32, run)).rejects.toThrow("refresh failed");
+  expect(existsSync(join(f.lock, "..", "32.lock"))).toBe(false);
+}, 15000);
+
+test.each(["red", "stale"])(
+  "a stopped blocked record closes immediately with %s CI",
+  async (ci) => {
+    const f = await setup(true, false);
+    await f.service.resolve(31);
+    const record = JSON.parse(readFileSync(f.record(), "utf8"));
+    writeFileSync(f.record(), JSON.stringify({ ...record, phase: "blocked" }));
+    f.snapshot.green = ci !== "red";
+    f.snapshot.stale = ci === "stale";
+    expect(await f.service.resolve(31)).toBe("conflict on #31 resolved outside the fixer");
+    expect(f.service.pending(31)).toBe(false);
+    expect(f.hooks.merge).not.toHaveBeenCalled();
+    expect(f.hooks.blocked).not.toHaveBeenCalled();
+  },
+  15000
+);
 
 test.each([
   "package-lock.json",
@@ -405,7 +539,7 @@ test("a non-conflicting snapshot cannot close an interrupted record when the fet
   expect(f.service.pending(31)).toBe(true);
 }, 15000);
 
-test.each(["red", "stale", "conflicting"])(
+test.each(["conflicting"])(
   "a blocked record is retained when the PR is %s",
   async (state) => {
     const f = await setup(true, false);
@@ -645,9 +779,7 @@ test.each([false, true])(
     f.snapshot.green = false;
     f.snapshot.stale = true;
     expect(await f.service.resolve(31)).toBe(
-      previousFailure
-        ? "BLOCKED #31: conflict escalated (conflict dispatch failed; see gateway diagnostics)"
-        : "nothing to resolve for #31"
+      previousFailure ? "conflict on #31 resolved outside the fixer" : "nothing to resolve for #31"
     );
     for (const hook of [
       f.hooks.approved,
@@ -655,7 +787,6 @@ test.each([false, true])(
       f.hooks.wait,
       f.hooks.fix,
       f.hooks.stop,
-      f.hooks.status,
       f.hooks.workerBlocked,
       f.hooks.directory,
       f.hooks.verify,
@@ -667,7 +798,7 @@ test.each([false, true])(
     ]) {
       expect(hook).not.toHaveBeenCalled();
     }
-    expect(f.service.pending(31)).toBe(previousFailure);
+    expect(f.service.pending(31)).toBe(false);
   },
   15000
 );

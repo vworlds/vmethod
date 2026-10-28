@@ -1668,8 +1668,13 @@ export class EventLoop {
         this.host.resolveConflicts &&
         !this.marked(`conflict-dispatched-${pr.number}-${pr.sha}`)
       ) {
-        this.mark(`conflict-dispatched-${pr.number}-${pr.sha}`);
-        this.settleConflicts(pr, await this.host.resolveConflicts(pr.number));
+        const result = await this.host.resolveConflicts(pr.number);
+        // #373: mark after the call, and only once a resolution landed: a busy or
+        // failed dispatch left no pending record and retries on the next poll.
+        if (!result.startsWith("PENDING") || this.host.conflictPending?.(pr.number) !== false) {
+          this.mark(`conflict-dispatched-${pr.number}-${pr.sha}`);
+        }
+        this.settleConflicts(pr, result);
       }
     } else if (pr.mergeable === "MERGEABLE" && this.marked(`conflict-${pr.number}`)) {
       remove(join(this.dir, `conflict-${pr.number}`));
@@ -1680,8 +1685,12 @@ export class EventLoop {
       this.host.resolveConflicts &&
       !this.marked(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`)
     ) {
-      this.mark(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`);
-      this.settleConflicts(pr, await this.host.resolveConflicts(pr.number));
+      const result = await this.host.resolveConflicts(pr.number);
+      // Like the conflict dispatch: an unfinished base automation retries next poll.
+      if (!result.startsWith("PENDING") || this.host.conflictPending?.(pr.number) !== false) {
+        this.mark(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`);
+      }
+      this.settleConflicts(pr, result);
     }
     if (this.host.conflictPending?.(pr.number)) {
       this.settleConflicts(pr, await this.host.resolveConflicts!(pr.number));

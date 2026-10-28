@@ -2382,6 +2382,48 @@ test("owner summons blocks resumes and discards pre-summons queued wakes across 
   f.done();
 });
 
+test.each(["wake", "conflict", "wake file"])(
+  "merge discards a queued %s across restart without waking the worker",
+  async (queue) => {
+    const f = fixture([...start, ...status()], true);
+    await f.service.command(["start", "31"]);
+    const record = f.record();
+    record.pendingWake = [wake];
+    if (queue === "conflict") {
+      record.pendingConflict = { model: record.model, base: "dev" };
+    }
+    if (queue === "wake file") {
+      delete record.pendingWake;
+      writeFileSync(join(f.root, "state/vmethod/example-state/workers/31.wake"), `${wake}\n`);
+    }
+    writeFileSync(
+      join(f.root, "state/vmethod/example-state/workers/31.json"),
+      JSON.stringify(record)
+    );
+    f.meta.merged = true;
+    f.meta.state = "MERGED";
+    const restarted = new WorkerService(f.root, f.config, f.env, f.deps, f.hooks);
+    expect((await restarted.watchStatus(31)).active).toBe(false);
+    expect(f.record().pendingWake).toBeUndefined();
+    expect(f.record().pendingConflict).toBeUndefined();
+    expect(await restarted.resume(31, wake)).toBe("#31 is merged; nothing sent");
+    expect(f.prompts).toHaveLength(1);
+    f.done();
+  }
+);
+
+test("resume of a merged PR sends nothing even with an idle recorded worker", async () => {
+  const f = fixture([...start]);
+  await f.service.command(["start", "31"]);
+  f.meta.merged = true;
+  expect(await f.service.resume(31, wake)).toBe("#31 is merged; nothing sent");
+  await expect(f.service.command(["send", "31", "missing.md"])).rejects.toThrow(
+    "is merged; nothing sent"
+  );
+  expect(f.prompts).toHaveLength(1);
+  f.done();
+});
+
 test("resume without a recorded session reports absence without sending", async () => {
   const f = fixture();
   expect(await f.service.resume(31, wake)).toBe("no worker session for #31; nothing sent");

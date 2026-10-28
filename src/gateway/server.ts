@@ -90,7 +90,7 @@ import { checkLearningPr } from "./learning-check.js";
 import { upstreamCaller, upstreamFooter } from "./upstream.js";
 import { mergeLearningPr } from "./learning-merge.js";
 import { releaseNext } from "./release.js";
-import { ConflictService } from "./conflicts.js";
+import { ConflictService, conflictLockWaitMs } from "./conflicts.js";
 import { verifyConflictHead } from "./verify-hook.js";
 import { isModelApproved } from "./model-gate.js";
 
@@ -670,7 +670,9 @@ class GatewayServer {
             this.config.workerCheckout === undefined ? [] : this.workerWorktrees.registered(),
           workerSend: (pr, text) => this.workers.resume(pr, text),
           workerMetric: (pr, event) => this.workers.recordMetric(pr, event),
-          resolveConflicts: (pr) => this.conflicts.resolve(pr),
+          // #373: the dispatch waits out a refresh-checks push (bounded), then
+          // resolve re-reads the head and base before any fixer starts.
+          resolveConflicts: (pr) => this.conflicts.resolve(pr, false, conflictLockWaitMs),
           conflictPending: (pr) => this.conflicts.pending(pr),
           conflictFixing: (pr) => this.conflicts.fixing(pr),
           board: {
@@ -814,7 +816,9 @@ class GatewayServer {
       this.config,
       this.deps,
       this.ci,
-      (input, taskPr) => this.push(input, { role: "orchestrator", taskPr })
+      (input, taskPr) => this.push(input, { role: "orchestrator", taskPr }),
+      // #373: refresh-checks holds the same per-PR lock the watcher's dispatch uses.
+      (pr, run) => this.conflicts.guard(pr, run)
     );
   }
 
@@ -1513,7 +1517,9 @@ class GatewayServer {
       },
       autopilotApproved: (ref, head) => this.autopilotApprovalFor(ref, head),
       thread: (ref, kind) => this.flowThread(ref, kind),
-      conflictPending: async (ref) => this.conflicts.pending(Number(ref)),
+      // #373: closes a recoverable blocked record at once (mergeable head, stopped
+      // fixer) before reporting whether an active record still blocks the handover.
+      conflictPending: async (ref) => this.conflicts.recover(Number(ref)),
       comments: (id, kind) => this.flowComments(id, kind === "issue" ? "Issue" : "PullRequest"),
       replyTarget: (id) => this.flowComment(id),
       approved: (ref, historical) => this.approvalFor(ref, historical),

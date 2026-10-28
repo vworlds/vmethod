@@ -64,7 +64,9 @@ interface Host {
   modelSuggestion?(issue: number): Promise<{ family: string; tier: string; reason: string }>;
   /** #339: a family's graded learnings evidence for the advisory lines; undefined without data. */
   learningEvidence?(family: string): { usdPerPoint: number; deliveries: number } | undefined;
-  /** True while a conflict resolution record is starting or waiting for this PR. */
+  /** True while an active conflict record still blocks a handover: the
+   * implementation closes a recoverable blocked record at once first (#373),
+   * then reports whether a dispatched resolution keeps owning the turn. */
   conflictPending?(ref: string): Promise<boolean>;
   /** Fresh owner-delegation evidence; never used by the expensive-model gate. */
   autopilot?(ref: string, kind: "pr" | "issue"): Promise<AutopilotState>;
@@ -874,6 +876,8 @@ export class TaskFlow {
     if (input.outcome === "owner" || input.outcome === "approve") {
       // Before any write: a handover or approval must neither stop a dispatched
       // conflict fixer nor write over an active conflict resolution's card turn.
+      // The hook first closes a recoverable blocked record at once instead of
+      // waiting for the next watcher poll (#373); an active record still refuses.
       if (item.mergeable === "CONFLICTING") {
         throw new Error(
           `#${this.number(input.ref)} conflicts with ${String(item.baseRefName)}; resolve before handing over`

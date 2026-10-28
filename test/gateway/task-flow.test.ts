@@ -1633,87 +1633,83 @@ test("review owner over an active conflict record is refused before any write", 
   f.done();
 });
 
-test("review owner is allowed after a starting record closes on a moved healthy head", async () => {
-  const f = fixture();
-  const directory = join(
-    String(f.env.XDG_STATE_HOME),
-    "vmethod",
-    String(f.config.stateName),
-    "conflicts"
-  );
-  mkdirSync(directory, { recursive: true });
-  const record = join(directory, "27.json");
-  writeFileSync(
-    record,
-    JSON.stringify({ phase: "starting", head: "a".repeat(40), files: ["x.ts"] })
-  );
-  const base = "b".repeat(40);
-  const hooks = new Proxy(
-    {
-      lifecycle: async () => "open",
-      snapshot: async () => ({
-        head: sha,
-        base: "dev",
-        baseSha: base,
-        branch: "task",
-        conflict: false,
-        green: true,
-        stale: false,
-        runs: [],
-      }),
-      status: async () => "stopped",
-    },
-    {
-      get(target, key) {
-        if (!(key in target)) {
-          throw new Error(`Unexpected conflict hook ${String(key)}`);
-        }
-        return Reflect.get(target, key);
+test.each(["starting", "blocked"])(
+  "review owner itself closes a recoverable %s record",
+  async (phase) => {
+    const f = fixture();
+    const directory = join(
+      String(f.env.XDG_STATE_HOME),
+      "vmethod",
+      String(f.config.stateName),
+      "conflicts"
+    );
+    mkdirSync(directory, { recursive: true });
+    const record = join(directory, "27.json");
+    writeFileSync(record, JSON.stringify({ phase, head: "a".repeat(40), files: ["x.ts"] }));
+    const base = "b".repeat(40);
+    const hooks = new Proxy(
+      {
+        lifecycle: async () => "open",
+        snapshot: async () => ({
+          head: sha,
+          base: "dev",
+          baseSha: base,
+          branch: "task",
+          conflict: false,
+          green: false,
+          stale: true,
+          runs: [],
+        }),
+        status: async () => "stopped",
       },
-    }
-  ) as unknown as ConflictHooks;
-  const conflicts = new ConflictService(
-    f.root,
-    f.config,
-    f.env,
-    {
-      ...f.deps,
-      pid: process.pid,
-      readProc: () => proc(42),
-      exec: async (file, args) => {
-        if (file === "/bin/sh") {
-          expect(args.slice(-3)).toEqual(["merge-preview", sha, base]);
-          return `${"c".repeat(40)}\0\0`;
-        }
-        expect(file).toBe("git");
-        if (args.includes("fetch")) {
-          return "";
-        }
-        if (args.join(" ") === "rev-parse refs/remotes/origin/dev") {
-          return base;
-        }
-        if (args.join(" ") === "rev-parse refs/remotes/origin/task") {
-          return sha;
-        }
-        throw new Error(`Unexpected conflict git ${args.join(" ")}`);
+      {
+        get(target, key) {
+          if (!(key in target)) {
+            throw new Error(`Unexpected conflict hook ${String(key)}`);
+          }
+          return Reflect.get(target, key);
+        },
+      }
+    ) as unknown as ConflictHooks;
+    const conflicts = new ConflictService(
+      f.root,
+      f.config,
+      f.env,
+      {
+        ...f.deps,
+        pid: process.pid,
+        readProc: () => proc(42),
+        exec: async (file, args) => {
+          if (file === "/bin/sh") {
+            expect(args.slice(-3)).toEqual(["merge-preview", sha, base]);
+            return `${"c".repeat(40)}\0\0`;
+          }
+          expect(file).toBe("git");
+          if (args.includes("fetch")) {
+            return "";
+          }
+          if (args.join(" ") === "rev-parse refs/remotes/origin/dev") {
+            return base;
+          }
+          if (args.join(" ") === "rev-parse refs/remotes/origin/task") {
+            return sha;
+          }
+          throw new Error(`Unexpected conflict git ${args.join(" ")}`);
+        },
       },
-    },
-    hooks
-  );
-  f.host.conflictPending = async () => conflicts.pending(27);
-  const file = join(f.root, "review.md");
-  writeFileSync(file, "Handover.\n");
-  await expect(f.flow().review({ ref: "27", outcome: "owner", file })).rejects.toThrow(
-    "active conflict record"
-  );
-  expect(await conflicts.resolve(27)).toBe("conflict on #27 resolved outside the fixer");
-  expect(existsSync(record)).toBe(false);
-  await f.flow().review({ ref: "27", outcome: "owner", file });
-  expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toMatch(
-    /^\[orchestrator\] OWNER REVIEW/
-  );
-  f.done();
-});
+      hooks
+    );
+    f.host.conflictPending = async () => conflicts.recover(27);
+    const file = join(f.root, "review.md");
+    writeFileSync(file, "Handover.\n");
+    await f.flow().review({ ref: "27", outcome: "owner", file });
+    expect(existsSync(record)).toBe(false);
+    expect(f.writes.find((write) => write.path.endsWith("/comments"))?.body.body).toMatch(
+      /^\[orchestrator\] OWNER REVIEW/
+    );
+    f.done();
+  }
+);
 
 test("conflicting PR reviews other than owner handovers and approvals stay allowed", async () => {
   const f = fixture();
