@@ -22,7 +22,8 @@
     "board/",
     "schema/",
     "templates/",
-    "legacy/"
+    "legacy/",
+    "RELEASE-NOTES.md"
   ],
   "peerDependencies": {
     "jsdom": ">=24",

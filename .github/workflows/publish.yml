@@ -43,5 +43,7 @@ jobs:
         timeout-minutes: 5
       - run: npm run knip
       - run: npm run smoke
-      - name: Publish with OIDC and provenance, then tag (no bump commit)
+      - name: Publish with OIDC and provenance, then tag and create release (retry safe)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/publish.mjs
