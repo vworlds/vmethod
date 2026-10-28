@@ -316,6 +316,15 @@ PR unmerged. The watcher moves the card to Done, reports the worktree cleanup
 candidate and leaves a linked issue open for your LAUNCH decision; the command's
 output reminds you to run `grade <pr>` on every closed delivery, merged or not.
 
+When a worker cannot push a workflow change because its login lacks `workflow`
+scope, use `vmethod push --task <pr> [worktree] [branch]` with your orchestrator
+login, not raw `git push`. Point it at the worktree containing the commit (the
+default is your current directory). It submits that worktree's `HEAD` to the
+task PR's pinned head branch, checks ancestry and the regular push policy, and
+journals the update as yours rather than worker activity. Your login must have
+the required scope; do not change worker permissions to bypass the refusal. See
+[orchestrator task pushes](gateway.md#orchestrator-task-pushes).
+
 Owner approval survives conflict fixes (owner rule, 2026-10-18). Do not ask for
 re-approval merely because the approved delivery needed conflicts resolved. Use
 `merge-task <pr> --carry-approval "<reason>"` after reviewing the resolution and

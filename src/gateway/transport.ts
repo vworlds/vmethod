@@ -108,7 +108,11 @@ export interface Operations {
   };
   /** Post exact file content; discussion_r reply URLs route to the inline thread. */
   post: { input: { ref: string; file: string; replyTo?: string }; output: string };
-  push: { input: { worktree: string; branch: string; commit?: string }; output: string };
+  /** task explicitly targets an open task PR (orchestrator only); its branch defaults to the PR head. */
+  push: {
+    input: { worktree: string; branch?: string; commit?: string; task?: number };
+    output: string;
+  };
   task: {
     input: { ref: string; fetch?: boolean };
     output: { branch: string; base: string };

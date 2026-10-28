@@ -1574,7 +1574,7 @@ export class EventLoop {
     }
     const oldHead = this.readMarker(`head-${pr.number}`);
     if (oldHead !== pr.sha) {
-      if (oldHead) {
+      if (oldHead && !this.writes.pushed(this.own, pr.number, pr.sha)) {
         if (!this.host.conflictFixing?.(pr.number)) {
           this.queueProgress(pr.number, { state: "working", if: revivedProgressStates });
         }
