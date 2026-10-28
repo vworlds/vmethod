@@ -59,7 +59,7 @@ import { renderProgress } from "../board/progress.js";
 import { workflowColumns } from "../board/runner.js";
 import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
 import { isTaskPrompt } from "./task-flow-types.js";
-import { GitTransport, taskBranch, validateBranch } from "./git.js";
+import { GitTransport, pushFailureMessage, taskBranch, validateBranch } from "./git.js";
 import { realpathSync } from "node:fs";
 import { matchesGlob, resolve } from "node:path";
 import { BoardService } from "./board.js";
@@ -2176,7 +2176,7 @@ class GatewayServer {
     }
     if (fetch) {
       if (
-        !(await new GitTransport(this.config, this.env, this.deps, this.root).transfer("fetch", [
+        !(await new GitTransport(this.config, this.env, this.deps, this.root).transferOk("fetch", [
           `+refs/heads/${base}:refs/remotes/origin/${base}`,
           `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
         ]))
@@ -2224,7 +2224,7 @@ class GatewayServer {
     const base = task.base;
     // Validate config refs before allowing them into fetch refspecs.
     validateBranch(base);
-    if (!(await git.transfer("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
+    if (!(await git.transferOk("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
       throw new Error("error: fetch failed");
     }
     const count = (
@@ -2272,8 +2272,9 @@ class GatewayServer {
     if (denied.length) {
       throw new Error(`error: refusing to push generated artefacts:\n${denied.join("\n")}`);
     }
-    if (!(await git.transfer("push", [`${commit}:refs/heads/${branch}`]))) {
-      throw new Error("error: the remote branch moved: fetch and merge it (never force-push)");
+    const result = await git.transfer("push", [`${commit}:refs/heads/${branch}`]);
+    if (!result.ok) {
+      throw new Error(pushFailureMessage(result, String(this.config.repo)));
     }
     await git.run("update-ref", `refs/remotes/origin/${branch}`, commit);
     return `pushed ${branch} at ${commit.slice(0, 7)}`;

@@ -457,7 +457,7 @@ export class TaskFlow {
       );
     }
     const git = this.git();
-    if (!(await git.transfer("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
+    if (!(await git.transferOk("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
       throw new Error("Fetch failed");
     }
     let head = sha(
@@ -475,7 +475,7 @@ export class TaskFlow {
     if (input.from) {
       head = await this.mergeFromBranch(git, head, input.from, branch, base);
     }
-    if (!(await git.transfer("push", [`${head}:refs/heads/${branch}`]))) {
+    if (!(await git.transferOk("push", [`${head}:refs/heads/${branch}`]))) {
       throw new Error("Task branch push failed");
     }
     const created = object(
@@ -527,7 +527,7 @@ export class TaskFlow {
     branch: string,
     base: string
   ): Promise<string> {
-    if (!(await git.transfer("fetch", [`+refs/heads/${from}:refs/remotes/origin/${from}`]))) {
+    if (!(await git.transferOk("fetch", [`+refs/heads/${from}:refs/remotes/origin/${from}`]))) {
       throw new Error(`open-task --from: no branch ${from} in ${this.repo}`);
     }
     const fromHead = sha((await git.run("rev-parse", `refs/remotes/origin/${from}`)).trim());
@@ -1230,7 +1230,7 @@ export class TaskFlow {
       }
       const baseSha = sha(item.baseRefOid);
       if (
-        !(await git.transfer("fetch", [
+        !(await git.transferOk("fetch", [
           `+refs/heads/${base}:refs/remotes/origin/${base}`,
           `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
         ]))
@@ -1320,7 +1320,7 @@ export class TaskFlow {
       const current = await this.pr(ref);
       // Hook execution can take minutes: re-fetch rather than trusting the PR's
       // potentially stale baseRefOid to detect base movement during verification.
-      if (!(await git.transfer("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
+      if (!(await git.transferOk("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
         throw new Error("Fetch failed");
       }
       if (
@@ -1540,7 +1540,7 @@ export class TaskFlow {
         }
         if (!journal.checkout) {
           if (
-            !(await local.transfer("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))
+            !(await local.transferOk("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))
           ) {
             throw new Error("Fetch failed");
           }

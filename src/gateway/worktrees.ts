@@ -301,7 +301,7 @@ export class WorktreeService {
       return undefined;
     }
     if (
-      !(await this.git().transfer(
+      !(await this.git().transferOk(
         "fetch",
         wants.map(([, ref]) => ref)
       ))

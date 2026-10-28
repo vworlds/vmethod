@@ -43,6 +43,8 @@ type GitStep = {
   args: string[];
   output?: string;
   fail?: boolean;
+  stderr?: string;
+  stdout?: string;
   inspect?: (env: NodeJS.ProcessEnv) => void;
 };
 function gitFake(deps: Dependencies, root: string, steps: GitStep[]) {
@@ -56,7 +58,13 @@ function gitFake(deps: Dependencies, root: string, steps: GitStep[]) {
     expect(options?.env?.GIT_CONFIG_GLOBAL).toBe("/dev/null");
     step.inspect?.(options?.env ?? {});
     if (step.fail) {
-      throw new Error("secret: fake-token / untrusted remote stderr");
+      const error = new Error("secret: fake-token / untrusted remote stderr") as Error & {
+        stderr?: string;
+        stdout?: string;
+      };
+      error.stderr = step.stderr;
+      error.stdout = step.stdout;
+      throw error;
     }
     return step.output ?? "";
   };
@@ -241,7 +249,12 @@ test("push retries HTTPS then SSH with environment-only keys and updates trackin
 test("push fetch failure and moved remote fail without force-push or tracking updates", async () => {
   for (const failFetch of [true, false]) {
     const f = fixtureServer([task()]);
-    const failed = failFetch ? fetchBase : { args: https("push", `${sha}:refs/heads/7-task`) };
+    const failed = failFetch
+      ? fetchBase
+      : {
+          args: https("push", `${sha}:refs/heads/7-task`),
+          stderr: `! [remote rejected] ${sha}:refs/heads/7-task -> 7-task (non-fast-forward)`,
+        };
     const steps = [
       resolveCommit,
       ...(failFetch ? [] : [fetchBase, count(), diff()]),
@@ -253,6 +266,69 @@ test("push fetch failure and moved remote fail without force-push or tracking up
     ).rejects.toThrow(
       failFetch ? "fetch failed" : "remote branch moved: fetch and merge it (never force-push)"
     );
+    done();
+    f.done();
+  }
+});
+
+const pushFailure = (stderr: string) => ({
+  args: https("push", `${sha}:refs/heads/7-task`),
+  fail: true,
+  stderr,
+});
+
+test("push maps every classified outcome to its message and never leaks the token", async () => {
+  for (const outcome of [
+    {
+      name: "moved",
+      stderr:
+        "! [remote rejected] 7-task -> 7-task (non-fast-forward)\n" +
+        "hint: bare token fake-token and https://x-access-token:fake-token@github.com/example/project in hints stay out",
+      attempts: 3,
+      message: "error: the remote branch moved: fetch and merge it (never force-push)",
+    },
+    {
+      name: "workflow-scope",
+      stderr:
+        "remote: refusing to allow an OAuth token to create or update workflow " +
+        "`.github/workflows/ci.yml` without `workflow` scope\n" +
+        "hint: bare token fake-token stays out of the message",
+      attempts: 1,
+      message:
+        "push refused: changing .github/workflows needs a token with the workflow scope; " +
+        "ask the orchestrator",
+    },
+    {
+      name: "auth",
+      stderr:
+        "fatal: unable to access 'https://github.com/example/project.git/': " +
+        "The requested URL returned error: 403",
+      attempts: 1,
+      message: "push refused: the gh login in GH_CONFIG_DIR is not authorized for example/project",
+    },
+    {
+      name: "other",
+      stderr:
+        "fatal: bad thing happened (see https://x-access-token:fake-token@github.com/example/project).",
+      attempts: 3,
+      message: "push failed: fatal: bad thing happened (see https://github.com/example/project).",
+    },
+  ]) {
+    const f = fixtureServer([task()]);
+    const done = gitFake(f.deps, f.root, [
+      resolveCommit,
+      fetchBase,
+      count(),
+      diff(),
+      ...Array.from({ length: outcome.attempts }, () => pushFailure(outcome.stderr)),
+    ]);
+    const error = (await f.gateway
+      .call("push", { worktree: f.root, branch: "7-task" }, ctx)
+      .catch((thrown) => thrown)) as Error;
+    expect(error.message).toBe(outcome.message);
+    expect(error.message).not.toContain("fake-token");
+    expect(error.message).not.toContain("x-access-token");
+    expect(f.sleeps).toEqual(outcome.attempts === 1 ? [] : [2000, 4000]);
     done();
     f.done();
   }

@@ -228,7 +228,7 @@ export class ConflictService {
     const snapshot = await this.hooks.snapshot(pr);
     const git = new GitTransport(this.config, this.env, this.deps, this.root);
     if (
-      !(await git.transfer("fetch", [
+      !(await git.transferOk("fetch", [
         `+refs/heads/${snapshot.base}:refs/remotes/origin/${snapshot.base}`,
         `+refs/heads/${snapshot.branch}:refs/remotes/origin/${snapshot.branch}`,
       ]))
@@ -407,7 +407,7 @@ export class ConflictService {
     const directory = needsWorktree ? await this.hooks.directory(pr) : this.root;
     const git = new GitTransport(this.config, this.env, this.deps, directory);
     if (
-      !(await git.transfer("fetch", [
+      !(await git.transferOk("fetch", [
         `+refs/heads/${snapshot.branch}:refs/remotes/origin/${snapshot.branch}`,
       ]))
     ) {

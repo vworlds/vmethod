@@ -109,10 +109,13 @@ export class WorkerWorktrees {
   private async create(task: WorkerTask): Promise<string> {
     validateBranch(task.base);
     if (
-      !(await new GitTransport(this.config, this.env, this.deps, this.checkout).transfer("fetch", [
-        `+refs/heads/${task.base}:refs/remotes/origin/${task.base}`,
-        `+refs/heads/${task.branch}:refs/remotes/origin/${task.branch}`,
-      ]))
+      !(await new GitTransport(this.config, this.env, this.deps, this.checkout).transferOk(
+        "fetch",
+        [
+          `+refs/heads/${task.base}:refs/remotes/origin/${task.base}`,
+          `+refs/heads/${task.branch}:refs/remotes/origin/${task.branch}`,
+        ]
+      ))
     ) {
       throw new Error("error: fetch into the worker checkout failed");
     }

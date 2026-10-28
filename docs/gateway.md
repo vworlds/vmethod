@@ -357,7 +357,11 @@ other gateway operations. Push requires a pinned task PR, resolves its actual ba
 `dev`, `master`, `main`, detached HEAD, and invalid refs. Workers may push only
 their accepted open task PR's head branch in the configured repository, never a
 fork. There is no force option. Zero commits relative to the PR's actual base are
-refused. A failed push instructs you to fetch and merge, never force-push.
+refused. A failed push names its classified cause: only a moved remote instructs
+you to fetch and merge it (never force-push); a refusal of `.github/workflows/`
+changes by a token without the `workflow` scope points to the orchestrator; an
+authentication refusal names the repository; any other failure quotes the
+credential-free first line of the last attempt's stderr.
 
 `push.denyPatterns` optionally replaces the built-in artefact patterns: `.tmp/`,
 `dist/`, `coverage/`, `*.log`, `test-results/`, `playwright-report/`, and
@@ -369,7 +373,10 @@ Explicit custom patterns can deny those paths too. An empty list disables this
 artefact guard, not branch policy.
 
 HTTPS fetch/push retries three times with 2/4-second backoff, then tries SSH three
-times if the readable key named by `credentials.sshKey` exists. HTTPS credentials
+times if the readable key named by `credentials.sshKey` exists. Workflow-scope and
+authentication refusals stop a transport's retry loop after one attempt (a repeated
+attempt cannot succeed); moved and other failures keep the backoff. The reported
+cause reflects the last attempt that ran. HTTPS credentials
 come from the `GH_CONFIG_DIR` login through the subprocess environment, never a
 token in argv or a global credential helper. `credentials.sshKey` names an
 environment variable, not a credential value. Install subprocesses receive no

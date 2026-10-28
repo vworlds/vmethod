@@ -59,7 +59,7 @@ export class VerificationService {
     }
     const git = new GitTransport(this.config, this.env, this.deps, this.root);
     if (
-      !(await git.transfer("fetch", [
+      !(await git.transferOk("fetch", [
         `+refs/heads/${snapshot.base}:refs/remotes/origin/${snapshot.base}`,
         `+refs/heads/${snapshot.branch}:refs/remotes/origin/${snapshot.branch}`,
       ]))
@@ -137,7 +137,7 @@ export class VerificationService {
       `+refs/heads/${base}:refs/remotes/origin/${base}`,
       ...prs.map((pr) => `+refs/heads/${pr.branch}:refs/remotes/origin/${pr.branch}`),
     ];
-    if (!(await git.transfer("fetch", refs))) {
+    if (!(await git.transferOk("fetch", refs))) {
       throw new Error("verify: fetch failed");
     }
     const marker = join(parent, ".vmethod-review-owner");
