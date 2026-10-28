@@ -1540,6 +1540,17 @@ not an automated proof of unchanged behaviour: behaviour changes or an algorithm
 revamp require re-asking the owner. All other merge gates and journaling remain
 unchanged; see the [owner rule](orchestrator-guide.md#merge-and-release).
 
+An exact-head autopilot approval can also survive a clean `refresh-checks` base
+merge: use `merge-task --carry-approval "<reason>"` without repeating
+`review <pr> owner`. Automatic carry after a conflict fixer is supported too.
+Delegated carries additionally require the `cleanBaseMerges` proof described above;
+the orchestrator's semantic certification alone is insufficient. The record uses
+`APPROVAL CARRIED (autopilot)` with the approved/current heads and reason. The
+PR's or linked issue's delegation must still be current at merge time; revocation
+or stopping refuses with `autopilot delegation is no longer current; ask the owner`.
+Ordinary task commits require fresh review, and autopilot still cannot authorize
+releases or owner-reserved identity/permission files.
+
 Tests inject strict fake fetch/exec, clock and sleep implementations. No test
 needs a real GitHub token or opencode server. Base-merge proof tests also use
 isolated local git repositories with real conflicts. Mermaid tests use

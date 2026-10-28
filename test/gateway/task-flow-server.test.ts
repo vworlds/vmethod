@@ -110,6 +110,103 @@ const grantHistory = {
   },
 };
 
+test.each([false, true])(
+  "historical autopilot review reaches the merge proof only with a current grant (revoked=%s)",
+  async (revoked) => {
+    const old = "d".repeat(40);
+    const pr = item({
+      __typename: "PullRequest",
+      number: 27,
+      title: "feat: task",
+      body: '<!-- vmethod-task {"issues":[]} -->',
+      state: "OPEN",
+      headRefName: "8-task",
+      baseRefName: "dev",
+      baseRefOid: sha,
+      headRepository: { nameWithOwner: "example/project" },
+      labels: {
+        nodes: revoked ? [] : [{ name: "autopilot" }],
+        pageInfo: { hasNextPage: false },
+      },
+    });
+    const comment = item({
+      id: "approval",
+      author: actor(2),
+      body: `[orchestrator] AUTOPILOT APPROVED\n\nCurrent head: ${old}\n\nReviewed.`,
+      createdAt: "2026-01-01T01:00:00Z",
+    });
+    const thread = () => graph({ repository: { pullRequest: item() } });
+    const reviews = () => graph({ node: item({ reviews: scopeConnection([]) }) });
+    const comments = () => [
+      graph({
+        node: item({ comments: scopeConnection([item({ id: "approval", author: actor(2) })]) }),
+      }),
+      graph({ node: comment }),
+    ];
+    const f = fixtureServer(
+      [
+        thread(),
+        graph({ node: pr }),
+        // Historical candidates must include the authenticated delegated review.
+        thread(),
+        reviews(),
+        ...comments(),
+        // It is not an owner approval.
+        thread(),
+        reviews(),
+        ...comments(),
+        graph({ node: item({ timelineItems: scopeConnection([]) }) }),
+        // Validate the historical exact-head review against the live delegation.
+        thread(),
+        graph({ node: pr }),
+        ...(revoked
+          ? []
+          : [
+              { path: "/graphql", json: { data: { nodes: [pr] } } },
+              { path: "/graphql", json: { data: { nodes: [pr] } } },
+              graph({ n0: { ...pr, ...grantHistory } }),
+            ]),
+        ...comments(),
+      ],
+      actor(2),
+      people,
+      (root) => {
+        const file = join(root, "vmethod.yaml");
+        writeFileSync(file, readFileSync(file, "utf8").replace("enabled: true", "enabled: false"));
+      }
+    );
+    f.deps.workers = {
+      status: async () => "stopped",
+      resume: async () => {
+        throw new Error("Unexpected worker resume");
+      },
+    };
+    const commands: string[] = [];
+    f.deps.exec = async (file, args) => {
+      expect(file).toBe("git");
+      const command = args.join(" ");
+      commands.push(command);
+      if (args.includes("fetch") || args[0] === "merge-base") {
+        return "";
+      }
+      if (args[0] === "rev-parse") {
+        return sha;
+      }
+      if (command === `rev-list --first-parent --parents ${old}..${sha}`) {
+        return `${sha} ${old}`; // A task commit, not a base-only two-parent merge.
+      }
+      throw new Error(`Unexpected git command: ${command}`);
+    };
+    await expect(
+      f.transport.call("mergeTask", { ref: "27", carryApproval: "Base update" })
+    ).rejects.toThrow(
+      revoked ? "autopilot delegation is no longer current; ask the owner" : "cannot be carried"
+    );
+    expect(commands.includes(`rev-list --first-parent --parents ${old}..${sha}`)).toBe(!revoked);
+    f.done();
+  }
+);
+
 test("autopilot inherit re-copies a live issue grant onto the accepted task PR", async () => {
   const granted = item({
     __typename: "Issue",
