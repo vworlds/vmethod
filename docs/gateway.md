@@ -1575,7 +1575,12 @@ also requires the issue in Executing. `scope-review` records the live Estimate a
 hash in Spec review; revise the Estimate and explain it in the summary first.
 NEXT selects Scoping (including blocked discussion), SCOPE selects issues needing
 their final rewrite in Spec review, and LAUNCH selects unblocked, scope-approved
-Executing issues without open task PRs. Historical scope approvals preceding v6
+Executing issues without open task PRs. NEXT names the first Scoping card whose
+turn is the orchestrator's: a card assigned to the owner or carrying an owner
+Progress state (`👤…`) stays unnamed while its move is the owner's, so retiring
+another card never emits NEXT for it. When the owner hands the turn back
+(self-unassignment or an answered question), the card becomes NEXT again as the
+top of the queue. Historical scope approvals preceding v6
 migration remain evidence while the body is unchanged. See [board migration v6](board.md#migrations-what-adopters-see)
 for evidence-dependent remapping and per-card dry-run output.
 
