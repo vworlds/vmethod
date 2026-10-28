@@ -19,17 +19,23 @@ export function object(value: unknown): ObjectData {
 
 export class PeopleFilter {
   constructor(
-    readonly people: Person[],
+    public people: Person[],
     readonly org: string,
     private digest: Digest,
     private readonly trustedRepos: readonly string[] = []
   ) {
+    this.reload(people);
+  }
+
+  /** Atomically replace validated people; duplicate pins leave the previous list intact. */
+  reload(people: Person[]): void {
     if (
       new Set(people.map((p) => p.id)).size !== people.length ||
       new Set(people.map((p) => p.login.toLowerCase())).size !== people.length
     ) {
       throw new Error("people.yaml: duplicate id or login");
     }
+    this.people = people;
   }
 
   /** The orchestrator role is per repository (#186): the owner-approved `repos`
