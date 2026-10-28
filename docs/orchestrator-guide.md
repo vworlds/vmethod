@@ -84,6 +84,18 @@ clear relations with `vmethod issue block <n> <blocker>` and `vmethod issue unbl
 Migrate old bodies with `issue block` to record the relation plus an `issue edit`
 that drops the prose line.
 
+Epics are issues with sub-issues ([board](board.md)): attach or detach a
+configured-repository sub-issue to a configured-repository epic with
+`vmethod issue parent <n> <epic>` and `vmethod issue unparent <n> <epic>`
+(`<epic>` is `#m` or `m`) instead of a raw `gh` call. A parent in another
+repository or org is refused before any write, and attaching is idempotent —
+an already attached issue reports so — while an issue parented elsewhere is
+refused, naming its current parent, before any write. File the sub-issue
+directly under its epic with
+`vmethod issue create <title> <body-file> --parent <epic>`: the attachment
+follows the board writes, a failed attachment keeps the created issue and names
+the exact `issue parent` retry, and the issue is never recreated.
+
 Read code, settled decisions and git history before proposing to reverse deliberate
 behavior. Separate verified facts from assumptions. Present options with a
 recommendation and acceptance/verification criteria. **Confirm ambiguous readings

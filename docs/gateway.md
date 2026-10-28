@@ -129,12 +129,14 @@ merge fails closed with retry guidance without partial writes.
 - `vmethod dropped [--since <ISO-date>]`
 - `vmethod board status`
 - `vmethod board migrate [--dry-run] [--steal]`
-- `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name]`
+- `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic]`
 - `vmethod issue close <n> [--comment file]`
 - `vmethod issue estimate <n> <points>`
 - `vmethod issue edit <n> <body-file>`
 - `vmethod issue block <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`)
 - `vmethod issue unblock <n> <blocker>`
+- `vmethod issue parent <n> <epic>` (`<epic>` is `#m` or `m`)
+- `vmethod issue unparent <n> <epic>` (`<epic>` is `#m` or `m`)
 - `vmethod scope-review <n> <summary-file>`
 - `vmethod autopilot stop <issue|pr> <n>`
 - `vmethod autopilot inherit <pr>`
@@ -184,6 +186,21 @@ the configured org, refuse a missing blocker, then add or remove GitHub's
 blocked-by relation. Dependencies never live in issue text; bodies written before
 this rule are migrated with `issue block` to record the relation plus an
 `issue edit` that drops the prose line.
+
+`issue parent <n> <epic>` and `issue unparent <n> <epic>` are the same-repository
+counterpart for epic sub-issues (#327): they apply GitHub's
+`addSubIssue`/`removeSubIssue` under the orchestrator role. Both arguments must
+name issues in the configured repository, so unlike `issue block`, a parent
+spelling from another repository (`org/repo#m`) or outside the configured org is
+refused before any write. Attaching is idempotent: an issue already attached to
+that epic reports so and writes nothing, and an issue parented elsewhere is
+refused before the write with its current parent named (`issue unparent` there
+first). Detaching follows the same shape: an issue not attached to that epic
+reports so, with its current parent when one exists. `issue create` with
+`--parent <epic>` attaches the freshly created issue the same way after the
+board follow-up; a failed attachment keeps the created issue and names the exact
+retry `issue parent <n> <epic>`, never recreating it — the `board add` pattern
+(#287).
 
 Read operations gate metadata before fetching bodies, comments, reviews, files,
 diffs or checks, and recheck identity on body responses. Accepted text is labelled
@@ -276,8 +293,9 @@ string is still rejected, and other fields do not support `--clear`. The typed
 native field-clear mutation rather than an empty text or numeric zero.
 Status writes clear Progress first; the gateway client journals the
 successful mutations like other writes. No housekeeping command changes repository/board scope.
-The typed operations are `issueCreate({title, file, labels?, estimate?, status?})`,
+The typed operations are `issueCreate({title, file, labels?, estimate?, status?, parent?})`,
 `issueClose({ref, comment?})`, `issueBlock({ref, blocker})`, `issueUnblock({ref, blocker})`,
+`issueParent({ref, epic})`, `issueUnparent({ref, epic})`,
 `issueEstimate({ref, points})`, `boardSetIssue({ref, field, value})` and
 `boardSetAssignees({ref, value})` in `src/gateway/transport.ts`.
 

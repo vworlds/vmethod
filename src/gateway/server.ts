@@ -75,7 +75,13 @@ import {
 
 import { ChecksService } from "./checks.js";
 import { VerificationService } from "./verify.js";
-import { blockerLabel, blockerReference, reference, type ThreadRef } from "./refs.js";
+import {
+  blockerLabel,
+  blockerReference,
+  parentReference,
+  reference,
+  type ThreadRef,
+} from "./refs.js";
 import { LearningsService } from "./learnings.js";
 import { LearningAnnotations, type LearningBundle } from "./learning-annotations.js";
 import { checkLearningPr } from "./learning-check.js";
@@ -774,9 +780,18 @@ class GatewayServer {
    * column (Backlog), so a card filed without --status is never in no column.
    * Board follow-up failures identify the created issue and name the exact
    * `board add` retry command with the original flags (#287), so callers never
-   * recreate a duplicate.
+   * recreate a duplicate. `--parent <epic>` attaches the fresh issue to a
+   * configured-repository epic after the board follow-up (#327); a failed attachment
+   * names the `issue parent` retry with the same keep-the-issue pattern.
    */
-  issueCreate: Handlers["issueCreate"] = async ({ title, file, labels = [], estimate, status }) => {
+  issueCreate: Handlers["issueCreate"] = async ({
+    title,
+    file,
+    labels = [],
+    estimate,
+    status,
+    parent,
+  }) => {
     if (
       Array.isArray(labels) &&
       labels.some(
@@ -800,6 +815,9 @@ class GatewayServer {
     if (status !== undefined && (typeof status !== "string" || !status.trim())) {
       throw new Error("Invalid issue status");
     }
+    // A parent outside the configured repository is refused before the create, so a
+    // failed spec never leaves a detached #327 sub-issue behind.
+    const epicRef = parent === undefined ? undefined : this.subIssueParentRef(parent);
     const boardEnabled = object(this.config.board).enabled !== false;
     if (!boardEnabled && (estimate !== undefined || status !== undefined)) {
       throw new Error("Board is disabled; estimate/status require a configured board");
@@ -850,6 +868,26 @@ class GatewayServer {
           { cause: error }
         );
       }
+    }
+    // Attach to the epic only after the board follow-up: each follow-up step reports its
+    // own failure and names its own retry, so a broken step never hides another (#327).
+    if (epicRef) {
+      try {
+        if (typeof created.node_id !== "string" || !created.node_id) {
+          throw new Error("Missing created issue node ID");
+        }
+        await this.relateSubIssue(
+          { number: Number(created.number), id: String(created.node_id) },
+          epicRef,
+          "add"
+        );
+      } catch (error) {
+        throw new Error(
+          `Created issue #${String(created.number)}; parent attachment failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry the attachment only; retry with: vmethod issue parent ${String(created.number)} ${blockerLabel(epicRef, this.config)}`,
+          { cause: error }
+        );
+      }
+      return `Created issue #${String(created.number)}; attached to epic ${blockerLabel(epicRef, this.config)}`;
     }
     return `Created issue #${String(created.number)}`;
   };
@@ -1042,6 +1080,27 @@ class GatewayServer {
     return `Closed issue #${number}`;
   };
 
+  /** Attach a configured-repository sub-issue to a configured-repository epic through
+   * GitHub's addSubIssue (#327): a parent outside the configured repository is refused
+   * before any write, an issue already attached to that epic is a read-only no-op, and
+   * an issue parented elsewhere is refused, naming its current parent, before the write. */
+  issueParent: Handlers["issueParent"] = async ({ ref, epic }) => {
+    const number = this.localNumber(ref);
+    const epicRef = this.subIssueParentRef(epic);
+    const child = await this.flowThread(String(number), "issue");
+    return this.relateSubIssue({ number, id: String(child.id) }, epicRef, "add");
+  };
+
+  /** Detach a configured-repository sub-issue from a configured-repository epic through
+   * GitHub's removeSubIssue (#327): an issue not attached to that epic is a read-only
+   * no-op, naming the current parent when there is one. */
+  issueUnparent: Handlers["issueUnparent"] = async ({ ref, epic }) => {
+    const number = this.localNumber(ref);
+    const epicRef = this.subIssueParentRef(epic);
+    const child = await this.flowThread(String(number), "issue");
+    return this.relateSubIssue({ number, id: String(child.id) }, epicRef, "remove");
+  };
+
   /** Set a blocked-by relation; the target is in the configured repository, the blocker may be elsewhere. */
   issueBlock: Handlers["issueBlock"] = async ({ ref, blocker }) => {
     const number = this.localNumber(ref);
@@ -1074,7 +1133,7 @@ class GatewayServer {
     return this.board.setIssueField(String(issue.id), "Estimate", String(points));
   };
 
-  private async issueNodeId(ref: ThreadRef): Promise<string> {
+  private async issueNodeId(ref: ThreadRef, missing = "Blocker issue"): Promise<string> {
     const result = object(
       await this.github.graphql(
         `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { id } } }`,
@@ -1083,9 +1142,118 @@ class GatewayServer {
     );
     const issue = object(object(result.repository).issue);
     if (!issue.id) {
-      throw new Error(`Blocker issue not found: ${blockerLabel(ref, this.config)}`);
+      throw new Error(`${missing} not found: ${blockerLabel(ref, this.config)}`);
     }
     return String(issue.id);
+  }
+
+  /** The sub-issue parent argument: blockers-like `#m`/`m` spellings, but strictly within
+   * the configured repository — GitHub's own hierarchies may span same-org repositories,
+   * so a raw pre-existing parent can also read `repo#n` in the messages below (#327). */
+  private subIssueParentRef(epic: string): ThreadRef {
+    const ref = parentReference(epic, this.config);
+    if (ref.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+      throw new Error(
+        `Sub-issue parent must be in the configured repository, not ${ref.repo}#${ref.number}`
+      );
+    }
+    return ref;
+  }
+
+  /** The sub-issue's current parent relation: structural node fields only (id, number,
+   * repository), never the parent's content — this read never delivers a thread (#327). */
+  private async subIssueParent(childNumber: number): Promise<ObjectData | null> {
+    const [owner, name] = String(this.config.repo).split("/");
+    const result = object(
+      await this.github.graphql(
+        `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { parent { id number repository { nameWithOwner } } } } }`,
+        { owner, name, number: childNumber }
+      )
+    );
+    const parent = object(object(object(result.repository).issue).parent);
+    return parent.id ? parent : null;
+  }
+
+  /** `#n` for a parent in the configured repository, otherwise `repo#n` (parents attached
+   * through raw GitHub calls can live outside the configured repository). */
+  private parentLabel(parent: ObjectData): string {
+    const repo = String(object(parent.repository).nameWithOwner ?? "");
+    const number = Number(parent.number);
+    if (!repo || !Number.isSafeInteger(number)) {
+      throw new Error("Incomplete sub-issue parent read");
+    }
+    return repo.toLowerCase() === String(this.config.repo).toLowerCase()
+      ? `#${number}`
+      : `${repo}#${number}`;
+  }
+
+  /** One sub-issue relation move shared by `issue parent`/`issue unparent` and
+   * `issue create --parent` (#327): the child arrives already authenticated (an
+   * accept-filtered thread for the verbs, the fresh creation response for the flag).
+   * The parent is refused outside the configured repository, already-attached adds are
+   * a read-only no-op, and a child parented elsewhere is refused before any write. */
+  private async relateSubIssue(
+    child: { number: number; id: string },
+    epicRef: ThreadRef,
+    action: "add" | "remove"
+  ): Promise<string> {
+    const epicLabel = blockerLabel(epicRef, this.config);
+    if (!Number.isSafeInteger(child.number) || child.number < 1 || !child.id) {
+      throw new Error("Missing sub-issue identity for the parent relation");
+    }
+    const parent = await this.subIssueParent(child.number);
+    const attached = parent !== null && this.parentMatchesEpic(parent, epicRef);
+    if (attached) {
+      if (action === "remove") {
+        await this.writeSubIssueRelation(
+          "remove",
+          await this.issueNodeId(epicRef, "Epic issue"),
+          child.id
+        );
+        return `Removed sub-issue #${child.number} from epic ${epicLabel}`;
+      }
+      return `Issue #${child.number} is already a sub-issue of epic ${epicLabel}; nothing attached`;
+    }
+    if (parent !== null) {
+      if (action === "add") {
+        throw new Error(
+          `Issue #${child.number} is already a sub-issue of ${this.parentLabel(parent)}; detach it before re-attaching`
+        );
+      }
+      throw new Error(
+        `Issue #${child.number} is not a sub-issue of epic ${epicLabel}; it is a sub-issue of ${this.parentLabel(parent)}`
+      );
+    }
+    if (action === "remove") {
+      return `Issue #${child.number} is not a sub-issue of epic ${epicLabel}; nothing removed`;
+    }
+    await this.writeSubIssueRelation(
+      "add",
+      await this.issueNodeId(epicRef, "Epic issue"),
+      child.id
+    );
+    return `Added sub-issue #${child.number} to epic ${epicLabel}`;
+  }
+
+  private parentMatchesEpic(parent: ObjectData, epicRef: ThreadRef): boolean {
+    const repo = String(object(parent.repository).nameWithOwner ?? "");
+    return (
+      repo.toLowerCase() === String(this.config.repo).toLowerCase() &&
+      Number(parent.number) === epicRef.number
+    );
+  }
+
+  /** GitHub's sub-issue relation mutation: `issueId` is the parent/epic node, `subIssueId` the child's. */
+  private async writeSubIssueRelation(
+    action: "add" | "remove",
+    issueId: string,
+    subIssueId: string
+  ): Promise<void> {
+    const mutation = action === "add" ? "addSubIssue" : "removeSubIssue";
+    await this.github.graphql(
+      `mutation($issueId: ID!, $subIssueId: ID!) { ${mutation}(input: { issueId: $issueId, subIssueId: $subIssueId }) { issue { number } subIssue { number } } }`,
+      { issueId, subIssueId }
+    );
   }
   boardArchive: Handlers["boardArchive"] = async ({ itemId }) => this.board.archive(itemId);
 
@@ -2499,6 +2667,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueEdit: server.issueEdit,
     issueBlock: server.issueBlock,
     issueUnblock: server.issueUnblock,
+    issueParent: server.issueParent,
+    issueUnparent: server.issueUnparent,
     issueEstimate: server.issueEstimate,
     scopeReview: server.scopeReview,
     autopilotStop: server.autopilotStop,
@@ -2548,6 +2718,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     issueEdit: ["orchestrator"],
     issueBlock: ["orchestrator"],
     issueUnblock: ["orchestrator"],
+    issueParent: ["orchestrator"],
+    issueUnparent: ["orchestrator"],
     issueEstimate: ["orchestrator"],
     scopeReview: ["orchestrator"],
     autopilotStop: ["orchestrator"],
