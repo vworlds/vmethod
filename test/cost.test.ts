@@ -283,3 +283,45 @@ test("report uses family segment dollars and kind delivery dollars per final est
   expect(report.byFamily.glm.usdPerPoint).toBe(0.2);
   expect(report.byKind.feature.usdPerPoint).toBe(0.6);
 });
+
+test("family cost averages use only covered deliveries and expose coverage", () => {
+  const base = {
+    date: "2026-10-18",
+    repo: "example/project",
+    task: "test",
+    kind: "feature",
+    points_open: 3,
+    points_final: 2,
+    rounds: 1,
+    round_causes: [],
+    outcome: "merged",
+    prompt_defects: [],
+    stalls: [],
+    findings: [],
+    notes: "",
+  };
+  const report = learningReport([
+    {
+      ...base,
+      pr: 1,
+      segments: [{ family: "sol", model: "test/sol", rounds: [1], why: "start", usd: 1 }],
+    },
+    {
+      ...base,
+      pr: 2,
+      segments: [{ family: "sol", model: "test/sol", rounds: [1], why: "start" }],
+    },
+  ]);
+  expect(report.byFamily.sol.usdPerPoint).toBe(0.5);
+  expect(report.byFamily.sol.costDeliveries).toBe(1);
+  expect(report.byFamily.sol.deliveries).toBe(2);
+  expect(
+    learningReport([
+      {
+        ...base,
+        pr: 3,
+        segments: [{ family: "glm", model: "test/glm", rounds: [1], why: "start" }],
+      },
+    ]).byFamily.glm.usdPerPoint
+  ).toBeNull();
+});

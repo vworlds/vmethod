@@ -685,9 +685,9 @@ test("open-task without a card Model prints suggest-model's advice and evidence 
     return { family: "glm", tier: "standard", reason: "Estimate 1, kind bug" };
   };
   f.host.learningEvidence = (family) =>
-    family === "glm" ? { usdPerPoint: 0.4234, deliveries: 3 } : undefined;
+    family === "glm" ? { usdPerPoint: 0.4234, deliveries: 3, totalDeliveries: 3 } : undefined;
   await expect(f.flow().open({ issue: "8", model: "sol" })).resolves.toBe(
-    `suggest-model #8: glm (Estimate 1, kind bug; glm averages $0.42/point over 3 graded tasks)\n` +
+    `suggest-model #8: glm (Estimate 1, kind bug; glm averages $0.42/point over 3 of 3 graded tasks)\n` +
       `Opened draft PR #27 (8-task)`
   );
   f.done();
@@ -712,13 +712,13 @@ test("open-task notes a more expensive chosen tier with the chosen family's evid
   });
   f.host.learningEvidence = (family) =>
     family === "glm"
-      ? { usdPerPoint: 0.4234, deliveries: 3 }
+      ? { usdPerPoint: 0.4234, deliveries: 3, totalDeliveries: 3 }
       : family === "astra"
-        ? { usdPerPoint: 1.239, deliveries: 2 }
+        ? { usdPerPoint: 1.239, deliveries: 2, totalDeliveries: 2 }
         : undefined;
   await expect(f.flow().open({ issue: "8", model: "astra", ownerApproved: true })).resolves.toBe(
-    `suggest-model #8: glm (Estimate 1, kind bug; glm averages $0.42/point over 3 graded tasks)\n` +
-      `note: astra is a more expensive tier than the suggestion (astra averages $1.24/point over 2 tasks)\n` +
+    `suggest-model #8: glm (Estimate 1, kind bug; glm averages $0.42/point over 3 of 3 graded tasks)\n` +
+      `note: astra is a more expensive tier than the suggestion (astra averages $1.24/point over 2 of 2 tasks)\n` +
       `Opened draft PR #27 (8-task)`
   );
   f.done();
@@ -729,9 +729,9 @@ test.each(["standard", "expensive"] as const)(
   async (tier) => {
     const f = fixture();
     f.host.modelSuggestion = async () => ({ family: "glm", tier, reason: "Estimate 1, kind bug" });
-    f.host.learningEvidence = () => ({ usdPerPoint: 0.4, deliveries: 1 });
+    f.host.learningEvidence = () => ({ usdPerPoint: 0.4, deliveries: 1, totalDeliveries: 1 });
     await expect(f.flow().open({ issue: "8", model: "glm" })).resolves.toBe(
-      `suggest-model #8: glm (Estimate 1, kind bug; glm averages $0.40/point over 1 graded tasks)\n` +
+      `suggest-model #8: glm (Estimate 1, kind bug; glm averages $0.40/point over 1 of 1 graded tasks)\n` +
         `Opened draft PR #27 (8-task)`
     );
     f.done();
