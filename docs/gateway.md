@@ -199,7 +199,12 @@ file content, with **no footer**. Posts on unaccepted threads are refused.
 method switches. GraphQL files are parsed in full: exactly one query is allowed;
 mutations, subscriptions and additional operations are refused before networking.
 The server augments known author-bearing selections with identity, editor and
-repository metadata, including aliases and fragments. Reserved `__vm_` aliases
+repository metadata inside schema-compatible content-type fragments, including
+when you use aliases or named fragments. Concrete issue/PR/comment/review fields
+get only their applicable type; search results and project item content get Issue
+and PullRequest fragments, while root `node`/`nodes` reads can use all five content
+types. Unknown parent types receive no identity injection: selecting `title` or
+`body*` alone never establishes a content type. Reserved `__vm_` aliases
 cannot be supplied by callers. Known author-bearing REST output is filtered too;
 unverifiable REST edits are dropped rather than guessed. Check/status/workflow
 diagnostics yield allowlisted structured fields, never system free text. All
@@ -214,16 +219,25 @@ REST commit accounts use the usual identity pins; git-only commit metadata passe
 with `attribution: "git signature (unverified)"`. Git signatures never establish a
 verified person or protocol authority. Nested lists are filtered item by item.
 PR branch owners and repository objects are structural metadata, not content
-authors: keep `head`/`base` refs, SHAs, repository names and owner identities even
-for foreign repositories. Repository descriptions pass for the configured org or
-forks owned by a fully pinned listed identity; only the description is redacted for
-other repositories.
+authors: keep `head`/`base` refs, SHAs, repository identifiers (`full_name` or
+`nameWithOwner`) and owner identities even
+for foreign repositories. Without an attributable author, diagnostic objects keep
+structural metadata but lose free-text fields: `title`, `body*`, `shortDescription`,
+`readme`, `description` and `name` (including GraphQL aliases). This also removes
+repository descriptions and git-signature display names; repository ownership and
+git signatures do not establish text authorship. For example, a ProjectV2 query
+selecting `number title url` returns each project's number and URL, not its title.
+Items carrying an unpinned author or editor are still dropped whole.
 
 Each diagnostic response includes `N items dropped by the people filter`, including
 zero. This counts only removed entries of a top-level response list, so a
 filtered-empty list is distinguishable from an empty source list. If fields or
 nested list entries are removed inside retained data, a separate trailing
 `M nested values redacted` note reports them without inflating the entry count.
+Removed free-text fields on otherwise retained unattributable objects instead
+produce `N text fields redacted from unattributable items`. These counters are
+separate: one object can retain several structural fields while losing several
+text fields without counting as a dropped item.
 
 The diagnostic verb is not a generic write transport. New writes belong in named,
 policy-enforcing server operations. Future operations can extend the typed map

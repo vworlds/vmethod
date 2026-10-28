@@ -140,7 +140,11 @@ test("REST diagnostics filter known author fields and unverifiable edits and nev
   });
   expect(output).toContain("from worker (worker)");
   expect(output).not.toContain("NEVER DELIVER");
-  expect(output.endsWith("4 items dropped by the people filter")).toBe(true);
+  expect(
+    output.endsWith(
+      "3 items dropped by the people filter\n1 text fields redacted from unattributable items"
+    )
+  ).toBe(true);
   fixture.done();
 }, 15000);
 
