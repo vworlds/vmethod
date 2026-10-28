@@ -526,6 +526,12 @@ reason when one was given. If the event says an open task PR remains, decide whe
 to close that PR with `close-task <pr>`; the watcher does not close it
 automatically.
 
+`NEXT` names the top Scoping card whose turn is yours. A card waiting on the
+owner (owner-assigned or an owner `👤…` Progress state) stays unnamed until the
+owner hands the turn back, so retiring another Scoping card never wakes you for
+the owner's move. Take cards in board order from there; see
+[card order](board.md#card-order).
+
 When several orchestrator sessions share one account, an item's author no longer
 identifies the session that owns it. Ask the owning session before acting rather
 than inferring ownership from the account. Sessions sharing an account **must have

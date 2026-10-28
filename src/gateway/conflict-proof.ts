@@ -1,3 +1,5 @@
+import { lockfilesOnly } from "./lockfile.js";
+
 /** Prove a full-context remerge patch changes only textual conflict regions.
  * Unknown metadata, binary/mode/rename conflicts and retained markers fail closed.
  * This is a syntactic boundary, not a claim of semantic equivalence.
@@ -63,7 +65,10 @@ export function conflictHunksOnly(patch: string): boolean {
   return inHunk && conflicts > 0 && !region;
 }
 
-/** Inspect every remerge-diff path, including files not reported as conflicted. */
+/** Prove exact merge parents and every remerge-diff path. Lockfile-only conflicts
+ * allow whole-lockfile regeneration; mixed conflicts retain the textual hunk rule.
+ * Lockfile sync and green checks must be established separately by the caller.
+ */
 export async function proveConflictMerge(
   git: (...args: string[]) => Promise<string>,
   head: string,
@@ -78,6 +83,9 @@ export async function proveConflictMerge(
   const changed = (await git("show", "--remerge-diff", "--format=", "--name-only", "-z", head))
     .split("\0")
     .filter(Boolean);
+  if (lockfilesOnly(files)) {
+    return lockfilesOnly(changed);
+  }
   if (!changed.length || changed.some((file) => !files.includes(file))) {
     return false;
   }
