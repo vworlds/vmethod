@@ -42,11 +42,11 @@ and `gh-read` additionally requires its caller to be pinned in `people.yaml`.
    [Gateway commands](gateway.md#commands)). Do not run `board status` before the
    project config and caller pin are ready.
 5. Complete `vmethod.yaml`, `people.yaml` and `models.yaml`, then run
-   `vmethod board init` on an empty project. `board init` is the shipped vmethod
-   1.0 command from #325; see [board initialization](board.md#migrations-what-adopters-see).
+   `board init` (vmethod 1.0, #325) on an empty project; see
+   [board initialization](board.md#migrations-what-adopters-see).
 6. Deliver the adoption as one reviewed non-task PR: open it with
-   `vmethod pr open <branch> <title> <body-file>` and, after approval and green
-   checks, merge it with `vmethod pr merge <n>` (vmethod 1.0, #326).
+   `pr open <branch> <title> <body-file>` and, after approval and green checks,
+   merge it with `pr merge <n>` (vmethod 1.0, #326).
 7. After that PR merges, run `vmethod board migrate` to migrate past v3. The
    contract guard reads the adopted config and pins from remote branches.
 
@@ -58,9 +58,9 @@ the 30-minute expiry. The opencode-monitor plugin is cached under
 `~/.cache/opencode`, so it may look absent from the project. See
 [watching](orchestrator-guide.md#watch-without-wasting-budget).
 
-Raise methodology needs with `vmethod upstream issue <title> <body-file>` or
-`vmethod upstream comment <n> <body-file>`, never `gh` (vmethod 1.0, #333).
-Both require the central orchestrator binding described above. See
+Raise methodology needs with `upstream issue <title> <body-file>` or
+`upstream comment <n> <body-file>` (vmethod 1.0, #333), never `gh`. Both require
+the central orchestrator binding described above. See
 [upstream needs](gateway.md#upstream-needs).
 
 ## Initial adoption

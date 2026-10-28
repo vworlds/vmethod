@@ -8,6 +8,7 @@ const verbIssues = new Map<string, number | null>([
   ["read", 4],
   ["gh-read", 4],
   ["board status", 5],
+  ["board init", 325],
   ["board migrate", 5],
   ["check --online", 5],
   ["watch", 6],
@@ -39,6 +40,10 @@ const verbIssues = new Map<string, number | null>([
   ["learnings merge", 308],
   ["release next", 308],
   ["propose", null],
+  ["pr open", 326],
+  ["pr merge", 326],
+  ["upstream issue", 333],
+  ["upstream comment", 333],
 ]);
 
 test("worker guide ends status turns instead of review polling", () => {
