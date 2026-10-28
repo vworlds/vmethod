@@ -18,6 +18,24 @@ function validProject() {
   return root;
 }
 
+test("check accepts several owners but refuses duplicate owner logins or ids", () => {
+  const root = validProject();
+  const path = join(root, "people.yaml");
+  const original = parse(readFileSync(path, "utf8"));
+  const second = { login: "second-owner", id: 98765, type: "User", role: "owner" };
+  writeFileSync(path, stringify([...original, second]));
+  expect(check(root).code).toBe(0);
+  for (const duplicate of [
+    { ...second, id: 98766 },
+    { ...second, login: "third-owner" },
+  ]) {
+    writeFileSync(path, stringify([...original, second, duplicate]));
+    const result = check(root);
+    expect(result.code).toBe(1);
+    expect(result.messages.join("\n")).toMatch(/duplicate/i);
+  }
+});
+
 test("missing family price warns without failing or pretending usage is free", () => {
   const result = check(unpricedProject());
   expect(result.code).toBe(0);

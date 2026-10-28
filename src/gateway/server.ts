@@ -54,7 +54,7 @@ import {
 } from "./thread.js";
 import { AutopilotReader, inheritAutopilot, type AutopilotState } from "./autopilot.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
-import { setTurn, turnAssignees } from "./turn.js";
+import { ownerForTurn, setTurn, turnAssignees } from "./turn.js";
 import { renderProgress } from "../board/progress.js";
 import { workflowColumns } from "../board/runner.js";
 import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
@@ -970,10 +970,11 @@ class GatewayServer {
       String(item.login)
     );
     const next = turnAssignees(
-      loadYaml(this.root, "people") as Person[],
+      this.filter.people,
       String(this.config.repo),
       current,
-      "owner"
+      "owner",
+      await ownerForTurn(this.github, this.filter.people, String(this.config.repo), number)
     );
     // One operation for the assignment, summary comment and board handoff writes (#199).
     this.github.writes.beginOperation("scope-review", [{ repo: String(this.config.repo), number }]);
