@@ -98,8 +98,14 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       settings, never invalid installed settings or other findings. Remove it at
       1.0 and have the owner install permissions: stable releases reject the switch.
       Any later prerelease also accepts it; it is not limited to the 1.0 pilot.
-- [ ] Review `board status` and `board migrate --dry-run`, then apply `board migrate`
+- [ ] On a fresh empty project, run `board init` to create the baseline fields
+      before adding cards; see [board initialization](board.md#migrations-what-adopters-see).
+      Review `board status` and `board migrate --dry-run`, then apply `board migrate`
       (vmethod 1.0, #5). Coordinate shared-board consumers and Status automations.
+      On a single-repository board, migrations past v3 run **after the adoption PR
+      merges**: the contract guard reads `vmethod.yaml` and package pins from remote
+      branches, never the local checkout. If it reports not-yet-adopted, merge the
+      adoption PR and rerun `board migrate`. Shared boards wait for every consumer.
       Run `check --online` (vmethod 1.0, #5) after migration; do not claim these
       unimplemented verbs ran on the skeleton.
 - [ ] Exercise a task/review/merge cycle, owner button-merge follow-up, a track and

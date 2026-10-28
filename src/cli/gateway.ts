@@ -244,13 +244,25 @@ async function existingVerb(
         );
       }
       const [action, ...flags] = args;
+      if (action === "init") {
+        if (flags.length > 1 || flags.some((flag) => flag !== "--steal")) {
+          throw new Error("Usage: vmethod board init [--steal]");
+        }
+        return JSON.stringify(
+          await transport.call("boardInit", { steal: flags.includes("--steal") }, ctx),
+          null,
+          2
+        );
+      }
       if (
         (action !== "status" && action !== "migrate") ||
         flags.some((flag) => !["--dry-run", "--steal", "--fix"].includes(flag)) ||
         (action === "status" && flags.some((flag) => flag !== "--fix")) ||
         new Set(flags).size !== flags.length
       ) {
-        throw new Error("Usage: vmethod board status [--fix] | migrate [--dry-run] [--steal]");
+        throw new Error(
+          "Usage: vmethod board init [--steal] | status [--fix] | migrate [--dry-run] [--steal]"
+        );
       }
       return JSON.stringify(
         action === "status"

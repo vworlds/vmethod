@@ -130,6 +130,73 @@ export class MigrationRunner {
     return this.status();
   }
 
+  /** Initialize only an empty v0 board from the immutable baseline. Live fields are
+   * the resume journal: matching fields are never recreated after interruption.
+   * Use the migration lock and gateway write journal without advancing version. */
+  async init({ steal = false }: { steal?: boolean } = {}): Promise<BoardStatus> {
+    await this.emptyBaseline();
+    await this.acquire(steal, await this.io.login());
+    try {
+      for (const [name, shape] of Object.entries(this.migrations[0].expect.fields)) {
+        const snapshot = await this.emptyBaseline();
+        await this.held();
+        if (this.io.budgetStopped()) {
+          throw new Error("BUDGET: initialization pending; rerun board init");
+        }
+        const field = snapshot.fields.find((field) => field.name === name);
+        if (!field) {
+          await this.io.createField(snapshot.id, name, shape);
+        } else if (
+          drift(snapshot, {
+            ...this.migrations[0],
+            expect: { ...this.migrations[0].expect, fields: { [name]: shape } },
+          }).length &&
+          shape.options
+        ) {
+          await this.preserveOptions(
+            field,
+            shape.options.map((option) =>
+              typeof option === "string"
+                ? {
+                    name: option,
+                    color: field.options.find(({ name }) => name === option)?.color ?? "GRAY",
+                    description:
+                      field.options.find(({ name }) => name === option)?.description ?? "",
+                  }
+                : option
+            )
+          );
+        }
+      }
+      const differences = drift(await this.emptyBaseline(), this.migrations[0]);
+      if (differences.length) {
+        throw new Error(`Board initialization verification failed: ${differences.join("; ")}`);
+      }
+    } finally {
+      // A failed or ambiguous field creation can be reconciled from live fields
+      // on the next run. Do not leave a live-process lock blocking that retry.
+      await this.io.cleanup(() => this.release());
+    }
+    return this.status();
+  }
+
+  private async emptyBaseline(): Promise<Snapshot> {
+    const snapshot = await this.io.snapshot();
+    if ((await this.io.allCards(snapshot.id)).length) {
+      throw new Error("Board init requires no cards");
+    }
+    if (readState(snapshot.readme).version !== 0) {
+      throw new Error("Board already migrated; use board migrate instead of board init");
+    }
+    for (const [name, shape] of Object.entries(this.migrations[0].expect.fields)) {
+      const fields = snapshot.fields.filter((field) => field.name === name);
+      if (fields.length > 1 || (fields.length === 1 && fields[0].type !== shape.type)) {
+        throw new Error(`Cannot initialize conflicting board field ${name}`);
+      }
+    }
+    return snapshot;
+  }
+
   private async held(): Promise<{ snapshot: Snapshot; state: BoardState }> {
     const snapshot = await this.io.snapshot();
     const state = readState(snapshot.readme);
