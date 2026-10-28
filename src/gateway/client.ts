@@ -1,3 +1,4 @@
+import { permissionDetails } from "./permission-detail.js";
 import {
   appendFileSync,
   existsSync,
@@ -462,6 +463,8 @@ export interface WorkerStatus {
   state: "permission" | "failed" | "idle" | "other";
   /** What distinguishes this stop (the permission or error); keys the once-per-stop report. */
   detail?: string;
+  /** Bounded, terminal-safe diagnostic text for every pending permission. */
+  permissionDetails?: string[];
 }
 
 function listed(value: unknown, field: string, path: string): ObjectData[] {
@@ -649,10 +652,11 @@ export class OpencodeClient {
           this.redact(`${path}/permission`)
         );
         if (permissions.length) {
-          const permission = permissions[0];
+          const details = permissionDetails(permissions, (text) => this.redact(text));
           stopped = {
             state: "permission",
-            detail: str(permission.type) || str(permission.title) || undefined,
+            detail: JSON.stringify(details),
+            permissionDetails: details,
           };
           this.pollErrors.delete(id);
           continue;
@@ -832,6 +836,7 @@ export class OpencodeClient {
           ? Number(object(session.time).updated)
           : undefined,
       permissions: permissions.length,
+      permissionDetails: permissionDetails(permissions, (text) => this.redact(text)),
     };
     if (Array.isArray(permissions) && permissions.length) {
       return { reason: "permission-wait", active: Boolean(active[id]), ...detail };
@@ -899,6 +904,8 @@ export interface WorkerSessionStatus {
   outputTokens?: number;
   updated?: number;
   permissions?: number;
+  /** Type and path/command pattern, terminal-safe and capped at 200 chars per request. */
+  permissionDetails?: string[];
   /** Cumulative provider usage for this session, never inferred from message text. */
   usage?: Usage;
   /** Per-request usage from assistant messages, separate from cumulative totals. */
