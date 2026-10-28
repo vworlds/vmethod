@@ -5,8 +5,8 @@ project orchestrators and worker agents use. Projects (e.g. `vworlds/spacerocks`
 `vworlds/vecs`) add a pinned `@vworlds/vmethod` npm devDependency and keep only their project-specific settings
 locally.
 
-> Status: releasing 1.0 (see [#13](https://github.com/vworlds/vmethod/issues/13)): vecs pilots
-> `1.0.0-rc.N`, then SpaceRocks adopts. The design lives in `docs/architecture.md`.
+> Status: 1.0 release candidates on npm `next` (latest `1.0.0-rc.11`), consumed by vecs,
+> SpaceRocks and Alfie-Labs/NNext. The design lives in `docs/architecture.md`.
 
 ## Roles
 
