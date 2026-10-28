@@ -3204,9 +3204,27 @@ test.each([
     reports: [1, 1, 1, 1, 1, 2],
   },
   {
-    name: "changed candidate",
+    name: "varying sustained slowdown",
     baseline: 10,
     intervals: [20, 20, 30, 30, 30],
+    reports: [1, 1, 2, 2, 2],
+  },
+  {
+    name: "20000, 20013, 19990 ms sustained slowdown",
+    baseline: 10,
+    intervals: [20, 20.013, 19.99],
+    reports: [1, 1, 2],
+  },
+  {
+    name: "10, 20, 9, 20 broken run",
+    baseline: 10,
+    intervals: [10, 20, 9, 20],
+    reports: [1, 1, 1, 1],
+  },
+  {
+    name: "direction reversal restarts hold",
+    baseline: 20,
+    intervals: [30, 30, 10, 10, 10],
     reports: [1, 1, 1, 1, 2],
   },
   { name: "falling hold", baseline: 20, intervals: [10, 10, 10, 10], reports: [1, 1, 2, 2] },
@@ -3230,7 +3248,7 @@ test.each([
       expect(f.pollReports).toHaveLength(reports[index]);
     }
     expect(f.pollReports.at(-1)).toContain(
-      `interval=${reports.at(-1) === 2 ? seconds : baseline}s`
+      `interval=${Math.ceil(reports.at(-1) === 2 ? seconds : baseline)}s`
     );
     expect(f.reports).toEqual([]);
   } finally {
