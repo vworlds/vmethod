@@ -60,6 +60,8 @@ export interface ResourceBudget {
   remaining: number;
   limit: number;
   reset: number;
+  /** Local receipt time of these headers, in milliseconds. */
+  sampledAt: number;
 }
 
 export interface BudgetStatus {
@@ -237,11 +239,18 @@ export class GitHubClient {
         Number.isFinite(Number(reset))
       ) {
         // The headers are the only budget source; the GraphQL rateLimit field lags.
-        this.budgets.set(resource, {
-          remaining: Number(remaining),
-          limit: Number.isFinite(Number(limit)) ? Number(limit) : 0,
-          reset: Number(reset),
-        });
+        const previous = this.budgets.get(resource);
+        if (!previous || Number(reset) >= previous.reset) {
+          this.budgets.set(resource, {
+            remaining:
+              previous?.reset === Number(reset)
+                ? Math.min(previous.remaining, Number(remaining))
+                : Number(remaining),
+            limit: Number.isFinite(Number(limit)) ? Number(limit) : 0,
+            reset: Number(reset),
+            sampledAt: this.deps.now(),
+          });
+        }
       }
       if (
         remaining !== null &&

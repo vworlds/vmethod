@@ -30,8 +30,10 @@ another checkout's installation.
 Reuse the existing board poll for grading, launch and progress decisions. Do not
 add a query per card, busy-loop board reads or loop failed calls. The account budget
 is shared across sessions and repositories. Pace requests against response headers
-for remaining budget and reset time, **not** the query's `rateLimit` field or a
-separate rate-limit endpoint. Retain the lowest remaining count for a reset window,
+for remaining budget and reset time, **not** the query's `rateLimit.remaining` field or a
+separate rate-limit endpoint. The adaptive board watcher measures `rateLimit.cost`
+within its existing queries; that is cost telemetry, never a budget source. See
+[adaptive polling](gateway.md#adaptive-board-polling). Retain the lowest remaining count for a reset window,
 keep a reserve and back off until reset. Queue deferred writes explicitly.
 
 A newly added card can be missing from board listings while the issue already

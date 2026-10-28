@@ -843,7 +843,8 @@ and owner button-merge follow-up (at most once per ten minutes until merge-task
 records completion). GRADE is once per open, non-Done issue lacking an Estimate,
 after consecutive observations spanning at least one minute. An estimate, closure,
 Done, disappearance or failed/skipped board poll resets settling; closed issues
-never trigger it. Minor events accumulate in a quiet digest attached
+never trigger it. Board pages adapt to your board's size; see
+[adaptive polling](#adaptive-board-polling). Minor events accumulate in a quiet digest attached
 to the next wake. GraphQL errors wake immediately; three failed polls report
 WATCHER ERROR and back off. Failed Progress writes are reported and retried.
 
@@ -1033,8 +1034,11 @@ built in memory and sent only in a header. Neither client follows redirects.
 
 `gateway.reserve` defaults to 100 and `gateway.maxRetries` to 3. GitHub responses
 at or below reserve plus one schedule a pause until the header's reset time before
-the next request, reporting `BUDGET`. Only `x-ratelimit-*` headers drive pacing,
-never a GraphQL `rateLimit` field. Secondary 403/429 limits honor `retry-after`
+the next request, reporting `BUDGET: paused before reserve`. Remaining budget and
+reset time come only from `x-ratelimit-*` headers, retaining the lowest remaining
+count in each reset window; never use GraphQL `rateLimit.remaining` as budget.
+Board queries additionally measure `rateLimit.cost` for
+[adaptive polling](#adaptive-board-polling). Secondary 403/429 limits honor `retry-after`
 even when the primary budget looks healthy. Network errors and 5xx responses retry
 with exponential backoff. A transient retry notice (network failure, 5xx and
 secondary-rate-limit retries) is never a watcher event or console line: inside a
@@ -1051,6 +1055,36 @@ Dropped records live in
 `~/.local/state`. They contain only timestamps and GitHub links. The owner digest
 prints links and counts, never bodies, titles or author names. Repeated reads can
 produce repeated drops; the counts are observations, not unique contributions.
+
+### Adaptive board polling
+
+Let `watch` choose its board page sizes and polling interval; there are no new
+configuration knobs. Each session starts with ten cards and ten entries per nested
+list (labels, blockers, sub-issues and reviews). After a complete read, the next
+poll requests the observed card count plus ten, and each nested list requests the
+largest count seen across cards plus ten, bounded to 10–100. Shrinking lowers the
+sizes again. Board pagination reads every page; full nested pages with successors
+are completed through batched node queries. Reviews are read forward in chronological
+order, including all pages, so the latest relevant owner review is still used.
+Malformed cursors, missing connections and failed overflow reads refuse the partial
+snapshot rather than treating it as a complete board. Failed reads do not train sizes.
+
+The controller in `src/gateway/watch-pacing.ts` sums each board read's measured
+query costs, including overflow queries. It observes account-wide header depletion,
+subtracts its own board costs, and projects other callers' spending to reset.
+A proportional allowance, bounded/leaky integral and one-minute low-pass damping
+lengthen the interval under sustained spending and shorten it when headroom returns.
+The normal watch loop has a ten-second floor; slowdown is bounded by time to reset
+(including the final partial ten seconds). A two-poll cushion remains above the
+configured reserve. The gateway's hard reserve pause is unchanged; REST comments
+and assignments continue while the GraphQL board is paced. This controller does
+not throttle other verbs or guarantee protection against an unlimited external
+spender; it can only react to spending visible in response headers.
+
+Watch reports the current page sizes, measured points per board read and interval
+on stderr after the first measurement, a size/cost change, or an interval change
+of at least 10% and one second. Stable polls do not repeat the report. These sizes
+and controller history are session-local and start fresh after restart.
 
 ## Non-task PR commands
 

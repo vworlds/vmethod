@@ -7,6 +7,40 @@ import { setTurn } from "../../src/gateway/turn.js";
 import { fakeServer, fixtureServer } from "./helpers.js";
 import recordedOpencode from "../fixtures/opencode/watch-status.json" with { type: "json" };
 
+test("budget headers retain the lowest count per window and reject old reset windows", async () => {
+  const f = fixtureServer([]);
+  let remaining = 500;
+  let reset = Math.floor(f.deps.now() / 1000) + 3600;
+  const client = new GitHubClient(getConfig(f.root, {}), f.env, {
+    ...f.deps,
+    fetch: async () =>
+      Response.json(
+        { data: { rateLimit: { remaining: 999999, cost: 1 } } },
+        {
+          headers: {
+            "x-ratelimit-resource": "graphql",
+            "x-ratelimit-remaining": String(remaining),
+            "x-ratelimit-reset": String(reset),
+            "x-ratelimit-limit": "5000",
+          },
+        }
+      ),
+  });
+  await client.graphql("query { rateLimit { cost } }");
+  expect(client.budget().resources.graphql.remaining).toBe(500);
+  remaining = 600;
+  await client.graphql("query { rateLimit { cost } }");
+  expect(client.budget().resources.graphql.remaining).toBe(500);
+  reset--;
+  remaining = 10;
+  await client.usingReserve(() => client.graphql("query { rateLimit { cost } }"));
+  expect(client.budget().resources.graphql.remaining).toBe(500);
+  reset += 3601;
+  remaining = 5000;
+  await client.usingReserve(() => client.graphql("query { rateLimit { cost } }"));
+  expect(client.budget().resources.graphql.remaining).toBe(5000);
+});
+
 test.each(["running", "permission", "failed"])(
   "recorded data envelopes find the worker directory and %s state",
   async (state) => {
