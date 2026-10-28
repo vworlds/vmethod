@@ -498,8 +498,9 @@ the typed gateway transport; Basic authentication is in headers, never argv.
 
 Workers never run in the orchestrator's checkout. They run in worktrees of the
 **worker checkout**: a separate clone of the repository named by `workerCheckout`
-in `vmethod.yaml` (relative to the orchestrator's checkout), overridden per machine
-by `VMETHOD_WORKER_CHECKOUT`. Its gitignored `.claude/settings.local.json` holds the
+in `vmethod.yaml` (relative to the main orchestrator checkout, even when the command
+runs from a linked worktree), overridden per machine by `VMETHOD_WORKER_CHECKOUT`.
+Its gitignored `.claude/settings.local.json` holds the
 worker identity (`VMETHOD_ROLE=worker`, the worker's `GH_CONFIG_DIR`, git author and
 SSH command); OpenCode applies it to every session in that project, whatever the
 model. `vmethod check` (as orchestrator) refuses a missing clone, and start refuses
