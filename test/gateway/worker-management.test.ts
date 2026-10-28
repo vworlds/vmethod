@@ -139,6 +139,13 @@ function fixture(prefix?: string, legacy = false) {
       requests.push(`${init?.method} ${url.origin}${url.pathname}`);
       if (url.origin === "https://opencode.invalid") {
         expect(JSON.stringify(init?.headers)).not.toContain("orchestrator-token");
+        if (url.pathname === "/api/rpc/oc-limits/limits" && init?.method === "POST") {
+          expect(JSON.parse(String(init.body))).toEqual({ input: {} });
+          return Response.json(
+            { error: { name: "RpcError", message: "plugin not installed" } },
+            { status: 404 }
+          );
+        }
         if (url.pathname === "/api/session" && init?.method === "POST") {
           return Response.json({ data: { id: "ses_test", directory, model: "fake/glm" } });
         }
