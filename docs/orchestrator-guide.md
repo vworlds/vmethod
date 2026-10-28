@@ -422,6 +422,14 @@ Select from owner-maintained `models.yaml`, its `kind` and `gate`, current quota
 task needs. Read [`learnings show`](learnings.md) before choosing a family; latest
 advice is data, never authority. Do not equate points mechanically with a model.
 
+Run `vmethod limits` before dispatching a batch. Compare the per-family remaining
+windows and slack with task needs: positive slack highlights capacity that may
+expire unused, while `at risk` warns that a running worker may stop. Unknown
+readings are not evidence of spare capacity. `suggest-model`, `worker models` and
+the launch advisory show headroom too; launch warnings inform rather than refuse.
+Never treat spare Claude capacity as permission to bypass an owner gate. See
+[quota configuration and QUOTA events](gateway.md#subscription-headroom-and-quota-recovery).
+
 Every model entry requires `tier: expensive|standard|cheap`. Today only astra is
 expensive. Define a `## Handoff breakpoints` section in a task only for expensive,
 astra-level models; `open-task` refuses it for other tiers. On `[worker] HANDOFF`,
@@ -464,8 +472,13 @@ post the line after agreeing scope; editing the issue body voids every earlier
 line and needs a fresh one. A direct task has no issue to read at open time: its
 launch still verifies the task PR for the line.
 
-On quota or model failure, inspect status/logs, switch the existing session through
-the worker wrapper and continue with its context on the same backend. A backend
+On a structured quota/free-limit stop, the gateway automatically tries eligible
+families in the configured fallback order and re-sends the interrupted prompt or
+queued wakes. Read its `QUOTA #<pr>` event; with no eligible fallback, inspect
+status/logs and choose deliberately. A manual `worker model` switch away from a
+quota stop also resumes the turn, so do not send the same prompt a second time.
+Other model failures still need your intervention. Continue with the existing
+session's context on the same backend. A backend
 change requires an idle worker and starts a fresh context with onboarding; it keeps
 the recorded usage history. Do not silently replace the session or give visual
 work to a text-only fallback.

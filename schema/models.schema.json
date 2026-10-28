@@ -10,6 +10,7 @@
     "properties": {
       "family": { "type": "string" },
       "model": { "type": "string", "pattern": "^[^/\\s]+/[^\\s]+$" },
+      "provider": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
       "price": {
         "type": "object",
         "additionalProperties": false,

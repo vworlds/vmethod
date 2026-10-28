@@ -4,6 +4,17 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
 
 ## Before you start
 
+### Optional subscription telemetry
+
+The owner may install a reviewed oc-limits plugin on the orchestrator's OpenCode
+server. Its `oc-limits/limits` RPC supplies quota telemetry through the existing
+`OPENCODE_*` login; vmethod needs no new provider credentials. Verify it with
+`vmethod limits` from the orchestrator checkout. Without the plugin (including a
+404 or `RpcError`), providers are unknown and normal launches still work.
+See [headroom and recovery](gateway.md#subscription-headroom-and-quota-recovery)
+for `limits` defaults, provider overrides and fallback behavior. Observe one
+`QUOTA` crossing on the next real depletion; do not burn quota to manufacture it.
+
 ### Adoption interview: discover first, ask only for gaps
 
 Start with local, non-credential data: `package.json`, the lockfile,

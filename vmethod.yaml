@@ -16,6 +16,7 @@ board:
   repos: [vworlds/vmethod]
 learningsPrivacy: public
 push: {}
+limits: { enabled: true, atRisk: 15, pollSeconds: 300 }
 checks:
   verify:
     [

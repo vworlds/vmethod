@@ -17,6 +17,7 @@ import { validProject } from "../helpers.js";
 import captured from "../fixtures/usage/opencode-session.json" with { type: "json" };
 import messageCapture from "../fixtures/usage/opencode-message.json" with { type: "json" };
 import messageCursor from "../fixtures/usage/opencode-message-cursor.json" with { type: "json" };
+import quotaRecording from "../fixtures/limits/2026-10-28.json" with { type: "json" };
 
 interface Request {
   path: string;
@@ -34,71 +35,88 @@ function fixture(
   solGate: "owner" | "none" = "owner",
   flash = false,
   fable = false,
-  worktreeName = "9-task"
+  worktreeName = "9-task",
+  quota?: {
+    report: unknown;
+    providers?: Record<string, string>;
+    fallbacks?: Record<string, string[]>;
+  }
 ) {
   const root = validProject();
   const directory = join(root, ".worktrees", worktreeName);
   mkdirSync(directory, { recursive: true });
   writeFileSync(
     join(root, "models.yaml"),
-    stringify([
-      ...(flash
-        ? [
-            {
-              family: "glm-flash",
-              model: "fake/glm-flash",
-              kind: "opencode",
-              gate: "none",
-              tier: "standard",
-              price: { input: 0.048, output: 0.2, cached: 0.006 },
-            },
-          ]
-        : []),
-      {
-        family: "glm",
-        model: "fake/glm",
-        kind: "opencode",
-        gate: "none",
-        tier: "cheap",
-        fallback: ["sol"],
-        ...(priced
-          ? {
-              price: { input: 2, output: 10, cached: 0.2 },
-              tiers: [{ minPrompt: 272000, input: 4, output: 15, cached: 0.4 }],
-            }
-          : {}),
-      },
-      {
-        family: "sol",
-        model: "fake/sol",
-        kind: "opencode",
-        gate: solGate,
-        tier: "expensive",
-        fallback: ["glm"],
-        ...(priced ? { price: { input: 4, output: 20, cached: 0.4 } } : {}),
-      },
-      {
-        family: "sonnet",
-        model: "claude-code/claude-test",
-        kind: "opencode",
-        gate: "none",
-        tier: "standard",
-        ...(priced ? { price: { input: 3, output: 15, cached: 0.3 } } : {}),
-      },
-      ...(fable
-        ? [
-            {
-              family: "fable",
-              model: "claude-code/claude-fable-test",
-              kind: "opencode",
-              gate: "owner",
-              tier: "expensive",
-              fallback: ["sol"],
-            },
-          ]
-        : []),
-      { family: "other", model: "fake/other", kind: "opencode", gate: "owner", tier: "expensive" },
-    ])
+    stringify(
+      [
+        ...(flash
+          ? [
+              {
+                family: "glm-flash",
+                model: "fake/glm-flash",
+                kind: "opencode",
+                gate: "none",
+                tier: "standard",
+                price: { input: 0.048, output: 0.2, cached: 0.006 },
+              },
+            ]
+          : []),
+        {
+          family: "glm",
+          model: "fake/glm",
+          kind: "opencode",
+          gate: "none",
+          tier: "cheap",
+          fallback: ["sol"],
+          ...(priced
+            ? {
+                price: { input: 2, output: 10, cached: 0.2 },
+                tiers: [{ minPrompt: 272000, input: 4, output: 15, cached: 0.4 }],
+              }
+            : {}),
+        },
+        {
+          family: "sol",
+          model: "fake/sol",
+          kind: "opencode",
+          gate: solGate,
+          tier: "expensive",
+          fallback: ["glm"],
+          ...(priced ? { price: { input: 4, output: 20, cached: 0.4 } } : {}),
+        },
+        {
+          family: "sonnet",
+          model: "claude-code/claude-test",
+          kind: "opencode",
+          gate: "none",
+          tier: "standard",
+          ...(priced ? { price: { input: 3, output: 15, cached: 0.3 } } : {}),
+        },
+        ...(fable
+          ? [
+              {
+                family: "fable",
+                model: "claude-code/claude-fable-test",
+                kind: "opencode",
+                gate: "owner",
+                tier: "expensive",
+                fallback: ["sol"],
+              },
+            ]
+          : []),
+        {
+          family: "other",
+          model: "fake/other",
+          kind: "opencode",
+          gate: "owner",
+          tier: "expensive",
+        },
+      ].map((model) => ({
+        ...model,
+        ...(quota?.providers?.[model.family] ? { provider: quota.providers[model.family] } : {}),
+        ...(quota?.fallbacks?.[model.family] ? { fallback: quota.fallbacks[model.family] } : {}),
+      }))
+    )
   );
   const env = {
     XDG_STATE_HOME: join(root, "state"),
@@ -129,8 +147,21 @@ function fixture(
   const unexpected: string[] = [];
   const deps: Dependencies = {
     fetch: async (url, init) => {
-      const expected = requests[index++];
       const target = new URL(String(url));
+      // This fake server has no optional plugin unless a test explicitly queues its RPC.
+      if (
+        target.pathname === "/api/rpc/oc-limits/limits" &&
+        requests[index]?.path !== target.pathname
+      ) {
+        if (quota) {
+          return Response.json({ output: quota.report });
+        }
+        return Response.json(
+          { error: { name: "RpcError", message: "plugin not installed" } },
+          { status: 404 }
+        );
+      }
+      const expected = requests[index++];
       if (!expected) {
         unexpected.push(target.pathname);
         throw new Error("Unexpected fake opencode request");
@@ -2359,6 +2390,479 @@ const wakeRequest: Request = {
   method: "POST",
   body: { text: wake, delivery: "queue" },
 };
+
+/** Derived idle/user cases follow Session.Message.Idle/User and StructuredError in
+ * https://opencode.ai/v2/openapi.json (read 2026-10-28); quota strings come from task 378. */
+function quotaPoll(code = "provider.quota", turn = "msg_quota"): Request[] {
+  return usagePoll({ input: 0, output: 0, cached: 0 }).map((request) =>
+    request.path.endsWith("?limit=20")
+      ? {
+          ...request,
+          data: [
+            {
+              id: turn,
+              time: { created: 0 },
+              type: "idle",
+              outcome: "failed",
+              error: { type: code, message: "subscription exhausted" },
+            },
+          ],
+        }
+      : request
+  );
+}
+function modelRequests(family: string): Request[] {
+  return [
+    {
+      path: "/api/session/ses_fake/model",
+      method: "POST",
+      body: {
+        model:
+          family === "sonnet"
+            ? { providerID: "claude-code", id: "claude-test" }
+            : { providerID: "fake", id: family },
+      },
+    },
+    { path: "/api/session/ses_fake", method: "PATCH", body: { title: "project#31" } },
+  ];
+}
+const quotaProviders = {
+  glm: "ollama-cloud",
+  "glm-flash": "ollama-cloud",
+  sol: "codexbal",
+  sonnet: "claude-code",
+  fable: "claude-code",
+};
+
+test.each(["provider.quota", "provider.free-limit"])(
+  "automatic %s recovery skips risky, quota-failed and unapproved gated families and resends",
+  async (code) => {
+    const f = fixture(
+      [
+        ...start,
+        ...quotaPoll(code),
+        ...modelRequests("sonnet"),
+        {
+          path: "/api/session/ses_fake/prompt",
+          method: "POST",
+          body: { text: expect.stringContaining("You are a worker."), delivery: "queue" },
+        },
+        ...quotaPoll(code),
+      ],
+      true,
+      "none",
+      true,
+      true,
+      "9-task",
+      {
+        report: quotaRecording,
+        providers: quotaProviders,
+        fallbacks: { glm: ["glm-flash", "sol", "fable", "sonnet"] },
+      }
+    );
+    f.hooks.modelApproval = vi.fn(async () => false);
+    await f.service.command(["start", "31"]);
+    writeFileSync(
+      join(f.root, "state/vmethod/example-state/workers/quota-sol.json"),
+      JSON.stringify({ provider: "codexbal", at: 0 })
+    );
+    const result = await f.service.watchStatus(31);
+    expect(result).toMatchObject({
+      active: true,
+      family: "sonnet",
+      provider: "claude-code",
+      quotaEvent: "QUOTA #31: glm quota-stopped; switched to sonnet and resumed",
+    });
+    expect(f.prompts[1]).toBe(f.prompts[0]);
+    expect(f.record().model.family).toBe("sonnet");
+    expect(f.record().segments[1].switchReason).toBe("quota");
+    expect(f.record().segments[1].baseline.tokens).toEqual({ input: 0, output: 0, cached: 0 });
+    expect(
+      JSON.parse(
+        readFileSync(join(f.root, "state/vmethod/example-state/workers/quota-glm.json"), "utf8")
+      )
+    ).toMatchObject({ provider: "ollama-cloud", reset: "2026-10-29T00:00:00.000Z" });
+    expect(f.hooks.setModel).toHaveBeenLastCalledWith(31, "sonnet");
+    expect(f.hooks.modelApproval).toHaveBeenCalledWith(31, 9, "fable");
+    // Stale idle history after the switch is attributed to the old model and never switches twice.
+    expect(await f.service.command(["status", "31"])).toContain("error from previous model glm");
+    expect(f.prompts).toHaveLength(2);
+    f.done();
+  }
+);
+
+test("automatic recovery drains queued wakes instead of replaying the initial task", async () => {
+  const f = fixture(
+    [...start, ...status(true), ...quotaPoll(), ...modelRequests("sol"), wakeRequest],
+    true,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.resume(31, wake);
+  expect(await f.service.watchStatus(31)).toMatchObject({ active: true, family: "sol" });
+  expect(f.prompts[1]).toBe(wake);
+  expect(f.record().pendingWake).toBeUndefined();
+  f.done();
+});
+
+test("free-limit rejection before any assistant output can switch using an empty full-history baseline", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...status(false, [
+        {
+          id: "msg_free",
+          time: { created: 0 },
+          type: "idle",
+          outcome: "failed",
+          error: { type: "provider.free-limit", message: "free limit" },
+        },
+      ]),
+      ...modelRequests("sol"),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+    ],
+    true,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  expect(await f.service.watchStatus(31)).toMatchObject({ active: true, family: "sol" });
+  expect(f.record().segments[1].baseline).toEqual({
+    tokens: { input: 0, output: 0, cached: 0 },
+    reportedUsd: 0,
+  });
+  f.done();
+});
+
+test("quota recovery never invents zero usage when an earlier assistant has unknown totals", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...status(false, [
+        {
+          id: "msg_free",
+          type: "idle",
+          outcome: "failed",
+          error: { type: "provider.free-limit", message: "free limit" },
+        },
+        { id: "msg_assistant", type: "assistant" },
+      ]),
+    ],
+    true,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  await expect(f.service.watchStatus(31)).rejects.toThrow(
+    "Cannot switch model without provider usage baseline"
+  );
+  expect(f.record().model.family).toBe("glm");
+  f.done();
+});
+
+test("automatic recovery may use an owner-gated fallback only with verified approval", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...quotaPoll(),
+      ...modelRequests("sol"),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+    ],
+    true
+  );
+  await f.service.command(["start", "31"]);
+  expect(await f.service.watchStatus(31)).toMatchObject({ active: true, family: "sol" });
+  expect(f.hooks.modelApproval).toHaveBeenCalledWith(31, 9, "sol");
+  f.done();
+});
+
+test("no eligible quota fallback reports once and changes nothing", async () => {
+  const f = fixture([...start, ...quotaPoll(), ...quotaPoll()], true);
+  f.hooks.modelApproval = vi.fn(async () => false);
+  await f.service.command(["start", "31"]);
+  expect(await f.service.watchStatus(31)).toMatchObject({
+    active: false,
+    quotaEvent: "QUOTA #31: glm quota-stopped; no eligible fallback",
+  });
+  expect(await f.service.watchStatus(31)).not.toHaveProperty("quotaEvent");
+  expect(f.record().model.family).toBe("glm");
+  expect(f.record().segments).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+  f.done();
+});
+
+test("manual model switch away from a quota-stopped turn resends its interrupted prompt", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...quotaPoll(),
+      ...modelRequests("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: expect.stringContaining("You are a worker."), delivery: "queue" },
+      },
+    ],
+    true,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  expect(await f.service.command(["model", "31", "sol"])).toContain("and resumed");
+  expect(f.prompts[1]).toBe(f.prompts[0]);
+  expect(f.record().quotaStop.family).toBe("glm");
+  f.done();
+});
+
+test("quota recovery uses the actual interrupted user prompt for older records", async () => {
+  const poll = quotaPoll().map((r) =>
+    r.path.endsWith("?limit=20")
+      ? {
+          ...r,
+          data: [
+            ...(r.data as unknown[]),
+            {
+              id: "msg_user",
+              type: "user",
+              time: { created: 0 },
+              text: "finish the reviewed change",
+            },
+          ],
+        }
+      : r
+  );
+  const f = fixture(
+    [
+      ...start,
+      ...poll,
+      ...modelRequests("sol"),
+      {
+        path: "/api/session/ses_fake/prompt",
+        method: "POST",
+        body: { text: "finish the reviewed change", delivery: "queue" },
+      },
+    ],
+    true,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  const saved = f.record();
+  delete saved.lastPrompt;
+  writeFileSync(join(f.root, "state/vmethod/example-state/workers/31.json"), JSON.stringify(saved));
+  expect(await f.service.watchStatus(31)).toMatchObject({ active: true, family: "sol" });
+  expect(f.prompts[1]).toBe("finish the reviewed change");
+  f.done();
+});
+
+test("a failed resend remains durable and resumes on the next poll without switching twice", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...quotaPoll(),
+      ...modelRequests("sol"),
+      { path: "/api/session/ses_fake/prompt", method: "POST", status: 503 },
+      ...quotaPoll(),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+    ],
+    true,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  await expect(f.service.watchStatus(31)).rejects.toThrow("HTTP 503");
+  expect(f.record().quotaResume).toMatchObject({ model: { family: "sol" }, synced: true });
+  const restarted = new WorkerService(f.root, f.config, f.env, f.deps, f.hooks);
+  expect(await restarted.watchStatus(31)).toMatchObject({ active: true, family: "sol" });
+  expect(f.record().quotaResume).toBeUndefined();
+  expect(f.record().segments).toHaveLength(2);
+  expect(f.hooks.modelComment).toHaveBeenCalledTimes(1);
+  f.done();
+});
+
+test("quota text without a structured provider failure never switches automatically", async () => {
+  const poll = quotaPoll().map((r) =>
+    r.path.endsWith("?limit=20")
+      ? {
+          ...r,
+          data: [
+            {
+              type: "idle",
+              outcome: "failed",
+              error: { type: "provider.error", message: "a body mentions provider.quota" },
+            },
+          ],
+        }
+      : r
+  );
+  const f = fixture([...start, ...poll], true, "none");
+  await f.service.command(["start", "31"]);
+  expect(await f.service.watchStatus(31)).toMatchObject({ active: false, quotaStopped: false });
+  expect(f.record().model.family).toBe("glm");
+  f.done();
+});
+
+test.each(["disabled", "owner-paused", "merged", "held"])(
+  "%s quota stop does not switch or resend",
+  async (condition) => {
+    const f = fixture([...start, ...quotaPoll()], true, "none");
+    await f.service.command(["start", "31"]);
+    if (condition === "disabled") {
+      f.config.limits = { enabled: false };
+    }
+    if (condition === "owner-paused") {
+      f.meta.ownerPaused = true;
+    }
+    if (condition === "merged") {
+      f.meta.merged = true;
+    }
+    if (condition === "held") {
+      f.meta.blocked = true;
+    }
+    expect(await f.service.watchStatus(31)).toMatchObject({ active: false });
+    expect(f.record().model.family).toBe("glm");
+    expect(f.prompts).toHaveLength(1);
+    f.done();
+  }
+);
+
+test("expired provider reset clears a persisted quota-failed family for selection", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...quotaPoll(),
+      ...modelRequests("sol"),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+    ],
+    true,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  writeFileSync(
+    join(f.root, "state/vmethod/example-state/workers/quota-sol.json"),
+    JSON.stringify({ provider: "fake", at: -1000, reset: "1969-12-31T23:59:59.999Z" })
+  );
+  expect(await f.service.watchStatus(31)).toMatchObject({ active: true, family: "sol" });
+  f.done();
+});
+
+test("conflict-only choice skips at-risk families", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...usagePoll({ input: 1, output: 1, cached: 0 }),
+      ...modelRequests("sonnet"),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+    ],
+    true,
+    "none",
+    true,
+    false,
+    "9-task",
+    { report: quotaRecording, providers: quotaProviders }
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.resolveConflict(31, "dev", ["a.ts"]);
+  // glm-flash and glm are cheaper but share the depleted provider. sonnet is cheaper than sol.
+  expect(f.record().model.family).toBe("sonnet");
+  f.done();
+});
+
+test("conflict-only choice also skips families with a persisted quota failure", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...usagePoll({ input: 1, output: 1, cached: 0 }),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+    ],
+    true,
+    "none",
+    true
+  );
+  await f.service.command(["start", "31"]);
+  writeFileSync(
+    join(f.root, "state/vmethod/example-state/workers/quota-glm-flash.json"),
+    JSON.stringify({ provider: "fake", at: 0 })
+  );
+  await f.service.resolveConflict(31, "dev", ["a.ts"]);
+  expect(f.record().model.family).toBe("glm");
+  f.done();
+});
+
+test("queued conflict-only choice re-checks quota before dispatch", async () => {
+  const report = structuredClone(quotaRecording);
+  report.providers[1].windows![0].remainingPercent = 80;
+  const quota = { report, providers: quotaProviders };
+  const f = fixture(
+    [
+      ...start,
+      ...status(true),
+      ...usagePoll({ input: 1, output: 1, cached: 0 }),
+      ...modelRequests("sonnet"),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+    ],
+    true,
+    "none",
+    true,
+    false,
+    "9-task",
+    quota
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.resolveConflict(31, "dev", ["a.ts"]);
+  expect(f.record().pendingConflict.model.family).toBe("glm-flash");
+  report.providers[1].windows![0].remainingPercent = 0;
+  await f.deps.sleep(60000);
+  await f.service.watchStatus(31);
+  expect(f.record().model.family).toBe("sonnet");
+  expect(f.record().pendingConflict).toBeUndefined();
+  f.done();
+});
+
+test("conflict-only choice retains the task model when all candidates are at risk", async () => {
+  const providers = {
+    glm: "ollama-cloud",
+    "glm-flash": "ollama-cloud",
+    sol: "ollama-cloud",
+    sonnet: "ollama-cloud",
+  };
+  const f = fixture(
+    [
+      ...start,
+      ...usagePoll({ input: 1, output: 1, cached: 0 }),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+    ],
+    true,
+    "none",
+    true,
+    false,
+    "9-task",
+    { report: quotaRecording, providers }
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.resolveConflict(31, "dev", ["a.ts"]);
+  expect(f.record().model.family).toBe("glm");
+  f.done();
+});
+
+test("quota advice and start warnings are informational and retain owner gates", async () => {
+  const f = fixture(
+    [{ path: "/api/model", data: [{ providerID: "fake", id: "glm" }] }, ...start],
+    false,
+    "owner",
+    false,
+    false,
+    "9-task",
+    { report: quotaRecording, providers: quotaProviders }
+  );
+  expect(await f.service.command(["models"])).toContain("glm: ollama-cloud session 0%");
+  expect(await f.service.suggest(9)).toContain("glm: ollama-cloud session 0%");
+  expect(await f.service.limits()).toContain("sol: codexbal five_hour 78%");
+  await f.service.command(["start", "31"]);
+  expect(f.deps.report).toHaveBeenCalledWith(
+    expect.stringContaining("WARNING: chosen family at risk; glm: ollama-cloud")
+  );
+  expect(f.record().model.family).toBe("glm");
+  await expect(f.service.command(["start", "32", "--model", "sol"])).rejects.toThrow(
+    "requires --owner-approved"
+  );
+  f.done();
+});
 
 test("owner summons blocks starts and explicit sends before any transport", async () => {
   const f = fixture();

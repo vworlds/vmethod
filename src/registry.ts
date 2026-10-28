@@ -5,6 +5,7 @@ export const verbs = [
   { name: "worker", stub: "scripts/orchestrator/worker.sh" },
   { name: "worktrees", stub: "scripts/orchestrator/worktrees.sh" },
   { name: "suggest-model", stub: "scripts/orchestrator/suggest-model.sh" },
+  { name: "limits", stub: "scripts/orchestrator/limits.sh" },
   { name: "grade", stub: "scripts/orchestrator/grade.sh" },
   { name: "open-task", stub: "scripts/orchestrator/open-task.sh" },
   { name: "pr", stub: "scripts/orchestrator/pr.sh" },

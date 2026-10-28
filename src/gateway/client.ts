@@ -518,6 +518,7 @@ function validSessionId(id: string): boolean {
 }
 
 export class OpencodeClient {
+  private limitsCache?: { at: number; value: unknown };
   private readonly url: URL;
   private readonly authorization: string;
   private readonly secrets: string[];
@@ -605,6 +606,25 @@ export class OpencodeClient {
     } catch {
       throw new Error(`opencode returned invalid JSON on ${context}`);
     }
+  }
+
+  /** Optional oc-limits RPC, cached for 60 seconds, including unavailable results. */
+  async limits(): Promise<unknown> {
+    if (this.limitsCache && this.now() - this.limitsCache.at < 60000) {
+      return this.limitsCache.value;
+    }
+    let value: unknown;
+    try {
+      const response = object(
+        await this.request("POST", "/api/rpc/oc-limits/limits", { input: {} })
+      );
+      value = response.output;
+    } catch {
+      // Quota telemetry is optional: absence/errors must not prevent ordinary work.
+      value = undefined;
+    }
+    this.limitsCache = { at: this.now(), value };
+    return value;
   }
 
   async status(directory: string): Promise<WorkerStatus>;
@@ -844,7 +864,26 @@ export class OpencodeClient {
     if (active[id]) {
       return { reason: "running", active: true, ...detail };
     }
-    return { ...classifyTurn(latest ?? session), ...detail };
+    const turn = classifyTurn(latest ?? session);
+    // A quota rejection before the first assistant message has no generated usage.
+    // With no session totals above, pagination scanned the full history; never
+    // invent a zero baseline when any assistant message could carry unknown usage.
+    if (
+      turn.quotaStopped &&
+      !usage &&
+      !uniqueMessages.some((m) => object(m).type === "assistant")
+    ) {
+      detail.usage = { tokens: zeroTokens(), reportedUsd: 0 };
+    }
+    const user = uniqueMessages
+      .map(object)
+      .find((m) => m.type === "user" && typeof m.text === "string");
+    return {
+      ...turn,
+      turnId: typeof latest?.id === "string" ? latest.id : undefined,
+      interruptedPrompt: user?.text as string | undefined,
+      ...detail,
+    };
   }
 
   /** #286: permission and message reads resolve through the session's location
@@ -898,6 +937,16 @@ export interface WorkerSessionStatus {
     | "worktree gone";
   active: boolean;
   error?: string;
+  /** Structured quota failures alone allow automatic model recovery. */
+  quotaStopped?: boolean;
+  /** Family responsible for the latest failed turn, possibly before a model switch. */
+  errorFamily?: string;
+  family?: string;
+  provider?: string;
+  quotaEvent?: string;
+  turnId?: string;
+  /** Latest actual user message, when it appears in the fetched history. */
+  interruptedPrompt?: string;
   title?: string;
   directory?: string;
   inputTokens?: number;
@@ -926,11 +975,16 @@ function classifyTurn(turn: ObjectData): WorkerSessionStatus {
     return { reason: "idle", active: false };
   }
   const error = JSON.stringify(turn.error ?? turn.errors ?? turn);
+  const quotaStopped = ["provider.quota", "provider.free-limit"].includes(
+    String(object(turn.error).type)
+  );
   return {
-    reason: /quota|rate.?limit|429|subscription|credit|capacity|usage.limit/i.test(error)
-      ? "quota"
-      : "provider-error",
+    reason:
+      quotaStopped || /quota|rate.?limit|429|subscription|credit|capacity|usage.limit/i.test(error)
+        ? "quota"
+        : "provider-error",
     active: false,
+    quotaStopped,
     error,
   };
 }

@@ -60,6 +60,8 @@ interface Host {
   ): Promise<boolean>;
   /** #218: did the pinned owner verify this gated family on the task issue? */
   modelApproval(issue: number, family: string): Promise<boolean>;
+  modelHeadroom?(family: string): Promise<string>;
+  modelQuotaWarning?(family: string): Promise<string | undefined>;
   /** #339: open-task's advisory suggestion for an issue, from suggest-model's code path. */
   modelSuggestion?(issue: number): Promise<{ family: string; tier: string; reason: string }>;
   /** #339: a family's graded learnings evidence for the advisory lines; undefined without data. */
@@ -477,6 +479,10 @@ export class TaskFlow {
             tier: model.tier,
           })
         : [];
+    const quotaWarning = await this.host.modelQuotaWarning?.(model.family);
+    if (quotaWarning) {
+      advisory.push(quotaWarning);
+    }
     let title = String(input.direct ?? issue?.title ?? "");
     if (!input.direct && issue) {
       title = title.replace(/^bug:\s*/, "fix: ");
@@ -639,7 +645,7 @@ export class TaskFlow {
       "graded tasks"
     );
     const lines = [
-      `suggest-model #${issue}: ${suggestion.family} (${suggestion.reason}${suggested ? `; ${suggested}` : ""})`,
+      `suggest-model #${issue}: ${suggestion.family} (${suggestion.reason}${suggested ? `; ${suggested}` : ""})${this.host.modelHeadroom ? `; ${await this.host.modelHeadroom(suggestion.family)}` : ""}`,
     ];
     const chosenRank = tierRank[chosen.tier];
     const suggestedRank = tierRank[suggestion.tier];

@@ -26,6 +26,7 @@ import recordedComment from "../fixtures/github/review-comment.json" with { type
 import recordedThreads from "../fixtures/github/review-threads.json" with { type: "json" };
 import recordedOpencode from "../fixtures/opencode/watch-status.json" with { type: "json" };
 import { scopeIssue, scopeMove, scopeConnection } from "./scope-fixture.js";
+import type { ProviderLimits } from "../../src/gateway/limits.js";
 
 export function proc(start = 42): string {
   return `1 (worker (with spaces)) S ${Array(18).fill("0").join(" ")} ${start} 0`;
@@ -153,6 +154,7 @@ export class WatchFake {
   workerSends: { pr: number; text: string }[] = [];
   workerMetrics: { pr: number; event: import("../../src/learning-metrics.js").MetricEvent }[] = [];
   workerStatus?: (pr: number) => Promise<WorkerSessionStatus>;
+  workerLimits?: () => Promise<ProviderLimits[]>;
   watchPeople = people;
   fields: ObjectData[] = structuredClone(recordedBoard.fields.nodes).map((field) =>
     field.name === "Status"
@@ -1009,6 +1011,7 @@ export class WatchFake {
           }
           return this.staleWorker;
         },
+        workerLimits: this.workerLimits,
         workerSend: async (pr, text) => {
           this.workerSends.push({ pr, text });
         },

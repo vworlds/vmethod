@@ -152,6 +152,11 @@ export async function gatewayVerb(
         throw new Error("Usage: suggest-model <issue>");
       }
       return transport.call("suggestModel", { ref: args[0] }, ctx);
+    case "limits":
+      if (args.length) {
+        throw new Error("Usage: vmethod limits");
+      }
+      return transport.call("limits", {}, ctx);
     case "grade":
       if (
         args.length < 1 ||

@@ -651,6 +651,33 @@ test.each([
   f.done();
 });
 
+test("open-task appends headroom to advice and warns without refusing an at-risk chosen family", async () => {
+  const f = fixture();
+  f.host.modelSuggestion = async () => ({
+    family: "glm",
+    tier: "standard",
+    reason: "Estimate 1, kind bug",
+  });
+  f.host.modelHeadroom = async (family) => `${family}: ollama-cloud session 0%; at risk`;
+  f.host.modelQuotaWarning = async (family) =>
+    `WARNING: chosen family at risk; ${family}: ollama-cloud session 0%`;
+  await expect(f.flow().open({ issue: "8", model: "glm" })).resolves.toBe(
+    "suggest-model #8: glm (Estimate 1, kind bug); glm: ollama-cloud session 0%; at risk\nWARNING: chosen family at risk; glm: ollama-cloud session 0%\nOpened draft PR #27 (8-task)"
+  );
+  f.done();
+});
+
+test("open-task warns on a card's at-risk model even when suggestion is omitted", async () => {
+  const f = fixture();
+  f.cards[0].values.Model = "sol";
+  f.host.modelQuotaWarning = async () =>
+    "WARNING: chosen family at risk; sol: codexbal five_hour 5%";
+  await expect(f.flow().open({ issue: "8" })).resolves.toBe(
+    "WARNING: chosen family at risk; sol: codexbal five_hour 5%\nOpened draft PR #27 (8-task)"
+  );
+  f.done();
+});
+
 test("open-task without a card Model prints suggest-model's advice and evidence first", async () => {
   const f = fixture();
   f.host.modelSuggestion = async (issue) => {
@@ -4432,6 +4459,12 @@ test("open held task, release, and worker start; second release has no side effe
         const url = new URL(String(input));
         expect(url.origin).toBe("https://opencode.invalid");
         requests.push(url.pathname);
+        if (url.pathname === "/api/rpc/oc-limits/limits") {
+          return Response.json(
+            { error: { name: "RpcError", message: "plugin not installed" } },
+            { status: 404 }
+          );
+        }
         if (url.pathname === "/api/session/ses_hold" && init?.method === "GET") {
           return Response.json({ data: { id: "ses_hold", title: "project#27" } });
         }
@@ -4497,6 +4530,7 @@ test("open held task, release, and worker start; second release has no side effe
   );
   await service.command(["start", "27"]);
   expect(requests).toEqual([
+    "/api/rpc/oc-limits/limits",
     "/api/session",
     "/api/session/ses_hold/prompt",
     "/api/session/ses_hold",

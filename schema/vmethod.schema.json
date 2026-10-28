@@ -45,6 +45,16 @@
       "additionalProperties": false,
       "properties": { "preview": { "type": "boolean", "default": false } }
     },
+    "limits": {
+      "type": "object",
+      "default": {},
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "atRisk": { "type": "number", "minimum": 0, "maximum": 100, "default": 15 },
+        "pollSeconds": { "type": "integer", "minimum": 1, "default": 300 }
+      }
+    },
     "learningsPrivacy": { "enum": ["public", "private"] },
     "learningsModel": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
     "learningsTimeoutSeconds": { "type": "integer", "minimum": 1, "default": 900 },

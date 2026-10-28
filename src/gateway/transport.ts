@@ -58,6 +58,7 @@ export interface Operations {
   boardAdd: { input: { ref: string; estimate?: number; status?: string }; output: string };
   worker: { input: { args: string[] }; output: string | WorkerResult };
   suggestModel: { input: { ref: string }; output: string };
+  limits: { input: Record<string, never>; output: string };
   grade: { input: { ref: string; points?: number }; output: string };
   openTask: { input: OpenTaskInput; output: string };
   /** Open an already-pushed non-task branch against baseBranch; orchestrator only. */

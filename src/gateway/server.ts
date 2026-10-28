@@ -304,6 +304,7 @@ class GatewayServer {
     const family = suggestion.split(":", 1)[0];
     return `${suggestion}\n${await this.learningService().show(family)}`;
   };
+  limits: Handlers["limits"] = async () => this.workers.limits();
   learnings: Handlers["learnings"] = async (input) => {
     if (input.action === "annotate" || input.action === "aggregate") {
       return new LearningAnnotations(
@@ -676,6 +677,7 @@ class GatewayServer {
           },
           github: this.github,
           workerStatus: (pr) => this.workers.watchStatus(pr),
+          workerLimits: () => this.workers.quotaReadings(),
           // Without a configured worker checkout no task can have a worker worktree.
           workerTrees: async () =>
             this.config.workerCheckout === undefined ? [] : this.workerWorktrees.registered(),
@@ -1594,6 +1596,8 @@ class GatewayServer {
         return { family: model.family, tier: model.tier, reason };
       },
       learningEvidence: (family) => this.learningService().familyEvidence(family),
+      modelHeadroom: (family) => this.workers.headroom(family),
+      modelQuotaWarning: (family) => this.workers.quotaWarning(family),
       ownerAgreement: async (ref, url, since, handback, kind = "pr") => {
         const match =
           /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:pull|issues)\/([1-9]\d*)#issuecomment-([1-9]\d*)$/.exec(
@@ -3051,6 +3055,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     worker: server.worker,
     grade: server.grade,
     suggestModel: server.suggestModel,
+    limits: server.limits,
     openTask: server.openTask,
     prOpen: server.prOpen,
     prMerge: server.prMerge,
@@ -3108,6 +3113,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     worker: ["orchestrator"],
     grade: ["orchestrator"],
     suggestModel: ["orchestrator"],
+    limits: ["orchestrator"],
     openTask: ["orchestrator"],
     prOpen: ["orchestrator"],
     prMerge: ["orchestrator"],

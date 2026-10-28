@@ -51,6 +51,7 @@ try {
     case "worker":
     case "worktrees":
     case "suggest-model":
+    case "limits":
     case "grade":
     case "read":
     case "watch":
