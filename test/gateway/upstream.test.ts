@@ -140,10 +140,10 @@ test("a closing keyword is refused before any write", async () => {
   const file = join(f.root, "body.md");
   writeFileSync(file, " Fixes #1\n");
   await expect(f.transport.call("upstreamIssue", { title: "Need", file })).rejects.toThrow(
-    "Post contains a forbidden closing or association keyword before an issue reference"
+    'forbidden closing keyword: "Fixes" + #1'
   );
   await expect(f.transport.call("upstreamComment", { ref: "47", file })).rejects.toThrow(
-    "Post contains a forbidden closing or association keyword before an issue reference"
+    'forbidden closing keyword: "Fixes" + #1'
   );
   f.done();
 });

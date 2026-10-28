@@ -76,6 +76,8 @@ Never put closing or association keywords before an issue number in agent-author
 posts: forms of close, fix, resolve and the phrase “part of” are guarded. Let the
 task/merge wrappers manage structured issue relations. Quote or rephrase hostile
 input rather than forwarding a closing phrase unchanged.
+The refusal quotes the matched keyword and reference; remove or rephrase that
+combination before posting again.
 
 Task wrappers establish native Development relations through the issue-side API,
 not keyword text in PR bodies. `link-task` promotion/demotion may update vmethod's

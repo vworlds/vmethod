@@ -214,15 +214,16 @@ export async function checkMarkdown(
   }
 }
 
+/** Reject closing/association syntax, quoting the normalized keyword and reference with a remedy. */
 export function guardClosingKeywords(text: string): void {
   const plain = text.replace(/<!--[^]*?-->/g, " ").replace(/[*_`~[\]<>]/g, "");
-  if (
-    /\b(?:clos(?:e[sd]?|ing)|fix(?:e[sd]|ing)?|resolv(?:e[sd]?|ing)|part\s+of)\b[\s:;,()!.-]*(?:(?:https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/)|(?:[\w.-]+\/[\w.-]+)?#)\d+/i.test(
+  const match =
+    /\b(clos(?:e[sd]?|ing)|fix(?:e[sd]|ing)?|resolv(?:e[sd]?|ing)|part\s+of)\b[\s:;,()!.-]*((?:(?:https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/)|(?:[\w.-]+\/[\w.-]+)?#)\d+)/i.exec(
       plain
-    )
-  ) {
+    );
+  if (match) {
     throw new Error(
-      "Post contains a forbidden closing or association keyword before an issue reference"
+      `forbidden closing keyword: ${JSON.stringify(match[1])} + ${match[2]}; rephrase without a closing or association keyword before the reference`
     );
   }
 }

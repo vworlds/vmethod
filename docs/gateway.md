@@ -1581,6 +1581,15 @@ Current card Status is a position gate, not approval evidence; `merge-task` requ
 Approved as well as authenticated owner evidence. Peer-session relays never approve. Chat approvals remain
 the harness's responsibility and are never synthesized into GitHub records.
 
+When `merge-task` or `pr merge` refuses approval, read the named cause and next
+step: a non-owner approval, an approval predating a bounce to Executing, or the
+approved and current head SHAs. Scope refusals in `open-task` and `merge-task`
+distinguish a Backlog → Executing move, a comment voiding the trivial shortcut
+(with its URL and effective author), and a body edit after approval (with editor
+and time). When several causes apply, the latest dated cause is reported. These
+diagnostics do not relax the approval rules; incomplete evidence still refuses
+with instructions to request review again.
+
 For merge-task only, an approval can survive clean merges of the PR's base:
 the gateway verifies the first-parent chain, recomputes every two-parent merge tree
 without conflicts and compares the full binary task patch on the union of task

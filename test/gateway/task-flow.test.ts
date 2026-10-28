@@ -213,6 +213,42 @@ test("pr merge retries interrupted follow-up without another merge or issue clos
   f.done();
 });
 
+test.each(["merge-task", "pr merge"])(
+  "%s preserves the approval reader's refusal and does not merge",
+  async (verb) => {
+    const f = fixture();
+    f.set({
+      approved: false,
+      changed: false,
+      ...(verb === "pr merge" ? { branch: "adoption", body: "Adoption" } : {}),
+    });
+    const reason =
+      "approval at 2026-01-03T00:00:00Z precedes a bounce to Executing; hand over again with review 27 owner";
+    f.host.approvalRefusal = async () => reason;
+    await expect(
+      verb === "pr merge" ? f.flow().mergePr("27") : f.flow().merge("27")
+    ).rejects.toThrow(reason);
+    expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+    f.done();
+  }
+);
+
+test.each(["open-task", "merge-task"])(
+  "%s preserves the scope reader's refusal without writes",
+  async (verb) => {
+    const f = fixture();
+    f.set({ issueApproved: false });
+    const reason =
+      "scope approval is stale: issue body edited by peer at 2026-01-04T00:00:00Z after approval; run scope-review 8 <file>";
+    f.host.scopeRefusal = async () => reason;
+    await expect(
+      verb === "open-task" ? f.flow().open({ issue: "8", model: "sol" }) : f.flow().merge("27")
+    ).rejects.toThrow(reason);
+    expect(f.writes).toEqual([]);
+    f.done();
+  }
+);
+
 test.each(["people.yaml", ".claude/settings.json", "CODEOWNERS", ".github/CODEOWNERS"])(
   "pr merge reserves %s for owner approval under autopilot",
   async (path) => {
@@ -538,7 +574,7 @@ test.each([
   } else {
     await expect(
       f.flow().open({ issue: "8", model: "sol", part: scenario.startsWith("part") })
-    ).rejects.toThrow("scope not approved: post SCOPE REVIEW first");
+    ).rejects.toThrow("scope not approved: run scope-review");
     expect(f.writes).toEqual([]);
   }
   f.done();
@@ -1428,6 +1464,9 @@ function fixture() {
     approved: async () => approved,
     candidates: async () => [],
     issueApproved: async () => issueApproved,
+    scopeRefusal: async () => "scope not approved: run scope-review <n> <file>",
+    approvalRefusal: async (ref: string) =>
+      `Owner approval is missing or cannot be verified for current head; hand over with review ${ref} owner`,
     modelApproval: async (issue, family) => {
       events.push(`model-approval ${issue} ${family}`);
       return modelApproval;
