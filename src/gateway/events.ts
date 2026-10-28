@@ -3787,6 +3787,17 @@ export class EventLoop {
     }
   }
 
+  /** A card whose turn is with the owner: owner-assigned or carrying an owner
+   * Progress state (`👤…`). NEXT never names such a Scoping card until the owner
+   * hands the turn back (#320): retiring another card only brings it to the top
+   * of the queue, which still leaves the move to the owner. */
+  private ownerTurn(card: CardInfo): boolean {
+    return (
+      card.assignees.some((login) => this.owners.has(login.toLowerCase())) ||
+      ["owner-review", "owner-question"].includes(parseProgress(card.progress).state ?? "")
+    );
+  }
+
   private async watchNext(
     ready: CardInfo[],
     approved: CardInfo[],
@@ -3812,8 +3823,12 @@ export class EventLoop {
     if (recheck) {
       remove(join(this.dir, "recheck-next"));
     }
-    const next = ready[0]
-      ? { number: ready[0].number, kind: ready[0].kind, repo: ready[0].repo }
+    // Select the first Scoping card whose turn is the orchestrator's; cards
+    // waiting on the owner stay unselected (#320) and rejoin the queue when the
+    // owner hands the turn back.
+    const selected = ready.find((card) => !this.ownerTurn(card));
+    const next = selected
+      ? { number: selected.number, kind: selected.kind, repo: selected.repo }
       : null;
     const candidates = approved.filter((card) => !this.launchedIssues.has(card.number));
     const scopes = await new ScopeReader(
