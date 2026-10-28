@@ -23,6 +23,7 @@ import {
 } from "../../src/gateway/events.js";
 import { object } from "../../src/gateway/people.js";
 import { WatchFake, proc, user } from "./watch-fake.js";
+import { WatchPacing } from "../../src/gateway/watch-pacing.js";
 import { sha } from "./helpers.js";
 import { writeState } from "../../src/board/readme.js";
 import { createGateway } from "../../src/gateway/server.js";
@@ -3128,7 +3129,7 @@ test("number-scoped watchers observe shared merge completion without consuming i
   expect(existsSync(join(`${f.dir}-only-24`, "open-24"))).toBe(false);
 });
 
-test("watch reports changed page sizes, measured cost and interval once per change", async () => {
+test("a one-card size change with the same cost and interval reports nothing", async () => {
   const f = setup();
   f.cards = [f.card(6, "Backlog")];
   const loop = f.loop();
@@ -3136,17 +3137,164 @@ test("watch reports changed page sizes, measured cost and interval once per chan
   expect(f.pollReports).toEqual([
     "watcher: board pages items=11 labels=10 blockers=10 sub-issues=10 reviews=10; measured cost=1 points/poll; interval=10s",
   ]);
-  f.advance();
-  await f.once(loop);
-  expect(f.pollReports).toHaveLength(1);
   f.cards.push(f.card(7, "Backlog"));
   f.advance();
   await f.once(loop);
-  expect(f.pollReports).toHaveLength(2);
-  expect(f.pollReports[1]).toContain("items=12");
+  expect(f.pollReports).toHaveLength(1);
+  f.cards.pop();
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  expect(f.reports).toEqual([]);
+});
+
+test("a cost change reports once after holding for three consecutive polls", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog")];
+  const loop = f.loop();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  // Baseline cost=1; costs 2, 3, 3, 3 report once, at the third 3.
+  f.boardCost = 2;
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.boardCost = 3;
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
   f.advance();
   await f.once(loop);
   expect(f.pollReports).toHaveLength(2);
+  expect(f.pollReports[1]).toContain("measured cost=3 points/poll");
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(2);
+  expect(f.reports).toEqual([]);
+});
+
+test("a cost change that flickers without holding reports nothing", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog")];
+  const loop = f.loop();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  // Baseline cost=1; costs 2, 1, 2, 2 report nothing.
+  f.boardCost = 2;
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.boardCost = 1;
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.boardCost = 2;
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  expect(f.reports).toEqual([]);
+});
+
+test.each([
+  {
+    name: "10, 9, 10, 10 flicker",
+    baseline: 10,
+    intervals: [10, 9, 10, 10],
+    reports: [1, 1, 1, 1],
+  },
+  {
+    name: "10, 20, 20, 20 hold",
+    baseline: 10,
+    intervals: [10, 20, 20, 20, 20],
+    reports: [1, 1, 1, 2, 2],
+  },
+  { name: "one-second equality", baseline: 10, intervals: [11, 11, 11], reports: [1, 1, 1] },
+  { name: "ten-percent equality", baseline: 20, intervals: [22, 22, 22], reports: [1, 1, 1] },
+  {
+    name: "interrupted hold",
+    baseline: 10,
+    intervals: [20, 20, 11, 20, 20, 20],
+    reports: [1, 1, 1, 1, 1, 2],
+  },
+  {
+    name: "varying sustained slowdown",
+    baseline: 10,
+    intervals: [20, 20, 30, 30, 30],
+    reports: [1, 1, 2, 2, 2],
+  },
+  {
+    name: "20000, 20013, 19990 ms sustained slowdown",
+    baseline: 10,
+    intervals: [20, 20.013, 19.99],
+    reports: [1, 1, 2],
+  },
+  {
+    name: "10, 20, 9, 20 broken run",
+    baseline: 10,
+    intervals: [10, 20, 9, 20],
+    reports: [1, 1, 1, 1],
+  },
+  {
+    name: "direction reversal restarts hold",
+    baseline: 20,
+    intervals: [30, 30, 10, 10, 10],
+    reports: [1, 1, 1, 1, 2],
+  },
+  { name: "falling hold", baseline: 20, intervals: [10, 10, 10, 10], reports: [1, 1, 2, 2] },
+])("interval reports debounce $name", async ({ baseline, intervals, reports }) => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog")];
+  let seconds = baseline;
+  // Script the controller output, not the report state. Each poll still runs
+  // both budget observations and a real fake-transport board read.
+  const observe = vi
+    .spyOn(WatchPacing.prototype, "observe")
+    .mockImplementation(() => seconds * 1000);
+  try {
+    const loop = f.loop();
+    await f.once(loop);
+    expect(f.pollReports).toHaveLength(1);
+    for (const [index, interval] of intervals.entries()) {
+      seconds = interval;
+      f.advance();
+      await f.once(loop);
+      expect(f.pollReports).toHaveLength(reports[index]);
+    }
+    expect(f.pollReports.at(-1)).toContain(
+      `interval=${Math.ceil(reports.at(-1) === 2 ? seconds : baseline)}s`
+    );
+    expect(f.reports).toEqual([]);
+  } finally {
+    observe.mockRestore();
+  }
+});
+
+test("an extra board page reports while it starts and when it stops", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog")];
+  const loop = f.loop();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.cards = Array.from({ length: 12 }, (_, index) => f.card(index + 1, "Backlog"));
+  // List the twelve issues so track coverage answers without REST card reads.
+  f.issues = f.cards.map((card) => ({ number: object(card.content).number, labels: [] }));
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(2);
+  expect(f.pollReports[1]).toContain("measured cost=2 points/poll");
+  f.advance();
+  await f.once(loop);
+  // Retraining above the count ends the extra page; the report names it once.
+  expect(f.pollReports).toHaveLength(3);
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(3);
   expect(f.reports).toEqual([]);
 });
 

@@ -29,6 +29,11 @@ export class WatchBoard {
   sizes: Sizes = { items: 10, labels: 10, blockedBy: 10, subIssues: 10, reviews: 10 };
   /** Actual sum of rateLimit.cost across board and overflow queries in the last read. */
   cost = 0;
+  /** Board page and overflow queries the last read needed; boundary changes report. */
+  pages = 0;
+  overflow = 0;
+  /** Monotonic read-attempt id; pacing report consumers count each read once. */
+  readId = 0;
 
   constructor(private readonly github: Pick<GitHubClient, "graphql">) {}
 
@@ -38,7 +43,10 @@ export class WatchBoard {
     number: number,
     activity: { issue: string; pr: string }
   ): Promise<{ readme: string; nodes: ObjectData[] }> {
+    this.readId++;
     this.cost = 0;
+    this.pages = 0;
+    this.overflow = 0;
     let cursor: string | null = null;
     let readme: string;
     const seen = new Set<string>();
@@ -46,6 +54,7 @@ export class WatchBoard {
     const overflow: Overflow[] = [];
     for (;;) {
       const data = await this.query(this.boardQuery(activity), { owner, number, cursor });
+      this.pages++;
       const project = object(object(data.organization).projectV2);
       if (typeof project.id !== "string" || !project.id) {
         throw new Error("Missing board project");
@@ -148,6 +157,7 @@ export class WatchBoard {
         const data = await this.query(
           `query WatchBoardLists { rateLimit { cost } ${selections.join("\n")} }`
         );
+        this.overflow++;
         batch.forEach((entry, index) => {
           const connection = object(object(data[`n${index}`])[entry.name]);
           if (
