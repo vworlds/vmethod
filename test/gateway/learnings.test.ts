@@ -1154,6 +1154,87 @@ test("report reads local JSONL or the bundled records and fails for missing scan
   expect(JSON.parse(await service.command({ action: "report", json: true })).deliveries).toBe(2);
 }, 15000);
 
+test.each([false, true])(
+  "delivery union fills null and absent costs in either order (reverse=%s)",
+  async (reverse) => {
+    const unknown = record({
+      usd: null,
+      segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd: null }],
+    });
+    const filled = record({
+      usd: 1.03,
+      costBasis: "api-list",
+      costCoverage: "complete",
+      costSource: "backfill",
+      segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd: 1.03 }],
+    });
+    const f = unionFixture(reverse ? filled : unknown, reverse ? unknown : filled);
+    expect(f.service.records()).toEqual([filled]);
+    expect(f.warnings).toEqual([]);
+    const report = JSON.parse(await f.service.command({ action: "report", json: true }));
+    expect(report.usd).toBe(1.03);
+    expect(report.byFamily.sol.usdPerPoint).toBe(0.515);
+    expect(f.service.familyEvidence("sol")).toEqual({ usdPerPoint: 0.515, deliveries: 1 });
+    const shown = await f.service.show("sol");
+    expect(shown).toContain(JSON.stringify(filled));
+    expect(f.warnings).toEqual([]);
+  }
+);
+
+test("conflicting deliveries are excluded once per read without losing other evidence or resurrecting", async () => {
+  const first = record({ usd: 1 });
+  const other = record({
+    pr: 309,
+    usd: 2,
+    segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd: 2 }],
+  });
+  const f = unionFixture(first, record({ usd: 3, points_final: 5 }), [other]);
+  // A third copy must not reintroduce the rejected delivery.
+  writeFileSync(join(f.root, "learnings/models/third.jsonl"), JSON.stringify(first));
+  const warning =
+    "learnings: conflicting records for vworlds/vecs#308 (points_final, usd); excluded";
+  expect(f.service.records()).toEqual([other]);
+  expect(f.warnings.splice(0)).toEqual([warning]);
+  const report = JSON.parse(await f.service.command({ action: "report", json: true }));
+  expect(report.deliveries).toBe(1);
+  expect(report.usd).toBe(2);
+  expect(f.warnings.splice(0)).toEqual([warning]);
+  expect(f.service.familyEvidence("sol")).toEqual({ usdPerPoint: 1, deliveries: 1 });
+  expect(f.warnings.splice(0)).toEqual([warning]);
+  const shown = await f.service.show("sol");
+  expect(shown).toContain(JSON.stringify(other));
+  expect(shown).not.toContain('"pr":308');
+  expect(f.warnings).toEqual([warning]);
+});
+
+test("nested non-null cost conflicts exclude the only delivery and leave no family evidence", async () => {
+  const withCost = (usd: number) =>
+    record({
+      segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd }],
+    });
+  const f = unionFixture(withCost(1), withCost(2));
+  expect(f.service.records()).toEqual([]);
+  expect(f.warnings.splice(0)).toEqual([
+    "learnings: conflicting records for vworlds/vecs#308 (segments[0].usd); excluded",
+  ]);
+  expect(f.service.familyEvidence("sol")).toBeUndefined();
+  expect(f.warnings.splice(0)).toHaveLength(1);
+  expect(JSON.parse(await f.service.command({ action: "report", json: true })).deliveries).toBe(0);
+  expect(f.warnings.splice(0)).toHaveLength(1);
+  expect(await f.service.show("sol")).not.toContain('"pr":308');
+  expect(f.warnings).toHaveLength(1);
+});
+
+function unionFixture(shared: ModelRecord, staged: ModelRecord, rest: ModelRecord[] = []) {
+  const text = [shared, ...rest].map((value) => JSON.stringify(value)).join("\n");
+  const f = setup({ shared: text });
+  const root = f.root;
+  mkdirSync(join(root, "learnings/models"), { recursive: true });
+  writeFileSync(join(root, "learnings/models/shared.jsonl"), text);
+  writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(staged));
+  return { root, warnings: f.reports, service: f.service };
+}
+
 test("familyEvidence returns one family's graded aggregate and undefined without data", () => {
   const root = fixture();
   const deps: Dependencies = {

@@ -104,6 +104,13 @@ review every owner-cleared text field before sending it.
 | `learnings report [--family f] [--kind k] [--json]` | Aggregate local legacy seed JSONL and project-directory JSONL under `learnings/models/`, or the bundled records if that directory is absent. Missing inputs and malformed records fail visibly.                                                                                          |
 | `suggest-model <issue>`                             | Existing model/gate recommendation plus the matching current learning page and lessons. Advice cannot override a model gate.                                                                                                                                                             |
 
+Delivery reads also include `.vmethod/model-log.jsonl` when present. Show, report
+and open-task's family evidence use the same delivery union: null or absent fields
+are filled from another copy, including segment costs. Different non-null values
+exclude only that delivery, with one `learnings: conflicting records for <repo>#<pr>
+(<fields>); excluded` diagnostic per read. Other deliveries still contribute. This
+does not edit shared files; backfills reach them through the normal submission pipeline.
+
 Plain-text reports use readable grouped lists and two-decimal ratios; `--json`
 retains full numeric precision. Reports sum delivery rounds and final points. Rounds per point is `null`/`n/a` when
 the denominator is zero. Finding rates count deliveries containing each tag, not

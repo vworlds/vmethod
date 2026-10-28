@@ -162,7 +162,8 @@ export class LearningsService {
     }
   }
 
-  /** Show current advice and legacy/new evidence, fenced as data, with bundled offline fallback. */
+  /** Show current advice and shared/staged evidence, fenced as data, with bundled offline fallback.
+   * Delivery copies use the same fill-in/conflict union as records() and reports. */
   async show(family?: string): Promise<string> {
     if (family !== undefined && !/^[a-z][a-z0-9-]*$/.test(family)) {
       throw new Error("Invalid learning family");
@@ -193,7 +194,8 @@ export class LearningsService {
     return output.join("\n\n");
   }
 
-  /** Read delivery records only: immutable annotation JSONL is a separate wire format. */
+  /** Union shared and staged deliveries, filling unknown fields and excluding conflicting deliveries
+   * with a diagnostic. Immutable annotation JSONL is a separate wire format. */
   records(): ModelRecord[] {
     const directory = join(this.root, "learnings/models");
     const texts = existsSync(directory)
@@ -217,7 +219,7 @@ export class LearningsService {
     if (!texts.length) {
       throw new Error("No model-log inputs available");
     }
-    return unionRecords(texts);
+    return unionRecords(texts, (message) => this.deps.report(message));
   }
 
   /** #339: one family's graded-task aggregate for open-task's advisory lines; undefined without
@@ -253,10 +255,18 @@ export class LearningsService {
               /^learnings\/models\/(?:[^/]+\/)?[^/]+\.jsonl$/.test(path) && !isAnnotationPath(path)
           )
           .map(([, text]) => text);
+    const staging = join(this.root, ".vmethod/model-log.jsonl");
+    if (existsSync(staging)) {
+      texts.push(readFileSync(staging, "utf8"));
+    }
     if (!texts.length) {
       throw new Error("No model-log inputs available for report");
     }
-    const report = learningReport(unionRecords(texts), input.family, input.kind);
+    const report = learningReport(
+      unionRecords(texts, (message) => this.deps.report(message)),
+      input.family,
+      input.kind
+    );
     if (input.json) {
       return JSON.stringify(report, null, 2);
     }
@@ -818,7 +828,7 @@ export class LearningsService {
         throw new Error("Open learning PR pagination limit reached");
       }
     }
-    const records = unionRecords(texts);
+    const records = unionRecords(texts, (message) => this.deps.report(message));
     if (records.some((record) => record.repo.toLowerCase() !== repo)) {
       throw new Error("Pending model log contains a foreign repository");
     }
@@ -830,7 +840,7 @@ export class LearningsService {
     for (const path of paths.filter((path) => path.endsWith(".jsonl") && !isAnnotationPath(path))) {
       texts.push(await this.requiredContent(repo, path, ref));
     }
-    const records = unionRecords(texts);
+    const records = unionRecords(texts, (message) => this.deps.report(message));
     if (source !== undefined && records.some((record) => record.repo.toLowerCase() !== source)) {
       throw new Error("Shared model log contains a foreign repository");
     }
@@ -865,11 +875,16 @@ export class LearningsService {
       texts.push(...Object.entries(this.snapshot).filter(([path]) => isData(path)));
       origin = "bundled snapshot";
     }
-    const records = unionRecords(
-      texts
-        .filter(([path]) => path.endsWith(".jsonl") && !isAnnotationPath(path))
-        .map(([, text]) => text)
-    ).filter((record) => !family || record.segments.some((segment) => segment.family === family));
+    const deliveryTexts = texts
+      .filter(([path]) => path.endsWith(".jsonl") && !isAnnotationPath(path))
+      .map(([, text]) => text);
+    const staging = join(this.root, ".vmethod/model-log.jsonl");
+    if (existsSync(staging)) {
+      deliveryTexts.push(readFileSync(staging, "utf8"));
+    }
+    const records = unionRecords(deliveryTexts, (message) => this.deps.report(message)).filter(
+      (record) => !family || record.segments.some((segment) => segment.family === family)
+    );
     return [
       ...(records.length
         ? [
@@ -915,19 +930,68 @@ export class LearningsService {
   }
 }
 
-function unionRecords(texts: string[]): ModelRecord[] {
+function unionRecords(texts: string[], warn: (message: string) => void): ModelRecord[] {
   const records = new Map<string, ModelRecord>();
+  const conflicts = new Set<string>();
   for (const text of texts) {
     for (const record of modelRecords(text)) {
       const key = `${record.repo.toLowerCase()}#${record.pr}`;
+      if (conflicts.has(key)) {
+        continue;
+      }
       const previous = records.get(key);
-      if (previous && !isDeepStrictEqual(previous, record)) {
-        throw new Error(`Conflicting shared delivery ${key}`);
+      if (previous) {
+        const merged = { ...previous } as Record<string, unknown>;
+        const fields: string[] = [];
+        for (const field of new Set([...Object.keys(previous), ...Object.keys(record)])) {
+          const left = (previous as unknown as Record<string, unknown>)[field];
+          const right = (record as unknown as Record<string, unknown>)[field];
+          merged[field] = fillUnknown(left, right, field, fields);
+        }
+        if (fields.length) {
+          records.delete(key);
+          conflicts.add(key);
+          warn(`learnings: conflicting records for ${key} (${fields.sort().join(", ")}); excluded`);
+          continue;
+        }
+        records.set(key, merged as unknown as ModelRecord);
+        continue;
       }
       records.set(key, record);
     }
   }
   return [...records.values()];
+}
+
+function fillUnknown(left: unknown, right: unknown, path: string, conflicts: string[]): unknown {
+  if (left == null) {
+    return right;
+  }
+  if (right == null || isDeepStrictEqual(left, right)) {
+    return left;
+  }
+  if (Array.isArray(left) && Array.isArray(right) && left.length === right.length) {
+    return left.map((value, index) =>
+      fillUnknown(value, right[index], `${path}[${index}]`, conflicts)
+    );
+  }
+  if (
+    typeof left === "object" &&
+    typeof right === "object" &&
+    !Array.isArray(left) &&
+    !Array.isArray(right)
+  ) {
+    const a = left as Record<string, unknown>;
+    const b = right as Record<string, unknown>;
+    return Object.fromEntries(
+      [...new Set([...Object.keys(a), ...Object.keys(b)])].map((key) => [
+        key,
+        fillUnknown(a[key], b[key], `${path}.${key}`, conflicts),
+      ])
+    );
+  }
+  conflicts.push(path);
+  return left;
 }
 
 function plainReport(report: ReturnType<typeof learningReport>): string {
