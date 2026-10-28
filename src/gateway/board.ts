@@ -14,7 +14,7 @@ import type {
   Option,
   Snapshot,
 } from "../board/types.js";
-import { GitHubClient, type Dependencies } from "./client.js";
+import { GitHubClient, GitHubHttpError, type Dependencies } from "./client.js";
 import { object, type ObjectData, type PeopleFilter } from "./people.js";
 import { sameAssignees, setTurn, turnAssignees } from "./turn.js";
 import { ScopeReader } from "./scope.js";
@@ -97,6 +97,8 @@ export class BoardService implements BoardIO {
   budgetStopped = (): boolean => this.github.budgetStopped();
   cleanup = <T>(action: () => Promise<T>): Promise<T> => this.github.usingReserve(action);
   status = () => this.runner.status();
+  /** Orchestrator-only, journaled and resumable initialization of an empty v0 board. */
+  init = (input: { steal?: boolean } = {}) => this.runner.init(input);
   fixStatus = () => this.runner.fixStatus();
   migrate = (input: { dryRun?: boolean; steal?: boolean }) => this.runner.migrate(input);
 
@@ -1007,10 +1009,19 @@ export class BoardService implements BoardIO {
   async adoption(requires: string): Promise<void> {
     for (const repo of this.repositories()) {
       const metadata = object(await this.github.rest(`/repos/${repo}`));
-      const doc = parseDocument(
-        await this.file(repo, text(metadata.default_branch), "vmethod.yaml"),
-        { uniqueKeys: true }
-      );
+      let adoption: string;
+      try {
+        adoption = await this.file(repo, text(metadata.default_branch), "vmethod.yaml");
+      } catch (error) {
+        if (error instanceof GitHubHttpError && error.status === 404) {
+          throw new Error(
+            `${repo} has not adopted vmethod >= ${requires} on its default branch yet; merge the adoption PR, then rerun board migrate`,
+            { cause: error }
+          );
+        }
+        throw error;
+      }
+      const doc = parseDocument(adoption, { uniqueKeys: true });
       if (doc.errors.length) {
         throw new Error("Invalid adoption configuration");
       }

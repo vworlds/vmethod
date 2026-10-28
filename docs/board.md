@@ -263,6 +263,22 @@ operate on the whole `board.repos` set.
 
 ## Migrations: what adopters see
 
+For a brand-new empty project, run `vmethod board init` before migrations. This
+orchestrator-only command creates the v0 baseline from `0001-baseline.json`:
+Status with its six legacy options, Model with its baseline options, numeric
+Estimate and text Progress. It adjusts an existing single-select's options to the
+baseline, leaves matching fields alone and refuses duplicate names or conflicting
+field types. It refuses any board with cards before writing, including archived
+issues and PRs discoverable through `board.repos`; keep that list complete.
+
+Initialization uses the board-wide migration lock and gateway write journal. A
+partial failure leaves completed fields intact; rerun `board init` to create only
+what remains. Lock recovery uses `board init --steal` under the same rules as
+`board migrate --steal` below. Initialization preserves human README text and
+leaves the managed version at v0. Confirm `board status` reports no drift, preview
+`board migrate --dry-run`, then run `board migrate` to adopt the current schema.
+Do not use init to reset a board that has already migrated.
+
 Migration 0006 changes the workflow columns. Its dry run lists **every card's old and
 new column and deciding evidence**. It remaps legacy queue/execution names, splits
 issue review by pending authenticated SCOPE REVIEW, maps issue approval by valid
@@ -341,6 +357,9 @@ Shared boards **expand, then contract** across releases. Contract waits until ev
 repository in `board.repos`, including open tracks and packs, has adopted the
 required version. An ahead but compatible board gives a notice; an incompatible
 board refuses writes while allowing reads. Upgrade instead of bypassing that guard.
+If `vmethod.yaml` is absent on a repository's default branch, contract migrations
+ask you to merge its adoption PR, then rerun `board migrate`. Local pins never
+substitute for adoption by every repository on the shared board.
 
 Run `vmethod board status` to inspect the current version,
 pending migrations and owned-field drift. Preview with `board migrate --dry-run`;
@@ -371,7 +390,9 @@ Append `board/migrations/NNNN-name.json`; never edit a released migration. Files
 are validated against `schema/board-migration.schema.json`. The package embeds
 the complete ordered list into its single bundle at build time. Its `boardVersion`
 must equal the last migration's version. `0001-baseline.json` is verification-only:
-an unmanaged board must already have the baseline fields to adopt it.
+an unmanaged board must already have the baseline fields to adopt it. Use
+`board init` to create them on an empty project; the baseline migration itself
+never writes fields.
 
 Each file contains `version`, `up`, `expect: { fields, policy: { doneKeeps: 6 } }`
 and optionally `requires` (an exact minimum package version). Field shapes use

@@ -128,6 +128,7 @@ merge fails closed with retry guidance without partial writes.
 - `vmethod gh-read <endpoint|file.graphql>`
 - `vmethod dropped [--since <ISO-date>]`
 - `vmethod board status`
+- `vmethod board init [--steal]` (empty v0 boards only; see [initialization](board.md#migrations-what-adopters-see))
 - `vmethod board migrate [--dry-run] [--steal]`
 - `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name]`
 - `vmethod issue close <n> [--comment file]`

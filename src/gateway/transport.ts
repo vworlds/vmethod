@@ -90,6 +90,7 @@ export interface Operations {
   refreshChecks: { input: { ref: string }; output: Verdict };
   verify: { input: { refs: string[]; packages?: string[]; bench?: boolean }; output: Verdict };
   boardStatus: { input: { fix?: boolean }; output: BoardStatus };
+  boardInit: { input: { steal?: boolean }; output: BoardStatus };
   boardMigrate: {
     input: { dryRun?: boolean; steal?: boolean };
     output: MigrationResult;
