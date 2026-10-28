@@ -231,10 +231,17 @@ selecting `number title url` returns each project's number and URL, not its titl
 Items carrying an unpinned author or editor are still dropped whole.
 
 Each diagnostic response includes `N items dropped by the people filter`, including
-zero. This counts only removed entries of a top-level response list, so a
-filtered-empty list is distinguishable from an empty source list. If fields or
-nested list entries are removed inside retained data, a separate trailing
-`M nested values redacted` note reports them without inflating the entry count.
+zero. It counts removed entries of a top-level response list and rejected top-level
+GraphQL fields or single objects, so no drop hides behind a "0 items dropped" note.
+Top-level GraphQL `user(login:)` selections, aliased or not, receive reserved
+identity fields regardless of what you select. The gateway verifies that identity
+against the pins: a pinned account keeps your selected fields with attribution,
+an unpinned or unverifiable account is dropped and counted. Injected identity keys
+never appear in the output. If fields or nested list entries
+are removed inside retained data, a separate trailing `M nested values redacted`
+note reports them without inflating the item count. A REST `user` or `author`
+value acts as an identity only with its REST fields (`id` or `type`); without them
+the value stays unverified and the unattributable-text rules above apply.
 Removed free-text fields on otherwise retained unattributable objects instead
 produce `N text fields redacted from unattributable items`. These counters are
 separate: one object can retain several structural fields while losing several

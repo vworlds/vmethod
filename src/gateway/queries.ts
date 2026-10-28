@@ -52,6 +52,9 @@ const checkInjection = parse(
 const statusInjection = parse(
   `{ placeholder { __vm_statusActor: creator { ${actorFields} } __vm_statusState: state __vm_statusCommit: commit { repository { nameWithOwner owner { login } } } } }`
 );
+const actorInjection = parse(
+  "{ placeholder { __vm_actor: __typename __vm_login: login ... on User { __vm_databaseId: databaseId } } }"
+);
 function selections(document: DocumentNode): readonly SelectionNode[] {
   const operation = document.definitions[0];
   if (operation.kind !== Kind.OPERATION_DEFINITION) {
@@ -96,6 +99,18 @@ export function readQuery(source: string): string {
       leave(node, _key, parent, _path, ancestors) {
         if (!parent || !("kind" in parent)) {
           return;
+        }
+        // Account identity is independent of caller-selected fields; keep this
+        // separate from the schema-compatible content augmentation below.
+        if (
+          parent.kind === Kind.FIELD &&
+          parent.name.value === "user" &&
+          !ancestors.some(
+            (ancestor) =>
+              !Array.isArray(ancestor) && "kind" in ancestor && ancestor.kind === Kind.FIELD
+          )
+        ) {
+          return { ...node, selections: [...node.selections, ...selections(actorInjection)] };
         }
         let extra: readonly SelectionNode[];
         const container = [...ancestors]
@@ -253,10 +268,62 @@ export function restActor(value: unknown): ObjectData {
   return { databaseId: actor.id, __typename: actor.type, login: actor.login };
 }
 
+/** REST list items call their accounts `user` or `author`; GraphQL ones use actor fields. */
+function restActorFields(value: unknown): boolean {
+  const fields = object(value);
+  return "id" in fields || "type" in fields;
+}
+
 /**
- * Filter diagnostic identities, counting whole root-list drops, nested removals and
+ * Filter a GraphQL data object: every top-level field filters on its own and the
+ * root itself is never treated as an item (#323: an unaliased top-level
+ * `user(login:)` must not be misread as a REST issue whose author is `item.user`).
+ * A field value with the query's injected `__vm_actor` marker is its own author:
+ * keep it (without injected keys) only when pinned, otherwise drop and count it.
+ */
+export function filterData(
+  data: unknown,
+  filter: PeopleFilter,
+  repo: string,
+  link: string,
+  counts: { dropped: number; redacted: number; textRedacted?: number } = {
+    dropped: 0,
+    redacted: 0,
+  },
+  query?: string
+): ObjectData {
+  const output: ObjectData = {};
+  for (const [field, value] of Object.entries(object(data))) {
+    const actor = object(value);
+    // Reuse normal author verification and recursive filtering, including nested
+    // content and query-path aliases, rather than copying accepted accounts raw.
+    const item =
+      "__vm_actor" in actor
+        ? {
+            ...actor,
+            __vm_author: {
+              __typename: actor.__vm_actor,
+              databaseId: actor.__vm_databaseId,
+              login: actor.__vm_login,
+            },
+            __vm_editor: null,
+            __vm_edited: null,
+            __vm_repository: { nameWithOwner: repo, owner: { login: repo.split("/")[0] } },
+          }
+        : value;
+    const filtered = filterDiagnostic(item, filter, repo, link, counts, query, `.${field}`);
+    if (filtered !== undefined) {
+      output[field] = filtered;
+    }
+  }
+  return output;
+}
+
+/**
+ * Filter diagnostic identities, counting root values/list drops, nested removals and
  * unattributable text fields separately. Pass the enriched query for path-scoped
- * GraphQL text aliases; omit it for REST responses.
+ * GraphQL text aliases; omit it for REST responses. `path` scopes a top-level
+ * GraphQL field within that query (empty for a whole response).
  */
 export function filterDiagnostic(
   value: unknown,
@@ -267,12 +334,22 @@ export function filterDiagnostic(
     dropped: 0,
     redacted: 0,
   },
-  query?: string
+  query?: string,
+  path = ""
 ): unknown {
   const textAliases = diagnosticTextAliases(query);
   if (Array.isArray(value)) {
     return value.flatMap((child) => {
-      const result = filterDiagnosticValue(child, filter, repo, link, counts, textAliases);
+      const result = filterDiagnosticValue(
+        child,
+        filter,
+        repo,
+        link,
+        counts,
+        textAliases,
+        false,
+        path
+      );
       if (result === undefined) {
         counts.dropped++;
         return [];
@@ -280,7 +357,11 @@ export function filterDiagnostic(
       return [result];
     });
   }
-  return filterDiagnosticValue(value, filter, repo, link, counts, textAliases);
+  const result = filterDiagnosticValue(value, filter, repo, link, counts, textAliases, false, path);
+  if (result === undefined) {
+    counts.dropped++;
+  }
+  return result;
 }
 
 function diagnosticTextAliases(query?: string): ReadonlyMap<string, ReadonlySet<string>> {
@@ -464,9 +545,11 @@ function filterDiagnosticValue(
     filter.accept({}, "", link);
     return undefined;
   }
-  const hasIdentity = ["__vm_author", "author", "user"].some(
-    (key) => key in item && !aliases?.has(key)
-  );
+  // Only a `user` value with REST actor fields is a REST identity (#323): GraphQL-shaped
+  // or removed values must not pose as authors.
+  const restUser = "user" in item && !aliases?.has("user") && restActorFields(item.user);
+  const hasIdentity =
+    restUser || ["__vm_author", "author"].some((key) => key in item && !aliases?.has(key));
   const hasContent = Object.keys(item).some((key) => isFreeText(key) || aliases?.has(key));
   // A PR branch's user is its repository owner (often an Organization), not an author.
   const structuralBranch =
@@ -481,7 +564,7 @@ function filterDiagnosticValue(
   // Git metadata is not a GitHub identity and can never authorize instructions.
   const signatureOnly =
     !("__vm_author" in item) &&
-    !("user" in item) &&
+    !restUser &&
     !hasContent &&
     (gitCommit(item) || (item.author === null && gitCommit(object(item.commit))));
   if (signatureOnly) {
@@ -491,8 +574,10 @@ function filterDiagnosticValue(
     const author = injected
       ? item.__vm_author
       : "user" in item
-        ? restActor(item.user)
-        : "id" in object(item.author) || "type" in object(item.author)
+        ? restUser
+          ? restActor(item.user)
+          : item.user // without REST actor fields nothing here is a verifiable author
+        : restActorFields(item.author)
           ? restActor(item.author)
           : item.author;
     const owner = injected ? repoOf(item).owner : repo.split("/")[0];

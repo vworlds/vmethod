@@ -1,9 +1,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { parse, visit } from "graphql";
+import { buildSchema, graphqlSync, parse, visit } from "graphql";
 import { readQuery } from "../../src/gateway/queries.js";
-import { actor, fixtureServer, graph, hostile, item } from "./helpers.js";
+import { actor, fixtureServer, graph, hostile, item, type Request } from "./helpers.js";
 
 test.each([
   'mutation { addComment(input: { subjectId: "x", body: "x" }) { clientMutationId } }',
@@ -23,6 +23,13 @@ test.each([
   },
   15000
 );
+
+/** Parse the fenced untrusted-data document, which is always valid JSON. */
+function decode(output: string): unknown {
+  const match = /\n(`{3,})text\n([\s\S]*)\n\1(?:\n|$)/.exec(output);
+  expect(match).not.toBeNull();
+  return JSON.parse(match![2]);
+}
 
 test("GraphQL parser handles strings, block strings and comments without confusing query data for operations", () => {
   const query = readQuery(
@@ -99,9 +106,229 @@ test("GraphQL aliases and fragments cannot hide author-bearing text or foreign r
   expect(output).toContain("APPROVED");
   expect(output).not.toContain("NEVER DELIVER");
   expect(output).not.toContain("__vm_");
-  expect(output.endsWith("0 items dropped by the people filter\n4 nested values redacted")).toBe(
+  expect(output.endsWith("1 items dropped by the people filter\n3 nested values redacted")).toBe(
     true
   );
+  fixture.done();
+}, 15000);
+
+// Execute the outgoing augmented query, rather than returning pre-injected data.
+// Account fields project the existing actor fixture into GitHub's User wire shape.
+function accountRequest(): Request {
+  const schema = buildSchema(`
+    type Query { user(login: String!): User }
+    type User { login: String!, databaseId: Int, bio: String }
+  `);
+  const request: Request = {
+    path: "/graphql",
+    checkQuery(query) {
+      const result = graphqlSync({
+        schema,
+        source: query,
+        rootValue: {
+          user: ({ login }: { login: string }) =>
+            login === "missing"
+              ? null
+              : { ...actor(1), login, bio: hostile, databaseId: login === "worker" ? 102 : 999 },
+        },
+      });
+      expect(result.errors).toBeUndefined();
+      request.json = result;
+    },
+  };
+  return request;
+}
+
+const accountSelections = [
+  {
+    selection: "__typename login databaseId",
+    selected: { __typename: "User", login: "worker", databaseId: 102 },
+  },
+  { selection: "login bio", selected: { login: "worker", bio: hostile } },
+  { selection: "login", selected: { login: "worker" } },
+  { selection: "handle: login", selected: { handle: "worker" } },
+];
+test.each(
+  accountSelections.flatMap((selection) =>
+    ["", "anyone: "].flatMap((alias) =>
+      ["worker", "stranger"].map((login) => ({ ...selection, alias, login }))
+    )
+  )
+)(
+  "top-level accounts verify independently of selection: $alias $login $selection",
+  async ({ selection, selected, alias, login }) => {
+    const fixture = fixtureServer([accountRequest()]);
+    const file = join(fixture.root, "query.graphql");
+    writeFileSync(file, `query { ${alias}user(login:"${login}") { ${selection} } }`);
+    const output = await fixture.transport.call("ghRead", { source: file });
+    expect(decode(output)).toEqual(
+      login === "worker"
+        ? { [alias ? "anyone" : "user"]: { ...selected, attribution: "from worker (worker)" } }
+        : {}
+    );
+    expect(
+      output.endsWith(`${login === "worker" ? 0 : 1} items dropped by the people filter`)
+    ).toBe(true);
+    expect(output).not.toContain("__vm_");
+    fixture.done();
+  },
+  15000
+);
+
+test.each([
+  'query { ... on Query { user(login:"worker") { login } } }',
+  'query { ...Accounts } fragment Accounts on Query { user(login:"worker") { login } }',
+])(
+  "top-level user identity injection works through query fragments: %s",
+  async (query) => {
+    const fixture = fixtureServer([accountRequest()]);
+    const file = join(fixture.root, "query.graphql");
+    writeFileSync(file, query);
+    const output = await fixture.transport.call("ghRead", { source: file });
+    expect(decode(output)).toEqual({
+      user: { login: "worker", attribution: "from worker (worker)" },
+    });
+    fixture.done();
+  },
+  15000
+);
+
+test("a nonexistent top-level account stays null without a filter drop", async () => {
+  const fixture = fixtureServer([accountRequest()]);
+  const file = join(fixture.root, "query.graphql");
+  writeFileSync(file, 'query { user(login:"missing") { login } }');
+  const output = await fixture.transport.call("ghRead", { source: file });
+  expect(decode(output)).toEqual({ user: null });
+  expect(output.endsWith("0 items dropped by the people filter")).toBe(true);
+  fixture.done();
+}, 15000);
+
+test.each([null, "102"])(
+  "a malformed injected account ID %s fails closed",
+  async (databaseId) => {
+    const fixture = fixtureServer([
+      {
+        path: "/graphql",
+        json: {
+          data: {
+            user: {
+              bio: hostile,
+              __vm_actor: "User",
+              __vm_login: "worker",
+              __vm_databaseId: databaseId,
+            },
+          },
+        },
+      },
+    ]);
+    const file = join(fixture.root, "query.graphql");
+    writeFileSync(file, 'query { user(login:"worker") { bio } }');
+    const output = await fixture.transport.call("ghRead", { source: file });
+    expect(decode(output)).toEqual({});
+    expect(output.endsWith("1 items dropped by the people filter")).toBe(true);
+    fixture.done();
+  },
+  15000
+);
+
+test.each(["user", "anyone"])(
+  "accepted account %s still filters nested authors and text aliases",
+  async (field) => {
+    const fixture = fixtureServer([
+      {
+        path: "/graphql",
+        json: {
+          data: {
+            [field]: {
+              login: "worker",
+              __vm_actor: "User",
+              __vm_login: "worker",
+              __vm_databaseId: 102,
+              issues: {
+                nodes: [
+                  {
+                    body: hostile,
+                    __vm_author: { ...actor(1), databaseId: 999 },
+                    __vm_repository: item().repository,
+                  },
+                ],
+              },
+              projectsV2: { nodes: [{ number: 7, caption: hostile }] },
+            },
+          },
+        },
+      },
+    ]);
+    const file = join(fixture.root, "query.graphql");
+    writeFileSync(
+      file,
+      `query { ${field === "user" ? "" : `${field}: `}user(login:"worker") {
+    login issues(first:1) { nodes { body } }
+    projectsV2(first:1) { nodes { number caption: title } }
+  } }`
+    );
+    const output = await fixture.transport.call("ghRead", { source: file });
+    expect(decode(output)).toEqual({
+      [field]: {
+        login: "worker",
+        attribution: "from worker (worker)",
+        issues: { nodes: [] },
+        projectsV2: { nodes: [{ number: 7 }] },
+      },
+    });
+    expect(
+      output.endsWith(
+        "0 items dropped by the people filter\n1 nested values redacted\n1 text fields redacted from unattributable items"
+      )
+    ).toBe(true);
+    expect(output).not.toContain("__vm_");
+    fixture.done();
+  },
+  15000
+);
+
+test("a GraphQL user lookup inside a repository no longer poses as a REST item author", async () => {
+  const fixture = fixtureServer([
+    {
+      path: "/graphql",
+      json: {
+        data: {
+          repo: { __vm_owner: { login: "example" }, user: actor(1) },
+        },
+      },
+    },
+  ]);
+  const file = join(fixture.root, "query.graphql");
+  writeFileSync(
+    file,
+    'query { repo: repository(owner:"example", name:"project") { user(login:"worker") { __typename login databaseId } } }'
+  );
+  const output = await fixture.transport.call("ghRead", { source: file });
+  expect(decode(output)).toEqual({ repo: { user: actor(1) } });
+  expect(output.endsWith("0 items dropped by the people filter")).toBe(true);
+  fixture.done();
+}, 15000);
+
+test("a rejected REST single thread counts as a dropped item", async () => {
+  const fixture = fixtureServer([
+    {
+      path: "/repos/example/project/issues/3",
+      method: "GET",
+      json: {
+        node_id: "node-1",
+        number: 3,
+        title: "NEVER DELIVER",
+        body: "NEVER DELIVER",
+        user: { id: 999, type: "User", login: "stranger" },
+      },
+    },
+  ]);
+  const output = await fixture.transport.call("ghRead", {
+    source: "repos/example/project/issues/3",
+  });
+  expect(decode(output)).toBeNull();
+  expect(output).not.toContain("NEVER DELIVER");
+  expect(output.endsWith("1 items dropped by the people filter")).toBe(true);
   fixture.done();
 }, 15000);
 

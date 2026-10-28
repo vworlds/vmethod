@@ -17,6 +17,7 @@ import {
 } from "./people.js";
 import {
   actorFields,
+  filterData,
   filterDiagnostic,
   identityFields,
   readQuery,
@@ -2439,16 +2440,10 @@ class GatewayServer {
     if (source.endsWith(".graphql")) {
       const query = readQuery(readFileSync(source, "utf8"));
       const data = await this.github.graphql(query);
+      const repo = String(this.config.repo);
       const output = untrusted(
         JSON.stringify(
-          filterDiagnostic(
-            data,
-            this.filter,
-            String(this.config.repo),
-            `https://github.com/${String(this.config.repo)}`,
-            counts,
-            query
-          ),
+          filterData(data, this.filter, repo, `https://github.com/${repo}`, counts, query),
           null,
           2
         ) ?? "null"
