@@ -136,6 +136,8 @@ merge fails closed with retry guidance without partial writes.
 - `vmethod issue edit <n> <body-file>`
 - `vmethod issue block <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`)
 - `vmethod issue unblock <n> <blocker>`
+- `vmethod upstream issue <title> <body-file>`
+- `vmethod upstream comment <n> <body-file>`
 - `vmethod issue parent <n> <epic>` (`<epic>` is `#m` or `m`)
 - `vmethod issue unparent <n> <epic>` (`<epic>` is `#m` or `m`)
 - `vmethod scope-review <n> <summary-file>`
@@ -149,6 +151,28 @@ Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package through the PATH launcher, `vmethod <verb>`; where it is not
 installed yet, `npm exec --no -- vmethod` still refuses to download. Never use a
 downloading fallback.
+
+### Upstream needs
+
+From a consumer checkout, use `upstream issue` to raise a methodology need on
+vworlds/vmethod, and `upstream comment` to add an occurrence to an existing issue.
+Both require orchestrator context and the caller's own gh login. In addition to
+normal gateway authentication, they read central `people.yaml` from `dev` and
+apply the same numeric-id, login, type and orchestrator project-binding check as
+`learnings submit`. Local `people.yaml` cannot grant that binding. If refused,
+ask the vmethod owner to bind the reported login to your configured repository
+in vworlds/vmethod `people.yaml`.
+
+Both check nonempty Markdown, balanced fences, Mermaid and closing/association
+syntax before any write. `upstream issue` also checks the title and appends
+`Filed from <owner/repo> (vmethod <pinned version>)` using the running pinned
+package version. It outputs the created issue URL. `upstream comment` accepts a
+positive issue number (not a PR), checks that it exists and posts the file
+verbatim without a footer. Neither command adds labels, assignees or board items;
+the vmethod owner triages upstream needs. Review content for private details
+before posting. See [changing the methodology](change-process.md).
+
+### Issue and board operations
 
 `autopilot stop` is an orchestrator-only, configured-repository removal on an
 accepted issue or PR. It posts the stop in the thread; the next watcher poll

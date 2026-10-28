@@ -106,6 +106,16 @@ export async function gatewayVerb(
         "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic] | issue close <n> [--comment file] | issue edit <n> <body-file> | issue block <n> <blocker> | issue unblock <n> <blocker> | issue parent <n> <epic> | issue unparent <n> <epic> | issue estimate <n> <points>"
       );
     }
+    case "upstream":
+      if (args[0] === "issue" && args.length === 3) {
+        return transport.call("upstreamIssue", { title: args[1], file: args[2] }, ctx);
+      }
+      if (args[0] === "comment" && args.length === 3) {
+        return transport.call("upstreamComment", { ref: args[1], file: args[2] }, ctx);
+      }
+      throw new Error(
+        "Usage: upstream issue <title> <body-file> | upstream comment <n> <body-file>"
+      );
     case "scope-review":
       if (args.length !== 2) {
         throw new Error("Usage: scope-review <issue> <summary-file>");

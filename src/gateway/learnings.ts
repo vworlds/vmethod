@@ -23,8 +23,10 @@ import { annotation, isAnnotationPath } from "./learning-annotations.js";
 import { switchReasons } from "../learning-metrics.js";
 
 declare const __LEARNINGS__: Record<string, string>;
-const central = "vworlds/vmethod";
-const base = "dev";
+/** The central methodology repository consumers may file upstream issues against. */
+export const central = "vworlds/vmethod";
+/** The central branch whose people.yaml and learnings gate cross-project submissions. */
+export const base = "dev";
 const families = new Set([
   "sol",
   "luna",

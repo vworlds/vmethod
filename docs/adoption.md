@@ -60,6 +60,12 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
 - [ ] Rename old environment prefixes to `VMETHOD_*`. Use the
       [documented mapping](package.md#environment-mapping); do not assume old names
       remain aliases. Set `board.enabled: false` for intentional offline/fork work.
+- [ ] Ask the vmethod owner to bind the consumer orchestrator's verified login,
+      numeric id and type to this repository in vworlds/vmethod's central
+      `people.yaml` on `dev`. Your local registry cannot grant upstream access.
+      Raise methodology needs with `vmethod upstream issue <title> <body-file>`
+      and follow up with `vmethod upstream comment <n> <body-file>`, not raw `gh`.
+      See [upstream needs](gateway.md#upstream-needs).
 - [ ] Log each identity into its own gh config directory with
       `GH_CONFIG_DIR=<dir> gh auth login`; vmethod never reads `GH_TOKEN`. Identity
       kept only in git config is not used. `vmethod check` as the orchestrator

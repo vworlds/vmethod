@@ -665,7 +665,7 @@ interested party in methodology changes.
 ### How a methodology change happens
 
 1. **A need appears.** The owner asks an orchestrator for something, or an orchestrator detects a
-   gap. That orchestrator opens a vmethod issue (`vmethod propose`) describing the need and the
+   gap. That orchestrator opens a vmethod issue (`vmethod upstream issue <title> <body-file>`) describing the need and the
    project context, or a PR if the change is small and clear.
 2. **Interested parties chip in.** Every other orchestrator sees it through `vmethod watch`, and
    comments with support, concerns or conflicts with their setup, or mutes it.
