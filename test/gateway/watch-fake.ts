@@ -100,6 +100,8 @@ export class WatchFake {
   newItems: ObjectData[] = [];
   cards: ObjectData[] = [];
   readme = "";
+  /** rateLimit.cost each scripted or non-scripted WatchBoard response reports. */
+  boardCost = 1;
   mergeable: boolean | null = true;
   baseMoved = false;
   resolveConflicts?: (pr: number) => Promise<string>;
@@ -614,7 +616,7 @@ export class WatchFake {
             }
             response = {
               data: {
-                rateLimit: { cost: 1 },
+                rateLimit: { cost: this.boardCost },
                 organization: {
                   projectV2: {
                     id: "project",
@@ -656,7 +658,7 @@ export class WatchFake {
               ? { errors: [{ message: "scripted invalid query" }] }
               : {
                   data: {
-                    rateLimit: { cost: 1 },
+                    rateLimit: { cost: this.boardCost },
                     organization: {
                       projectV2: {
                         id: "project",

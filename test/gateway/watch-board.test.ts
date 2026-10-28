@@ -141,6 +141,8 @@ test("board growth reads the extra page, trains count plus ten, and shrinking lo
   api.populate(5);
   expect((await api.reader.read("example", 5, activity)).nodes).toHaveLength(5);
   expect(api.requests).toEqual([{ size: 10, cursor: null }]);
+  expect(api.reader.pages).toBe(1);
+  expect(api.reader.overflow).toBe(0);
   api.populate(16);
   expect((await api.reader.read("example", 5, activity)).nodes).toHaveLength(16);
   expect(api.requests.slice(1)).toEqual([
@@ -149,9 +151,12 @@ test("board growth reads the extra page, trains count plus ten, and shrinking lo
   ]);
   expect(api.reader.sizes.items).toBe(26);
   expect(api.reader.cost).toBe(4);
+  expect(api.reader.pages).toBe(2);
+  expect(api.reader.overflow).toBe(0);
   await api.reader.read("example", 5, activity);
   expect(api.requests.at(-1)).toEqual({ size: 26, cursor: null });
   expect(api.reader.cost).toBe(2);
+  expect(api.reader.pages).toBe(1);
   expect(api.client.budget().resources.graphql.remaining).toBe(4992);
   api.populate(2);
   await api.reader.read("example", 5, activity);
@@ -187,6 +192,8 @@ test("nested lists are completed in batches, sized to the largest plus margin, a
   };
   const result = await api.reader.read("example", 5, activity);
   expect(api.overflowBatches).toEqual([4]);
+  expect(api.reader.pages).toBe(1);
+  expect(api.reader.overflow).toBe(1);
   expect(api.reader.cost).toBe(4);
   expect(api.reader.sizes).toEqual({
     items: 12,
@@ -201,6 +208,8 @@ test("nested lists are completed in batches, sized to the largest plus margin, a
   expect(object(object(result.nodes[1].content).reviews).nodes).toEqual(object(pr.reviews).nodes);
   await api.reader.read("example", 5, activity);
   expect(api.overflowBatches).toEqual([4]);
+  expect(api.reader.pages).toBe(1);
+  expect(api.reader.overflow).toBe(0);
   expect(api.reader.cost).toBe(2);
   api.populate(1);
   await api.reader.read("example", 5, activity);

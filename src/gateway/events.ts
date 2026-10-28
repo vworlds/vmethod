@@ -412,8 +412,17 @@ export class EventLoop {
   private lastBoardAt = 0;
   private readonly boardReader: WatchBoard;
   private readonly pacing = new WatchPacing();
-  private pacingReport = "";
+  private reportedShape = "";
+  private reportedCost = 0;
   private reportedInterval = 0;
+  /** Cost observation waiting to be confirmed; a changed cost reports once it
+   * has held for three consecutive polls. */
+  private pendingCost = 0;
+  private costStreak = 0;
+  /** Interval deviations must exceed the threshold in one direction for three polls. */
+  private intervalStreak = 0;
+  private intervalDirection = 0;
+  private observedRead = 0;
   private nextSignature = "";
   private nextAt = 0;
   private opencode?: OpencodeClient;
@@ -4238,17 +4247,44 @@ export class EventLoop {
           ? this.lastBoardAt + interval
           : 0;
     const sizes = this.boardReader.sizes;
-    const signature = `${Object.values(sizes).join("/")}:${this.boardReader.cost}`;
-    if (
-      this.boardReader.cost > 0 &&
-      (signature !== this.pacingReport ||
-        Math.abs(interval - this.reportedInterval) >= Math.max(1000, this.reportedInterval * 0.1))
-    ) {
+    const cost = this.boardReader.cost;
+    const shape = `${this.boardReader.pages}/${this.boardReader.overflow}`;
+    // One read is one poll observation; both debounce rules count it once. A
+    // changed cost reports only after the new value has held for three
+    // consecutive polls, and an interval deviation strictly beyond the
+    // threshold (10% and one second) reports after three consecutive polls in
+    // the same direction. A page or overflow boundary reports at once.
+    let heldCost = false;
+    let heldInterval = false;
+    if (this.observedRead !== this.boardReader.readId) {
+      this.observedRead = this.boardReader.readId;
+      if (cost === this.reportedCost) {
+        this.costStreak = 0;
+      } else {
+        this.costStreak = cost === this.pendingCost ? this.costStreak + 1 : 1;
+        this.pendingCost = cost;
+      }
+      heldCost = this.costStreak >= 3;
+      if (
+        Math.abs(interval - this.reportedInterval) > Math.max(1000, this.reportedInterval * 0.1)
+      ) {
+        const direction = Math.sign(interval - this.reportedInterval);
+        this.intervalStreak = direction === this.intervalDirection ? this.intervalStreak + 1 : 1;
+        this.intervalDirection = direction;
+      } else {
+        this.intervalStreak = 0;
+      }
+      heldInterval = this.intervalStreak >= 3;
+    }
+    if (cost > 0 && (shape !== this.reportedShape || heldCost || heldInterval)) {
       this.host.deps.report(
-        `watcher: board pages items=${sizes.items} labels=${sizes.labels} blockers=${sizes.blockedBy} sub-issues=${sizes.subIssues} reviews=${sizes.reviews}; measured cost=${this.boardReader.cost} points/poll; interval=${Math.ceil(interval / 1000)}s`
+        `watcher: board pages items=${sizes.items} labels=${sizes.labels} blockers=${sizes.blockedBy} sub-issues=${sizes.subIssues} reviews=${sizes.reviews}; measured cost=${cost} points/poll; interval=${Math.ceil(interval / 1000)}s`
       );
-      this.pacingReport = signature;
+      this.reportedShape = shape;
+      this.reportedCost = cost;
       this.reportedInterval = interval;
+      this.costStreak = 0;
+      this.intervalStreak = 0;
     }
     if (budget.secondaryUntil > now) {
       this.produceOnce(

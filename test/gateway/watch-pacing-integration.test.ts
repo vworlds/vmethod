@@ -17,6 +17,7 @@ test("watch scheduling observes shared-account spending through real client head
   const reset = start / 1000 + 600;
   let remaining = 460;
   let boardReads = 0;
+  const boardReadTimes: number[] = [];
   const transportFailures: string[] = [];
   const fetch = f.deps.fetch;
   f.deps.fetch = async (input, init) => {
@@ -36,6 +37,7 @@ test("watch scheduling observes shared-account spending through real client head
     }
     remaining -= 5;
     boardReads++;
+    boardReadTimes.push(f.clock);
     const body = await response.json();
     body.data.rateLimit.cost = 5;
     return Response.json(body, {
@@ -60,7 +62,11 @@ test("watch scheduling observes shared-account spending through real client head
     expect(remaining).toBeGreaterThan(100);
   }
   expect(boardReads).toBeLessThan(60);
-  expect(f.pollReports.some((line) => Number(/interval=(\d+)s/.exec(line)?.[1]) > 20)).toBe(true);
+  // Continuously changing controller values need not hold for three polls, so
+  // prove actual scheduling slowdown/recovery independently of debounced reports.
+  const gaps = boardReadTimes.slice(1).map((at, index) => at - boardReadTimes[index]);
+  expect(gaps.some((gap) => gap > 20_000)).toBe(true);
+  expect(gaps.slice(-3)).toEqual([10_000, 10_000, 10_000]);
   expect(f.pollReports.at(-1)).toContain("interval=10s");
   expect(transportFailures).toEqual([]);
   expect(f.reports).toEqual([]);

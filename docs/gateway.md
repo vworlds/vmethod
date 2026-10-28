@@ -1131,9 +1131,14 @@ not throttle other verbs or guarantee protection against an unlimited external
 spender; it can only react to spending visible in response headers.
 
 Watch reports the current page sizes, measured points per board read and interval
-on stderr after the first measurement, a size/cost change, or an interval change
-of at least 10% and one second. Stable polls do not repeat the report. These sizes
-and controller history are session-local and start fresh after restart.
+on stderr after the first measurement, when a board page or overflow query starts
+or stops, a measured-cost change that has held for three consecutive polls, or an
+interval deviation strictly greater than both 10% and one second from the last
+reported interval, sustained in the same direction for three consecutive polls.
+The interval may vary during that run; the report prints its latest value rounded
+up to seconds. Retraining page sizes within that
+margin reports nothing. Stable polls do not repeat the report. These sizes and
+controller history are session-local and start fresh after restart.
 
 ## Non-task PR commands
 
