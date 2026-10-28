@@ -222,9 +222,11 @@ other repositories.
 Each diagnostic response includes `N items dropped by the people filter`, including
 zero. It counts removed entries of a top-level response list and rejected top-level
 GraphQL fields or single objects, so no drop hides behind a "0 items dropped" note.
-A complete top-level GraphQL account value (for example an unaliased or aliased
-`user(login:)` selection) verifies itself against the pins: a pinned login is kept
-with its attribution, an unpinned one is dropped. If fields or nested list entries
+Top-level GraphQL `user(login:)` selections, aliased or not, receive reserved
+identity fields regardless of what you select. The gateway verifies that identity
+against the pins: a pinned account keeps your selected fields with attribution,
+an unpinned or unverifiable account is dropped and counted. Injected identity keys
+never appear in the output. If fields or nested list entries
 are removed inside retained data, a separate trailing `M nested values redacted`
 note reports them without inflating the item count. A REST `user` or `author`
 value acts as an identity only with its REST fields (`id`, `type`); without them

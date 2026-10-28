@@ -26,6 +26,9 @@ const checkInjection = parse(
 const statusInjection = parse(
   `{ placeholder { __vm_statusActor: creator { ${actorFields} } __vm_statusState: state __vm_statusCommit: commit { repository { nameWithOwner owner { login } } } } }`
 );
+const actorInjection = parse(
+  "{ placeholder { __vm_actor: __typename __vm_login: login ... on User { __vm_databaseId: databaseId } } }"
+);
 const contentConnections = new Set([
   "issues",
   "pullRequests",
@@ -79,6 +82,21 @@ export function readQuery(source: string): string {
     SelectionSet(node, _key, parent, _path, ancestors) {
       if (!parent || !("kind" in parent)) {
         return;
+      }
+      // A top-level account field verifies itself through the injected marker (#323),
+      // whatever the caller selects: no intervening field means a top-level `user`.
+      if (
+        parent.kind === Kind.FIELD &&
+        parent.name.value === "user" &&
+        !ancestors.some(
+          (ancestor) =>
+            !Array.isArray(ancestor) && "kind" in ancestor && ancestor.kind === Kind.FIELD
+        )
+      ) {
+        return {
+          ...node,
+          selections: [...node.selections, ...selections(actorInjection)],
+        };
       }
       let extra: readonly SelectionNode[] = [];
       const container = [...ancestors]
@@ -159,22 +177,12 @@ function restActorFields(value: unknown): boolean {
   return "id" in fields || "type" in fields;
 }
 
-/** A complete GraphQL account value: verifiable or unmistakably unpinned. */
-function verifiableActor(value: unknown): ObjectData | undefined {
-  const actor = object(value);
-  return ["User", "Bot"].includes(String(actor.__typename)) &&
-    Number.isSafeInteger(actor.databaseId) &&
-    Number(actor.databaseId) >= 1 &&
-    typeof actor.login === "string"
-    ? actor
-    : undefined;
-}
-
 /**
  * Filter a GraphQL data object: every top-level field filters on its own and the
  * root itself is never treated as an item (#323: an unaliased top-level
  * `user(login:)` must not be misread as a REST issue whose author is `item.user`).
- * A complete GraphQL account value is its own author: keep it only when pinned.
+ * A field value with the query's injected `__vm_actor` marker is its own author:
+ * keep it (without injected keys) only when pinned, otherwise drop and count it.
  */
 export function filterData(
   data: unknown,
@@ -185,17 +193,27 @@ export function filterData(
 ): ObjectData {
   const output: ObjectData = {};
   for (const [field, value] of Object.entries(object(data))) {
-    const actor = verifiableActor(value);
-    if (actor) {
+    const actor = object(value);
+    if ("__vm_actor" in actor) {
       const person = filter.accept(
-        { author: actor, repository: { nameWithOwner: repo } },
+        {
+          author: {
+            __typename: actor.__vm_actor,
+            databaseId: actor.__vm_databaseId,
+            login: actor.__vm_login,
+          },
+          repository: { nameWithOwner: repo },
+        },
         repo.split("/")[0],
         link
       );
       if (!person) {
         counts.dropped++;
       } else {
-        output[field] = { ...object(value), attribution: `from ${person.login} (${person.role})` };
+        output[field] = {
+          ...Object.fromEntries(Object.entries(actor).filter(([key]) => !key.startsWith("__vm_"))),
+          attribution: `from ${person.login} (${person.role})`,
+        };
       }
       continue;
     }
