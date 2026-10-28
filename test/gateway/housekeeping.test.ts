@@ -263,6 +263,7 @@ test.each(
         : verb === "issue close"
           ? [
               ...metadata,
+              blockerRead(),
               {
                 path: `/repos/example/project/issues/${card.content.number}`,
                 method: "PATCH",
@@ -336,6 +337,14 @@ const acceptedIssue = () =>
     body: "Specification",
     labels: { nodes: [], pageInfo: { hasNextPage: false } },
   });
+
+function blockerRead(states: string[] = []) {
+  return graph({
+    node: item({
+      blockedBy: { nodes: states.map((state) => ({ state })), pageInfo: { hasNextPage: false } },
+    }),
+  });
+}
 
 test.each(["Progress", "Estimate"])(
   "board set %s then --clear leaves the field empty",
@@ -785,6 +794,11 @@ test.each([
   ["issue", ["create", "Title", "file", "--status", "Done", "--status", "Done"]],
   ["issue", ["close", "37", "--comment"]],
   ["issue", ["close", "37", "--wrong", "file"]],
+  ["issue", ["close", "37", "--force", "--force"]],
+  ["issue", ["reopen"]],
+  ["issue", ["reopen", "37", "--force"]],
+  ["issue", ["reopen", "37", "--comment"]],
+  ["issue", ["reopen", "37", "--comment", "file", "--comment", "again"]],
   ["board", ["set", "39", "Estimate"]],
   ["board", ["add"]],
   ["board", ["add", "39", "--estimate"]],
@@ -811,68 +825,79 @@ test.each([
   15000
 );
 
-test("issue close gates identity and posts the exact checked comment before closing", async () => {
-  const recording = structuredClone(boardRecording);
-  const card = recording.items.nodes[0];
-  card.fieldValues.nodes.push({ text: "👤❓", field: { name: "Progress" } } as never);
-  const f = fixtureServer([
-    graph({ repository: { issue: item() } }),
-    graph({ node: acceptedIssue() }),
-    {
-      path: "/repos/example/project/issues/37/comments",
-      body: { body: "Reason for closure\n" },
-      json: { id: 1 },
-    },
-    {
-      path: "/repos/example/project/issues/37",
-      method: "PATCH",
-      body: { state: "closed", state_reason: "completed", assignees: [] },
-      json: { ...issueResponse, node_id: card.content.id },
-    },
-    ...boardReads(recording),
-    {
-      ...boardGraph({
-        m0: { projectV2Item: { id: card.id } },
-        m1: { projectV2Item: { id: card.id } },
-      }),
-      checkQuery: (query, variables) => {
-        expect(query).toContain("clearProjectV2ItemFieldValue");
-        expect(variables.m0).toMatchObject({
-          itemId: card.id,
-          fieldId: recording.fields.nodes.find((field) => field.name === "Progress")!.id,
-        });
-        expect(variables.m1).toMatchObject({
-          itemId: card.id,
-          fieldId: recording.fields.nodes.find((field) => field.name === "Status")!.id,
-          value: { singleSelectOptionId: expect.any(String) },
-        });
+test.each([false, true])(
+  "issue close gates identity and posts the exact checked comment before closing (force=%s)",
+  async (force) => {
+    const recording = structuredClone(boardRecording);
+    const card = recording.items.nodes[0];
+    card.fieldValues.nodes.push({ text: "👤❓", field: { name: "Progress" } } as never);
+    const f = fixtureServer([
+      graph({ repository: { issue: item() } }),
+      graph({ node: acceptedIssue() }),
+      ...(force ? [] : [blockerRead(["CLOSED"])]),
+      {
+        path: "/repos/example/project/issues/37/comments",
+        body: { body: "Reason for closure\n" },
+        json: { id: 1 },
       },
-    },
-    ...boardReads(recording),
-    {
-      ...boardGraph({ m0: { projectV2Item: { id: card.id } } }),
-      checkQuery: (query, variables) => {
-        expect(query).toContain("clearProjectV2ItemFieldValue");
-        expect(variables.m0).toMatchObject({
-          itemId: card.id,
-          fieldId: recording.fields.nodes.find((field) => field.name === "Progress")!.id,
-        });
+      {
+        path: "/repos/example/project/issues/37",
+        method: "PATCH",
+        body: { state: "closed", state_reason: "completed", assignees: [] },
+        json: { ...issueResponse, node_id: card.content.id },
       },
-    },
-  ]);
-  const file = join(f.root, "comment.md");
-  writeFileSync(file, "Reason for closure\n");
-  expect(
-    await gatewayVerb(f.transport, "issue", ["close", "37", "--comment", file], {
-      VMETHOD_ROLE: "orchestrator",
-    })
-  ).toBe("Closed issue #37");
-  f.done();
-}, 15000);
+      ...boardReads(recording),
+      {
+        ...boardGraph({
+          m0: { projectV2Item: { id: card.id } },
+          m1: { projectV2Item: { id: card.id } },
+        }),
+        checkQuery: (query, variables) => {
+          expect(query).toContain("clearProjectV2ItemFieldValue");
+          expect(variables.m0).toMatchObject({
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((field) => field.name === "Progress")!.id,
+          });
+          expect(variables.m1).toMatchObject({
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((field) => field.name === "Status")!.id,
+            value: { singleSelectOptionId: expect.any(String) },
+          });
+        },
+      },
+      ...boardReads(recording),
+      {
+        ...boardGraph({ m0: { projectV2Item: { id: card.id } } }),
+        checkQuery: (query, variables) => {
+          expect(query).toContain("clearProjectV2ItemFieldValue");
+          expect(variables.m0).toMatchObject({
+            itemId: card.id,
+            fieldId: recording.fields.nodes.find((field) => field.name === "Progress")!.id,
+          });
+        },
+      },
+    ]);
+    const file = join(f.root, "comment.md");
+    writeFileSync(file, "Reason for closure\n");
+    expect(
+      await gatewayVerb(
+        f.transport,
+        "issue",
+        ["close", "37", ...(force ? ["--force"] : []), "--comment", file],
+        {
+          VMETHOD_ROLE: "orchestrator",
+        }
+      )
+    ).toBe("Closed issue #37");
+    f.done();
+  },
+  15000
+);
 
 test.each([
   "issueCreate",
   "issueClose",
+  "issueReopen",
   "issueEstimate",
   "boardSetIssue",
   "boardSetAssignees",
@@ -884,6 +909,7 @@ test.each([
     const inputs = {
       issueCreate: { title: "Title", file: "missing" },
       issueClose: { ref: "37" },
+      issueReopen: { ref: "37" },
       issueEstimate: { ref: "37", points: 5 },
       boardSetIssue: { ref: "37", field: "Estimate", value: "5" },
       boardSetAssignees: { ref: "37", value: null },
@@ -899,6 +925,7 @@ test.each([
 
 test.each([
   "issueClose",
+  "issueReopen",
   "issueEstimate",
   "boardSetIssue",
   "boardSetAssignees",
@@ -919,7 +946,7 @@ test.each([
   15000
 );
 
-test.each(["issueClose", "issueEstimate", "boardSetIssue"] as const)(
+test.each(["issueClose", "issueReopen", "issueEstimate", "boardSetIssue"] as const)(
   "%s filters unknown issue authors before requesting text",
   async (operation) => {
     const f = fixtureServer([
@@ -938,7 +965,7 @@ test.each(["issueClose", "issueEstimate", "boardSetIssue"] as const)(
   15000
 );
 
-test.each(["issueCreate", "issueClose"] as const)(
+test.each(["issueCreate", "issueClose", "issueReopen"] as const)(
   "%s refuses unsafe Markdown before mutations",
   async (operation) => {
     const f = fixtureServer([]);
@@ -951,6 +978,236 @@ test.each(["issueCreate", "issueClose"] as const)(
   },
   15000
 );
+
+test.each([
+  { nodes: [{ state: "OPEN" }], pageInfo: { hasNextPage: false } },
+  { nodes: [{ state: "CLOSED" }], pageInfo: { hasNextPage: true } },
+  { nodes: [{ state: "UNKNOWN" }], pageInfo: { hasNextPage: false } },
+  {},
+])(
+  "issue close refuses open or unreadable blockers before posting a comment: %j",
+  async (blockedBy) => {
+    const f = fixtureServer([
+      graph({ repository: { issue: item() } }),
+      graph({ node: acceptedIssue() }),
+      graph({ node: item({ blockedBy }) }),
+    ]);
+    const file = join(f.root, "comment.md");
+    writeFileSync(file, "Do not post this on refusal.\n");
+    await expect(f.transport.call("issueClose", { ref: "37", comment: file })).rejects.toThrow(
+      /blocker|blocked-by/
+    );
+    f.done();
+  },
+  15000
+);
+
+test("issue close --force bypasses an open-blocker read and still confirms closure", async () => {
+  const f = fixtureServer([
+    graph({ repository: { issue: item() } }),
+    graph({ node: acceptedIssue() }),
+    {
+      path: "/repos/example/project/issues/37",
+      method: "PATCH",
+      body: { state: "closed", state_reason: "completed", assignees: [] },
+      json: { state: "open" },
+    },
+  ]);
+  await expect(
+    gatewayVerb(f.transport, "issue", ["close", "37", "--force"], { VMETHOD_ROLE: "orchestrator" })
+  ).rejects.toThrow("Issue closure not confirmed");
+  f.done();
+}, 15000);
+
+test.each(["In progress", "missing history", "removed column", "paged history", "latest Done"])(
+  "issue reopen restores %s and its watcher stays quiet",
+  async (scenario) => {
+    const recording = structuredClone(boardRecording);
+    const card = recording.items.nodes[0];
+    const expected = ["In progress", "paged history", "latest Done"].includes(scenario)
+      ? "In progress"
+      : "Backlog";
+    const statusField = recording.fields.nodes.find((field) => field.name === "Status")!;
+    statusField.options!.push({ ...statusField.options![0], id: "backlog", name: "Backlog" });
+    card.fieldValues.nodes.find((field) => "name" in field)!.name = "Done";
+    const issue = { ...acceptedIssue(), id: card.content.id, state: "CLOSED" };
+    const event = scopeMove({
+      status: "Done",
+      previousStatus: scenario === "removed column" ? "Removed" : "In progress",
+    });
+    const history = (nodes: ObjectData[], more = false) =>
+      graph({
+        node: {
+          ...issue,
+          timelineItems: {
+            nodes,
+            pageInfo: { hasNextPage: more, endCursor: more ? "page-2" : null },
+          },
+        },
+      });
+    const f = fixtureServer([
+      graph({ repository: { issue: item({ id: issue.id }) } }),
+      graph({ node: issue }),
+      history(
+        scenario === "missing history"
+          ? []
+          : scenario === "latest Done"
+            ? [scopeMove({ status: "Done", previousStatus: "Backlog" }), event]
+            : [event],
+        scenario === "paged history"
+      ),
+      ...(scenario === "paged history"
+        ? [
+            history([
+              scopeMove({
+                status: "Done",
+                previousStatus: "Wrong board",
+                project: { number: 999 },
+              }),
+            ]),
+          ]
+        : []),
+      ...boardReads(recording).slice(0, 2),
+      ...(scenario === "missing history"
+        ? []
+        : [
+            {
+              path: `/repos/example/project/issues/${card.content.number}/comments`,
+              body: { body: "Reopen for more work.\n" },
+              json: { id: 42 },
+            },
+          ]),
+      {
+        path: `/repos/example/project/issues/${card.content.number}`,
+        method: "PATCH",
+        body: { state: "open" },
+        json: { number: card.content.number, node_id: issue.id, state: "open" },
+      },
+      ...boardReads(recording),
+      {
+        ...boardGraph({
+          m0: { projectV2Item: { id: card.id } },
+          m1: { projectV2Item: { id: card.id } },
+        }),
+        checkQuery(_query, variables) {
+          expect(variables.m1).toMatchObject({
+            value: {
+              singleSelectOptionId: statusField.options!.find((option) => option.name === expected)!
+                .id,
+            },
+          });
+        },
+      },
+    ]);
+    const w = new WatchFake();
+    try {
+      w.attachWriter(f);
+      w.fields = structuredClone(recording.fields.nodes);
+      const observed = w.card(card.content.number, "Done");
+      observed.id = card.id;
+      object(observed.content).id = issue.id;
+      object(observed.content).state = "CLOSED";
+      object(observed.content).closedAt = w.iso();
+      w.cards = [observed];
+      w.issues = [{ number: card.content.number, labels: [] }];
+      const loop = w.loop();
+      expect((await w.once(loop)).map((event) => event.kind)).toEqual(["closed"]);
+      const file = join(f.root, "comment.md");
+      writeFileSync(file, "Reopen for more work.\n");
+      expect(
+        await gatewayVerb(
+          f.transport,
+          "issue",
+          [
+            "reopen",
+            String(card.content.number),
+            ...(scenario === "missing history" ? [] : ["--comment", file]),
+          ],
+          { VMETHOD_ROLE: "orchestrator" }
+        )
+      ).toBe(`Reopened issue #${card.content.number}`);
+      expect(object(observed.content).state).toBe("OPEN");
+      expect(object(observed.status).name).toBe(expected);
+      const writes = readFileSync(
+        join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"),
+        "utf8"
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as ObjectData);
+      expect(writes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: "operation",
+            op: "issue-reopen",
+            number: card.content.number,
+          }),
+          expect.objectContaining({ kind: "reopened", number: card.content.number }),
+          expect.objectContaining({
+            kind: "board",
+            number: card.content.number,
+            field: "Status",
+            value: expected,
+          }),
+        ])
+      );
+      expect(await w.once(loop)).toEqual([]);
+      expect(w.reports).toEqual([]);
+      f.done();
+    } finally {
+      w.done();
+    }
+  },
+  15000
+);
+
+test("issue reopen refuses an already-open issue before changing its card", async () => {
+  const f = fixtureServer([
+    graph({ repository: { issue: item() } }),
+    graph({ node: acceptedIssue() }),
+  ]);
+  await expect(f.transport.call("issueReopen", { ref: "37" })).rejects.toThrow("closed issue");
+  f.done();
+}, 15000);
+
+test.each([
+  {},
+  { nodes: [], pageInfo: {} },
+  { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } },
+])(
+  "issue reopen refuses unreadable history before writes: %j",
+  async (timelineItems) => {
+    const issue = { ...acceptedIssue(), state: "CLOSED" };
+    const f = fixtureServer([
+      graph({ repository: { issue: item() } }),
+      graph({ node: issue }),
+      graph({ node: { ...issue, timelineItems } }),
+    ]);
+    await expect(f.transport.call("issueReopen", { ref: "37" })).rejects.toThrow(/timeline/);
+    f.done();
+  },
+  15000
+);
+
+test("issue reopen does not move the card when GitHub does not confirm reopening", async () => {
+  const issue: ObjectData = { ...acceptedIssue(), state: "CLOSED" };
+  const f = fixtureServer([
+    graph({ repository: { issue: item() } }),
+    graph({ node: issue }),
+    graph({ node: { ...issue, timelineItems: { nodes: [], pageInfo: { hasNextPage: false } } } }),
+    ...boardReads().slice(0, 2),
+    {
+      path: "/repos/example/project/issues/37",
+      method: "PATCH",
+      body: { state: "open" },
+      json: { state: "closed", node_id: issue.id },
+    },
+  ]);
+  await expect(f.transport.call("issueReopen", { ref: "37" })).rejects.toThrow(
+    "Issue reopening not confirmed"
+  );
+  f.done();
+}, 15000);
 
 function boardReads(recording = structuredClone(boardRecording)) {
   // Only repository scope is renamed to the offline test project's configured repository.

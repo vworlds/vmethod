@@ -161,6 +161,8 @@ export class WriteJournal {
       kind = "created";
     } else if (object(body).state === "closed") {
       kind = "closed";
+    } else if (object(body).state === "open") {
+      kind = "reopened";
     }
     if (
       (kind === "assigned" || kind === "unassigned") &&

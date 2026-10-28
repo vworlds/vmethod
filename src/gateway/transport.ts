@@ -20,7 +20,8 @@ export interface Operations {
     };
     output: string;
   };
-  issueClose: { input: { ref: string; comment?: string }; output: string };
+  issueClose: { input: { ref: string; comment?: string; force?: boolean }; output: string };
+  issueReopen: { input: { ref: string; comment?: string }; output: string };
   /** Replace a previously read issue body, refusing stale read evidence; the optional
    * summary file pairs the edit with a scope review of the new body (#359). */
   issueEdit: { input: { ref: string; file: string; scopeReview?: string }; output: string };

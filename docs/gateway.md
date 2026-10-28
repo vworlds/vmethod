@@ -131,7 +131,8 @@ merge fails closed with retry guidance without partial writes.
 - `vmethod board init [--steal]` (empty v0 boards only; see [initialization](board.md#migrations-what-adopters-see))
 - `vmethod board migrate [--dry-run] [--steal]`
 - `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic]`
-- `vmethod issue close <n> [--comment file]`
+- `vmethod issue close <n> [--comment file] [--force]`
+- `vmethod issue reopen <n> [--comment file]`
 - `vmethod issue estimate <n> <points>`
 - `vmethod issue edit <n> <body-file> [--scope-review <summary-file>]`
 - `vmethod issue block <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`)
@@ -146,6 +147,15 @@ merge fails closed with retry guidance without partial writes.
 - `vmethod board set <issue> <field> <value>|--clear`
 - `vmethod board set <issue|pr> Assignees owner|orchestrator|--clear`
 - `vmethod board add <issue> [--estimate n] [--status name]`
+
+`issue close` refuses open blockers and missing or incomplete blocked-by metadata
+before posting a comment or changing the issue. Use `--force` to bypass that guard
+deliberately. `issue reopen` requires a closed issue and restores its card to the
+column before its latest Done move on the configured board, or Backlog when that
+history is unknown or the column no longer exists. It does not restore assignees
+or Progress. Both commands are orchestrator-only, target the configured repository,
+validate optional comments before writing, and journal their writes so the writing
+session's watcher stays quiet.
 
 Thread references also accept `org/repo#n` within the configured org. Invoke the
 installed package through the PATH launcher, `vmethod <verb>`; where it is not
@@ -354,7 +364,8 @@ native field-clear mutation rather than an empty text or numeric zero.
 Status writes clear Progress first; the gateway client journals the
 successful mutations like other writes. No housekeeping command changes repository/board scope.
 The typed operations are `issueCreate({title, file, labels?, estimate?, status?, parent?})`,
-`issueClose({ref, comment?})`, `issueBlock({ref, blocker})`, `issueUnblock({ref, blocker})`,
+`issueClose({ref, comment?, force?})`, `issueReopen({ref, comment?})`,
+`issueBlock({ref, blocker})`, `issueUnblock({ref, blocker})`,
 `issueParent({ref, epic})`, `issueUnparent({ref, epic})`,
 `issueEstimate({ref, points})`, `boardSetIssue({ref, field, value})` and
 `boardSetAssignees({ref, value})` in `src/gateway/transport.ts`.
