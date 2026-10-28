@@ -417,6 +417,11 @@ test.each([false, true])(
           "+refs/heads/dev:refs/remotes/origin/dev",
           "+refs/heads/3-task:refs/remotes/origin/3-task"
         ),
+        action: () => {
+          expect(
+            existsSync(join(f.env.XDG_STATE_HOME, "vmethod/example-state/conflicts/3.lock"))
+          ).toBe(true);
+        },
       },
       { args: ["rev-parse", "refs/remotes/origin/3-task"], output: sha },
       { args: ["rev-parse", "refs/remotes/origin/dev"], output: currentBase },

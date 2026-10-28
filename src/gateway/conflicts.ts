@@ -24,6 +24,11 @@ import { assertLockfileInSync, lockfilesOnly, npmCiEnvironment } from "./lockfil
 export const conflictCertification =
   "conflict-only resolution; remerge diff limited to conflicted hunks; verify and CI green";
 
+/** #373: how long a conflict dispatch or an at-once recovery waits for a live
+ * conflict lock holder (a refresh-checks snapshot and push, or another
+ * reconcile) before returning its quiet pending line. */
+export const conflictLockWaitMs = 60_000;
+
 const lockfileConflictCertification =
   "lockfile-only resolution; remerge diff limited to lockfiles; lockfile sync, verify and CI green";
 
@@ -96,31 +101,73 @@ export class ConflictService {
    * Current heads are no-ops; reconciliation errors propagate without conflict escalation.
    * A record whose PR is no longer open, or that a not-dispatched resolution can no
    * longer attribute on a mergeable PR, closes quietly as resolved outside the fixer.
-   * Stopped starting/blocked records also close on a green, non-stale mergeable PR.
+   * Stopped starting/blocked records also close on a proven mergeable PR, independently of CI.
    * retry re-proves and verifies a blocked verification failure instead of closing it.
    * Auto-merge errors retain resolved state and return actionable manual-merge guidance.
    * The per-pr lock is owned like the watcher's: a dead owner's lock is cleared and the
-   * reconcile continues, while a live owner reads as a quiet in-progress pending.
+   * reconcile continues, while a live owner reads as a quiet in-progress pending —
+   * or, with waitMs (#373), as a bounded wait that lets the watcher's dispatch
+   * re-read the head and base after a refresh-checks push instead of racing it.
    */
-  async resolve(pr: number, retry = false): Promise<string> {
+  async resolve(pr: number, retry = false, waitMs = 0): Promise<string> {
     if (!Number.isSafeInteger(pr) || pr < 1) {
       throw new Error("Expected a positive PR number");
     }
     if (typeof retry !== "boolean") {
       throw new Error("Invalid conflict retry flag");
     }
-    mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    const lock = join(this.directory, `${pr}.lock`);
-    const start = procStart(this.deps.readProc(this.deps.pid));
-    if (start === null) {
-      throw new Error("conflict lock requires /proc/<pid>/stat (Linux)");
+    if (!Number.isSafeInteger(waitMs) || waitMs < 0) {
+      throw new Error("Invalid conflict lock wait");
     }
-    const busy = this.acquire(pr, lock, start);
+    const lock = join(this.directory, `${pr}.lock`);
+    const start = this.lockStart();
+    const busy = await this.acquire(pr, lock, start, waitMs);
     if (busy !== undefined) {
       return busy;
     }
     try {
       return await this.run(pr, retry);
+    } finally {
+      this.release(lock, start);
+    }
+  }
+
+  /** Hold the per-PR conflict lock around fn (#373): refresh-checks shares the
+   * watcher's lock, so its snapshot and push never interleave with a dispatch.
+   * Returns the quiet busy line instead of the result while a live holder keeps it. */
+  async guard<T>(pr: number, fn: () => Promise<T>): Promise<{ busy: string } | { value: T }> {
+    if (!Number.isSafeInteger(pr) || pr < 1) {
+      throw new Error("Expected a positive PR number");
+    }
+    const lock = join(this.directory, `${pr}.lock`);
+    const start = this.lockStart();
+    const busy = this.tryAcquire(pr, lock, start);
+    if (busy !== undefined) {
+      return { busy };
+    }
+    try {
+      return { value: await fn() };
+    } finally {
+      this.release(lock, start);
+    }
+  }
+
+  /** #373: a blocked or starting record whose PR is mergeable at its current head,
+   * with the fixer stopped, closes here at once — `resolve-conflicts` and
+   * `review <pr> owner` no longer wait for the next watcher poll. Returns true
+   * while an active record still blocks the handover. */
+  async recover(pr: number): Promise<boolean> {
+    if (!Number.isSafeInteger(pr) || pr < 1) {
+      throw new Error("Expected a positive PR number");
+    }
+    const lock = join(this.directory, `${pr}.lock`);
+    const start = this.lockStart();
+    const busy = await this.acquire(pr, lock, start, conflictLockWaitMs);
+    if (busy !== undefined) {
+      return true;
+    }
+    try {
+      return await this.recoverHeld(pr);
     } finally {
       this.release(lock, start);
     }
@@ -142,8 +189,89 @@ export class ConflictService {
     );
   }
 
+  /** The recover() body under the lock: only starting/blocked records close, and
+   * never a dispatched fixer's waiting turn — that resolution keeps its proof path. */
+  private async recoverHeld(pr: number): Promise<boolean> {
+    const record = this.read(pr);
+    if (!record) {
+      return false;
+    }
+    if (!["starting", "blocked"].includes(record.phase)) {
+      return record.phase === "waiting";
+    }
+    // A PR that ended outside this workflow closes its record quietly, exactly
+    // like a reconcile, before a snapshot read could fail on a not-open PR.
+    if ((await this.hooks.lifecycle(pr)) !== "open") {
+      this.closeOutsideFixer(pr);
+      return false;
+    }
+    const snapshot = await this.hooks.snapshot(pr);
+    const git = new GitTransport(this.config, this.env, this.deps, this.root);
+    if (
+      !(await git.transferOk("fetch", [
+        `+refs/heads/${snapshot.base}:refs/remotes/origin/${snapshot.base}`,
+        `+refs/heads/${snapshot.branch}:refs/remotes/origin/${snapshot.branch}`,
+      ]))
+    ) {
+      throw new Error("Conflict recovery fetch failed");
+    }
+    if (
+      (await liveBaseHead(snapshot.base, { git })) !== snapshot.baseSha ||
+      (await git.run("rev-parse", `refs/remotes/origin/${snapshot.branch}`)).trim() !==
+        snapshot.head
+    ) {
+      throw new Error("Head or base moved during conflict recovery; run again");
+    }
+    if (snapshot.conflict) {
+      return true;
+    }
+    if ((await this.hooks.status(pr)) !== "stopped") {
+      return true;
+    }
+    // GitHub can report a temporarily unknown mergeability as non-conflicting.
+    // Prove the fetched head/base merge cleanly before discarding durable state.
+    if ((await git.mergePreview(snapshot.head, snapshot.baseSha)).conflicts.length) {
+      return true;
+    }
+    this.deps.report(`Conflict #${pr}: record closed at once instead of the next watcher poll`);
+    this.closeOutsideFixer(pr);
+    return false;
+  }
+
+  /** Create the lock directory and read this process's /proc start time. */
+  private lockStart(): number {
+    mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+    const start = procStart(this.deps.readProc(this.deps.pid));
+    if (start === null) {
+      throw new Error("conflict lock requires /proc/<pid>/stat (Linux)");
+    }
+    return start;
+  }
+
+  /** Acquire the lock, waiting up to waitMs while a live holder keeps it (#373):
+   * the watcher's dispatch waits out a refresh-checks push or a reconcile and
+   * then re-reads the head and base. Every retry also clears dead holders. */
+  private async acquire(
+    pr: number,
+    lock: string,
+    start: number,
+    waitMs: number
+  ): Promise<string | undefined> {
+    const deadline = this.deps.now() + waitMs;
+    for (;;) {
+      const busy = this.tryAcquire(pr, lock, start);
+      if (busy === undefined) {
+        return undefined;
+      }
+      if (this.deps.now() >= deadline) {
+        return busy;
+      }
+      await this.deps.sleep(Math.min(1000, deadline - this.deps.now()));
+    }
+  }
+
   /** Create the per-pr lock, or return a quiet in-progress line while a live owner keeps it. */
-  private acquire(pr: number, lock: string, start: number): string | undefined {
+  private tryAcquire(pr: number, lock: string, start: number): string | undefined {
     for (let attempt = 0; ; attempt++) {
       try {
         writeFileSync(
@@ -247,7 +375,7 @@ export class ConflictService {
       throw new Error("Head or base moved during conflict preview; run again");
     }
     if (old && ["starting", "blocked"].includes(old.phase)) {
-      if (retry || (!snapshot.conflict && snapshot.green && !snapshot.stale)) {
+      if (retry || !snapshot.conflict) {
         const status = await this.hooks.status(pr);
         if (status !== "stopped") {
           return `PENDING #${pr}: conflict fixer ${status === "live" ? "running" : "status unknown; inspect session before recovery"}`;
@@ -333,6 +461,13 @@ export class ConflictService {
       }
       return this.finish(pr, record, await this.hooks.snapshot(pr));
     }
+    // #373: a push that landed while the card turn was captured (refresh-checks,
+    // the worker, an owner) leaves the fixer stale. Re-read the current refs and
+    // re-prove the conflict immediately before the fixer starts.
+    const stale = await this.recheckBeforeDispatch(pr, git, snapshot);
+    if (stale !== undefined) {
+      return stale;
+    }
     record.step = await this.hooks.fix(pr, snapshot.base, files);
     try {
       await this.hooks.cardConflict(pr);
@@ -348,6 +483,53 @@ export class ConflictService {
     // before it is verified on the exact head; both are kept on the card regardless.
     const cardApproved = record.approved || record.prior?.status === "Approved";
     return `PENDING #${pr}: conflict fixer dispatched (step ${record.step})${cardApproved ? "; owner approval kept" : ""}`;
+  }
+
+  /** #373: the pre-dispatch re-read. Returns undefined when the fixer may start;
+   * any other outcome discards the not-yet-dispatched record and returns its
+   * result line: a head/base that moved leaves this dispatch to the next poll,
+   * a conflict that is gone closes as resolved outside the fixer. */
+  private async recheckBeforeDispatch(
+    pr: number,
+    git: GitTransport,
+    snapshot: CiSnapshot
+  ): Promise<string | undefined> {
+    try {
+      const current = await this.hooks.snapshot(pr);
+      if (
+        !(await git.transferOk("fetch", [
+          `+refs/heads/${current.base}:refs/remotes/origin/${current.base}`,
+          `+refs/heads/${current.branch}:refs/remotes/origin/${current.branch}`,
+        ]))
+      ) {
+        throw new Error("Conflict dispatch re-check fetch failed");
+      }
+      const head = (await git.run("rev-parse", `refs/remotes/origin/${current.branch}`)).trim();
+      const base = await liveBaseHead(current.base, { git });
+      if (
+        head === snapshot.head &&
+        base === snapshot.baseSha &&
+        current.branch === snapshot.branch &&
+        current.base === snapshot.base &&
+        current.head === head &&
+        current.baseSha === base
+      ) {
+        // The proven conflict still stands on these exact refs; the local
+        // merge preview is a pure function of them, so it cannot have changed.
+        return undefined;
+      }
+      // GitHub can report a temporarily unknown mergeability; the local re-merge
+      // on the current refs decides whether the fixer still has work at all.
+      if ((await git.mergePreview(head, base)).conflicts.length) {
+        this.discard(pr);
+        return `PENDING #${pr}: head or base moved before the conflict dispatch; run again`;
+      }
+      return this.closeOutsideFixer(pr);
+    } catch (error) {
+      // No dispatch started; a starting record would read as an interrupted dispatch.
+      this.discard(pr);
+      throw error;
+    }
   }
 
   private async finish(
@@ -552,6 +734,12 @@ export class ConflictService {
 
   /** Remove the record for an out-of-band resolution; the report stays quiet, no card write. */
   private closeOutsideFixer(pr: number): string {
+    this.discard(pr);
+    return `conflict on #${pr} resolved outside the fixer`;
+  }
+
+  /** Delete the record file; nothing dispatched may depend on it anymore. */
+  private discard(pr: number): void {
     try {
       unlinkSync(join(this.directory, `${pr}.json`));
     } catch (error) {
@@ -559,7 +747,6 @@ export class ConflictService {
         throw error;
       }
     }
-    return `conflict on #${pr} resolved outside the fixer`;
   }
 
   /** Return the stored pre-dispatch card exactly once after RESOLVED; retries on reconciliation. */

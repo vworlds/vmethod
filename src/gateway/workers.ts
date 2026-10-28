@@ -432,7 +432,16 @@ export class WorkerService {
       // its prompt would 404 against the gone location directory.
       !["permission-wait", "session unknown", "worktree gone"].includes(status.reason)
     ) {
-      if ((await this.hooks.metadata(record.pr)).ownerPaused) {
+      const meta = await this.hooks.metadata(record.pr);
+      // #373: a merged PR's worker session gets no further wakes.
+      if (meta.merged) {
+        delete record.pendingConflict;
+        delete record.pendingWake;
+        delete record.conflictSentAt;
+        this.save(record);
+        return status;
+      }
+      if (meta.ownerPaused) {
         return status;
       }
       const pending = record.pendingConflict;
@@ -476,7 +485,9 @@ export class WorkerService {
       return [];
     }
     const meta = await this.hooks.metadata(record.pr);
-    if (meta.ownerPaused) {
+    // #373: a merged PR's worker session gets no further wakes; the caller
+    // drops the queue exactly like an owner summons does.
+    if (meta.ownerPaused || meta.merged) {
       return [];
     }
     const firstLine = (body: string): string => body.split(/\r?\n/)[0];
@@ -828,6 +839,9 @@ export class WorkerService {
           throw new Error("Usage: worker send <pr> <file> [--queue|--now]");
         }
         const meta = await this.hooks.metadata(pr);
+        if (meta.merged) {
+          throw new Error(`PR #${pr} is merged; nothing sent`);
+        }
         if (meta.ownerPaused) {
           throw new Error("Owner summons is paused; use review answer --owner-agreed");
         }
@@ -1092,7 +1106,18 @@ export class WorkerService {
           if (!record) {
             return `no worker session for #${pr}; nothing sent`;
           }
-          if ((await this.hooks.metadata(pr)).ownerPaused) {
+          const meta = await this.hooks.metadata(pr);
+          if (meta.merged) {
+            // #373: a merged PR's worker session gets no further wakes; drop the
+            // queue instead of delivering a stale turn after the merge.
+            rmSync(this.wakeFile(pr), { force: true });
+            delete record.pendingWake;
+            delete record.pendingConflict;
+            delete record.conflictSentAt;
+            this.save(record);
+            return `#${pr} is merged; nothing sent`;
+          }
+          if (meta.ownerPaused) {
             delete record.pendingWake;
             this.save(record);
             return `owner summons paused for #${pr}; nothing sent`;

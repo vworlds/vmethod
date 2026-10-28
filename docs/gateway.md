@@ -992,8 +992,11 @@ branch head, not the PR's potentially stale base SHA. `check-task-ci` and
 `merge-task` resolves its fetched base ref through the same live-base helper. Missing workflow
 evidence fails closed with code 2; commit timestamps cannot establish the tested
 base. It returns check names, without downloading failure logs. `refresh-checks`
-returns 0 for a successful push or no-op, 2 for a ref moving during preparation,
+returns 0 for a successful push or no-op, 2 for a busy conflict lock or a ref moving during preparation,
 and 3 for a merge conflict. Push/fetch errors remain errors, never successful no-ops.
+It holds the PR's conflict lock from the CI snapshot through the push, so the
+watcher's conflict dispatch waits and reads the updated head instead of starting
+a stale fixer.
 
 ### Verify hook
 
@@ -1309,10 +1312,13 @@ the conflicted turn's queued card moves and restarts nothing else, and the same
 watcher cycle still reports the PR normally.
 
 A `starting` or `blocked` record also closes quietly when the current head is
-mergeable with the fetched current base, CI is green and non-stale, and the
+mergeable with the fetched current base and the
 gateway confirms the fixer session is stopped (including no recorded session).
 A live or unknown session prevents recovery: inspect or stop it first. Blocked
-records remain pending for watcher reconciliation until recovered.
+records remain pending until recovered. Both `resolve-conflicts <pr>` and
+`review <pr> owner` recover these records immediately; you need not wait for a
+watcher poll. Recovery does not certify the resolution, carry approval or require
+green CI; the normal review and merge gates still apply.
 
 Use `resolve-conflicts <pr> --retry` to retry a blocked `merge verify hook failed`
 record instead of closing it. With the fixer stopped, the command re-proves the
@@ -1452,9 +1458,16 @@ The per-PR lock is owned like the watcher's: a `0700` file holding the
 reconciling process's pid and process start time. A reconcile clears a lock
 whose owner no longer runs — including a lock left by an older release, whose
 empty directory carries no owner at all — and continues normally. A live owner
-reads as a quiet in-progress pending line and never blocks or fails the
-reconcile, so a watcher killed mid-resolution cannot wedge later reconciles
-behind a stale lock.
+reads as a quiet in-progress pending line for a manual reconcile. The watcher
+waits up to one minute for the holder, then re-reads head and base; if the lock
+remains busy it retries on a later poll. Before starting any fixer, the dispatch
+fetches the current refs again: a now-mergeable head starts no fixer, and changed
+refs that still conflict defer dispatch to another poll. A watcher killed
+mid-resolution cannot wedge later reconciles behind a stale lock.
+
+Merged PRs receive no further worker wakes. Resumption refuses new notifications,
+and idle polling discards persisted review and conflict queues, including wakes
+saved during worker-lock contention. Explicit `worker send` also refuses a merged PR.
 
 ### Task worktree cleanup
 
