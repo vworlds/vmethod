@@ -1088,10 +1088,10 @@ is dropped at that poll with a
 `stale wake dropped for #n: <heading> (<time>) superseded by <reply> at <time>`
 report instead of restarting the worker for an answered turn. The session records
 `conflictSentAt` when a queued or direct CONFLICT prompt is actually sent, not when
-its dispatch NOTE is posted. For wakes triggered before that send, replies from
-the send through the next wake drain belong to the conflict resolution and do
-not count as task answers. An unanswered REVIEW or ANSWER therefore survives the
-fixer's READY or BLOCKED even if its trigger followed the dispatch NOTE. The send
+its dispatch NOTE is posted. Replies from the send through the next wake drain
+belong to the conflict resolution and do not count as answers to any queued wake,
+including wakes triggered while the fixer runs. An unanswered REVIEW or ANSWER
+therefore survives the fixer's READY or BLOCKED. The send
 boundary is cleared after queued wakes are delivered or dropped. `review owner` hands the turn to the
 owner and clears every queued wake for that PR. Conflict-fixer wakes do not use
 this queue: the resolver dispatches them directly, so they are never dropped as

@@ -1067,7 +1067,7 @@ test.each(["idle drain", "stop"])(
 );
 
 const staleTimes = ["2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z", "2026-01-01T00:03:00Z"];
-test.each(["queued", "direct"])(
+test.each(["queued", "direct", "direct with REVIEW during conflict"])(
   "%s conflict send preserves REVIEW round 2 across the fixer's READY",
   async (mode) => {
     const reviewWake =
@@ -1107,7 +1107,7 @@ test.each(["queued", "direct"])(
     f.meta.comments.push({
       body: "[orchestrator] REVIEW round 2\n\nRequested task changes",
       role: "orchestrator",
-      date: staleTimes[1],
+      date: mode === "direct with REVIEW during conflict" ? "2026-01-01T00:03:30Z" : staleTimes[1],
     });
     await f.service.resume(31, reviewWake);
     if (mode === "queued") {
@@ -1145,8 +1145,8 @@ function staleComments(): TaskMetadata["comments"] {
 test.each([
   { trigger: "00:01:00Z", reply: "00:02:00Z", kept: false },
   { trigger: "00:01:00Z", reply: "00:03:00Z", kept: true },
-  { trigger: "00:03:00Z", reply: "00:04:00Z", kept: false },
-  { trigger: "00:04:00Z", reply: "00:05:00Z", kept: false },
+  { trigger: "00:03:00Z", reply: "00:04:00Z", kept: true },
+  { trigger: "00:04:00Z", reply: "00:05:00Z", kept: true },
 ])(
   "conflict send boundary: $trigger → $reply keeps wake: $kept",
   async ({ trigger, reply, kept }) => {

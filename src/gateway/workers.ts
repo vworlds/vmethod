@@ -469,13 +469,18 @@ export class WorkerService {
       return [];
     }
     const firstLine = (body: string): string => body.split(/\r?\n/)[0];
-    const replies = meta.comments
+    // No reply in the conflict-only turn can answer a wake still queued at this
+    // drain, regardless of whether its trigger preceded or followed the send.
+    const conflictSentAt = Date.parse(record.conflictSentAt ?? "");
+    const reply = meta.comments
       .filter(
         (comment) =>
           comment.role === "worker" &&
-          /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(firstLine(comment.body))
+          /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(firstLine(comment.body)) &&
+          !(Date.parse(comment.date) >= conflictSentAt)
       )
-      .sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+      .sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
+      .at(-1);
     const kept = queued.filter((text) => {
       const heading = /^\[orchestrator\] (.+) is on your PR;/.exec(text)?.[1];
       if (!heading) {
@@ -493,15 +498,6 @@ export class WorkerService {
       if (!triggered) {
         return true;
       }
-      // A conflict-only reply cannot answer an earlier queued task wake, even
-      // when its orchestrator comment landed after the dispatch NOTE.
-      const conflictSentAt = Date.parse(record.conflictSentAt ?? "");
-      const reply = replies
-        .filter(
-          (comment) =>
-            !(Date.parse(triggered) < conflictSentAt && Date.parse(comment.date) >= conflictSentAt)
-        )
-        .at(-1);
       if (!reply || Date.parse(triggered) >= Date.parse(reply.date)) {
         return true;
       }
