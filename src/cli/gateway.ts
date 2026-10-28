@@ -95,11 +95,32 @@ export async function gatewayVerb(
           ctx
         );
       }
-      if (
-        args[0] === "close" &&
-        (args.length === 2 || (args.length === 4 && args[2] === "--comment"))
-      ) {
-        return transport.call("issueClose", { ref: args[1], comment: args[3] }, ctx);
+      if (["close", "reopen"].includes(args[0]) && args[1] && !args[1].startsWith("--")) {
+        let comment: string | undefined;
+        let force = false;
+        for (let i = 2; i < args.length; i++) {
+          if (args[i] === "--force" && args[0] === "close" && !force) {
+            force = true;
+          } else if (
+            args[i] === "--comment" &&
+            comment === undefined &&
+            args[i + 1] &&
+            !args[i + 1].startsWith("--")
+          ) {
+            comment = args[++i];
+          } else {
+            throw new Error(
+              "Usage: issue close <n> [--comment file] [--force] | issue reopen <n> [--comment file]"
+            );
+          }
+        }
+        return args[0] === "close"
+          ? transport.call(
+              "issueClose",
+              { ref: args[1], comment, ...(force ? { force } : {}) },
+              ctx
+            )
+          : transport.call("issueReopen", { ref: args[1], comment }, ctx);
       }
       if (args[0] === "estimate" && args.length === 3) {
         if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(args[2]) || !Number.isFinite(Number(args[2]))) {
@@ -110,7 +131,7 @@ export async function gatewayVerb(
         return transport.call("issueEstimate", { ref: args[1], points: Number(args[2]) }, ctx);
       }
       throw new Error(
-        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic] | issue close <n> [--comment file] | issue edit <n> <body-file> [--scope-review <summary-file>] | issue block <n> <blocker> | issue unblock <n> <blocker> | issue parent <n> <epic> | issue unparent <n> <epic> | issue estimate <n> <points>"
+        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic] | issue close <n> [--comment file] [--force] | issue reopen <n> [--comment file] | issue edit <n> <body-file> [--scope-review <summary-file>] | issue block <n> <blocker> | issue unblock <n> <blocker> | issue parent <n> <epic> | issue unparent <n> <epic> | issue estimate <n> <points>"
       );
     }
     case "upstream":

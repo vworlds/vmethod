@@ -945,15 +945,20 @@ export class WatchFake {
         object(card.content).id = result.node_id;
         this.cards.push(card);
         this.issues.push({ number, labels: [] });
-      } else if (/\/issues\/\d+$/.test(url.pathname) && body.state === "closed") {
+      } else if (
+        /\/issues\/\d+$/.test(url.pathname) &&
+        ["closed", "open"].includes(String(body.state))
+      ) {
         const number = Number(url.pathname.split("/").at(-1));
         const card = this.cards.find((card) => object(card.content).number === number);
         if (!card) {
           throw new Error("Unmapped recorded issue closure in watch mirror");
         }
-        object(card.content).state = "CLOSED";
-        object(card.content).closedAt = this.iso();
-        object(card.content).closure = { nodes: [{ actor: { login: this.writeActor.login } }] };
+        object(card.content).state = body.state === "closed" ? "CLOSED" : "OPEN";
+        object(card.content).closedAt = body.state === "closed" ? this.iso() : null;
+        object(card.content).closure = {
+          nodes: body.state === "closed" ? [{ actor: { login: this.writeActor.login } }] : [],
+        };
       } else if (
         /\/repos\/vworlds\/vmethod\/pulls$/.test(url.pathname) &&
         init?.method === "POST"

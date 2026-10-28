@@ -1282,14 +1282,37 @@ class GatewayServer {
     return `Scope review requested for #${number}`;
   }
 
-  issueClose: Handlers["issueClose"] = async ({ ref, comment }) => {
+  /** Close an issue after checking all native blockers; force explicitly bypasses that guard. */
+  issueClose: Handlers["issueClose"] = async ({ ref, comment, force }) => {
     const number = this.localNumber(ref);
     const body = comment === undefined ? undefined : readFileSync(comment, "utf8");
     if (body !== undefined) {
       await checkMarkdown(this.root, body);
       guardClosingKeywords(body);
     }
-    await this.flowThread(ref, "issue");
+    const issue = await this.flowThread(ref, "issue");
+    if (!force) {
+      const data = await this.node(
+        String(issue.id),
+        "blockedBy(first: 100) { nodes { state } pageInfo { hasNextPage } }",
+        "Issue"
+      );
+      if (!this.filter.accept(data, repoOf(data).owner, reference(ref, this.config).link)) {
+        throw new Error("Task identity changed");
+      }
+      const blockers = object(data.blockedBy);
+      if (
+        !Array.isArray(blockers.nodes) ||
+        object(blockers.pageInfo).hasNextPage !== false ||
+        blockers.nodes.some((node) => !["OPEN", "CLOSED"].includes(String(object(node).state)))
+      ) {
+        throw new Error("Missing or incomplete blocked-by metadata; cannot close issue");
+      }
+      if (blockers.nodes.some((node) => object(node).state === "OPEN")) {
+        throw new Error("Issue has an open blocker; use --force to close it anyway");
+      }
+    }
+    this.github.writes.beginOperation("issue-close", [{ repo: String(this.config.repo), number }]);
     const path = `/repos/${String(this.config.repo)}/issues/${number}`;
     if (body !== undefined) {
       await this.github.rest(`${path}/comments`, "POST", { body }, false);
@@ -1311,6 +1334,89 @@ class GatewayServer {
     await this.board.setIssueField(closed.node_id, "Progress", null);
     return `Closed issue #${number}`;
   };
+
+  /** Reopen an issue and restore its pre-Done column, falling back to Backlog.
+   * All effects use the gateway journal, including the multi-write handoff. */
+  issueReopen: Handlers["issueReopen"] = async ({ ref, comment }) => {
+    const number = this.localNumber(ref);
+    const body = comment === undefined ? undefined : readFileSync(comment, "utf8");
+    if (body !== undefined) {
+      await checkMarkdown(this.root, body);
+      guardClosingKeywords(body);
+    }
+    const issue = await this.flowThread(ref, "issue");
+    if (issue.state !== "CLOSED") {
+      throw new Error("Reopening requires a closed issue");
+    }
+    const previous = await this.preDoneStatus(issue, ref);
+    const snapshot = await this.board.snapshot();
+    const status = snapshot.fields
+      .find((field) => field.name === "Status")
+      ?.options.some((option) => option.name === previous)
+      ? previous
+      : "Backlog";
+    this.github.writes.beginOperation("issue-reopen", [{ repo: String(this.config.repo), number }]);
+    const path = `/repos/${String(this.config.repo)}/issues/${number}`;
+    if (body !== undefined) {
+      await this.github.rest(`${path}/comments`, "POST", { body }, false);
+    }
+    const reopened = object(await this.github.rest(path, "PATCH", { state: "open" }));
+    if (reopened.state !== "open" || reopened.node_id !== issue.id) {
+      throw new Error("Issue reopening not confirmed");
+    }
+    await this.board.setIssueField(String(issue.id), "Status", status);
+    return `Reopened issue #${number}`;
+  };
+
+  private async preDoneStatus(issue: ObjectData, ref: string): Promise<string> {
+    let status = "Backlog";
+    let cursor: string | null = null;
+    const seen = new Set<string>();
+    for (;;) {
+      const data = object(
+        await this.github.graphql(
+          `query($id: ID!, $cursor: String) { node(id: $id) { ... on Issue { ${identityFields} timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { status previousStatus createdAt project { number } } } pageInfo { hasNextPage endCursor } } } } }`,
+          { id: issue.id, cursor }
+        )
+      );
+      const parent = object(data.node);
+      if (!this.filter.accept(parent, repoOf(parent).owner, reference(ref, this.config).link)) {
+        throw new Error("Task identity changed");
+      }
+      const connection = object(parent.timelineItems);
+      if (!Array.isArray(connection.nodes)) {
+        throw new Error("Missing timeline nodes");
+      }
+      for (const node of connection.nodes) {
+        const event = object(node);
+        if (
+          event.__typename === "ProjectV2ItemStatusChangedEvent" &&
+          object(event.project).number === Number(object(this.config.board).number) &&
+          event.status === "Done"
+        ) {
+          status =
+            typeof event.previousStatus === "string" &&
+            event.previousStatus &&
+            event.previousStatus !== "Done"
+              ? event.previousStatus
+              : "Backlog";
+        }
+      }
+      const page = object(connection.pageInfo);
+      if (page.hasNextPage === false) {
+        return status;
+      }
+      if (
+        page.hasNextPage !== true ||
+        typeof page.endCursor !== "string" ||
+        seen.has(page.endCursor)
+      ) {
+        throw new Error("Invalid timeline pagination cursor");
+      }
+      cursor = page.endCursor;
+      seen.add(cursor);
+    }
+  }
 
   /** Attach a configured-repository sub-issue to a configured-repository epic through
    * GitHub's addSubIssue (#327): a parent outside the configured repository is refused
@@ -3049,6 +3155,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     autopilotStop: server.autopilotStop,
     autopilotInherit: server.autopilotInherit,
     issueClose: server.issueClose,
+    issueReopen: server.issueReopen,
     boardSetIssue: server.boardSetIssue,
     boardSetAssignees: server.boardSetAssignees,
     boardAdd: server.boardAdd,
@@ -3107,6 +3214,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     autopilotStop: ["orchestrator"],
     autopilotInherit: ["orchestrator"],
     issueClose: ["orchestrator"],
+    issueReopen: ["orchestrator"],
     boardSetIssue: ["orchestrator"],
     boardSetAssignees: ["orchestrator"],
     boardAdd: ["orchestrator"],
