@@ -18,6 +18,52 @@ import type { ObjectData } from "../../src/gateway/people.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
 import { taskFlowVerb } from "../../src/cli/task-flow.js";
 
+test("pr open crosses the authenticated gateway with configured repository and base", async () => {
+  const f = fixtureServer([
+    {
+      path: "/repos/example/project/git/matching-refs/heads/adoption",
+      method: "GET",
+      json: [{ ref: "refs/heads/adoption", object: { sha } }],
+    },
+    {
+      path: "/repos/example/project/pulls",
+      body: {
+        head: "adoption",
+        base: "dev",
+        title: "chore: adopt",
+        body: "Adoption\n",
+        draft: false,
+      },
+      json: { number: 27, node_id: "pr" },
+    },
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "Adoption\n");
+  await expect(
+    taskFlowVerb(f.transport, "pr", ["open", "adoption", "chore: adopt", file], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).resolves.toBe("https://github.com/example/project/pull/27");
+  f.done();
+});
+
+test.each(["prOpen", "prMerge"] as const)(
+  "%s refuses worker clients before API access",
+  async (operation) => {
+    const f = fixtureServer([]);
+    await expect(
+      f.transport.call(
+        operation,
+        operation === "prOpen"
+          ? { branch: "adoption", title: "chore: adopt", file: "body.md" }
+          : { ref: "27" },
+        { role: "worker", taskPr: 27 }
+      )
+    ).rejects.toThrow("denied for client role");
+    f.done();
+  }
+);
+
 test.each(["issue", "pr"] as const)(
   "orchestrator can stop but not grant autopilot on an accepted %s",
   async (kind) => {

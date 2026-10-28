@@ -965,6 +965,33 @@ Dropped records live in
 prints links and counts, never bodies, titles or author names. Repeated reads can
 produce repeated drops; the counts are observations, not unique contributions.
 
+## Non-task PR commands
+
+Use these orchestrator-only verbs for adoption, configuration and documentation
+changes authored outside the worker task lifecycle. Task branches use `open-task`
+and `merge-task` instead.
+
+- `vmethod pr open <branch> <title> <body-file> [--draft]` opens an already-pushed
+  branch in the configured repository against `baseBranch`. The title must use
+  `<type>: <subject>` without scope. The body receives the same Markdown and
+  closing-keyword checks as posts; task markers are refused. Configured task-pattern
+  and pack branches are refused. No worker or task issue relation is created.
+- `vmethod pr merge <n>` squash-merges a same-repository, non-task PR against
+  `baseBranch`. It requires Approved board position (when the board is enabled),
+  current-head owner approval through `review <n> owner <file>` and the owner's
+  Owner review → Approved move, or current autopilot delegation with your
+  exact-head autopilot review. There is no self-approved “unimportant PR” exception
+  and no historical approval carry. Identity and permission changes, including
+  `people.yaml`, `.claude/` and CODEOWNERS, require the owner even under autopilot.
+  The normal pinned-app green-head, current-base, mergeability and stopped-worker
+  gates apply. Head/base movement and revoked approval refuse the merge.
+
+Merge follow-up journals the PR's Done/turn update and fast-forwards the clean main
+checkout on `baseBranch`, reinstalling dependencies last when configured. It does
+not close associated issues, delete the author branch or clean up task worktrees.
+Retry `pr merge <n>` after an interrupted follow-up; an already-merged PR only
+reconciles follow-up, never performs another merge.
+
 ## Task-flow commands
 
 These commands require `VMETHOD_ROLE=orchestrator`:
