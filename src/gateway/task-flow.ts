@@ -279,6 +279,68 @@ export class TaskFlow {
     );
   }
 
+  /** Open an already-pushed non-task PR; never creates task relations or a worker. */
+  async openPr(input: {
+    branch: string;
+    title: string;
+    file: string;
+    draft?: boolean;
+  }): Promise<string> {
+    this.nonTaskBranch(input.branch);
+    if (!conformingTitle(input.title)) {
+      throw new Error("Squash subject must be <type>: <subject> without scope");
+    }
+    if (input.draft !== undefined && typeof input.draft !== "boolean") {
+      throw new Error("Invalid draft flag");
+    }
+    const body = readFileSync(input.file, "utf8");
+    await checkMarkdown(this.root, body);
+    guardClosingKeywords(body);
+    if (taskIssueNumbers(body) !== undefined) {
+      throw new Error("Task PRs use open-task");
+    }
+    const refs = await this.host.github.rest(
+      `/repos/${this.repo}/git/matching-refs/heads/${encodeURIComponent(input.branch)}`
+    );
+    if (
+      !Array.isArray(refs) ||
+      !refs.some((ref) => object(ref).ref === `refs/heads/${input.branch}`)
+    ) {
+      throw new Error("Branch must already be pushed to the configured repository");
+    }
+    const created = object(
+      await this.host.github.rest(
+        `/repos/${this.repo}/pulls`,
+        "POST",
+        {
+          head: input.branch,
+          base: String(this.config.baseBranch),
+          title: input.title,
+          body,
+          draft: input.draft ?? false,
+        },
+        false
+      )
+    );
+    return `https://github.com/${this.repo}/pull/${this.number(String(created.number))}`;
+  }
+
+  private nonTaskBranch(branch: string): void {
+    taskBranch(branch, this.config);
+    const branches = object(this.config.branches);
+    const pattern = String(branches.taskPattern ?? "<number>-<slug>")
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      // Issue-less open-task deliveries use an eight-character title hash.
+      .replaceAll("<number>", "(?:\\d+|[a-f\\d]{8})")
+      .replaceAll("<slug>", "[A-Za-z0-9._-]+");
+    if (
+      new RegExp(`^${pattern}$`).test(branch) ||
+      branch.startsWith(String(branches.packPrefix ?? "pack/"))
+    ) {
+      throw new Error("Task branches use open-task and merge-task");
+    }
+  }
+
   /** Open an isolated draft delivery, freezing only an on-scale opening issue Estimate. */
   async open(input: OpenTaskInput): Promise<string> {
     for (const value of [input.hold, input.part, input.ownerApproved]) {
@@ -1183,6 +1245,21 @@ export class TaskFlow {
     carryApproval?: string,
     expectedHead?: string
   ): Promise<string> {
+    return this.mergeDelivery(ref, mergeCommit, carryApproval, expectedHead, false);
+  }
+
+  /** Merge a non-task PR using current owner/delegated approval; recovery only repeats follow-up. */
+  async mergePr(ref: string): Promise<string> {
+    return this.mergeDelivery(ref, false, undefined, undefined, true);
+  }
+
+  private async mergeDelivery(
+    ref: string,
+    mergeCommit: boolean,
+    carryApproval: string | undefined,
+    expectedHead: string | undefined,
+    nonTask: boolean
+  ): Promise<string> {
     if (typeof mergeCommit !== "boolean") {
       throw new Error("Invalid merge-commit flag");
     }
@@ -1193,6 +1270,15 @@ export class TaskFlow {
       throw new Error("Approval carry requires a nonempty single-line reason");
     }
     const item = await this.pr(ref);
+    if (nonTask) {
+      this.nonTaskBranch(String(item.headRefName));
+      if (
+        taskIssueNumbers(String(item.body)) !== undefined ||
+        item.baseRefName !== this.config.baseBranch
+      ) {
+        throw new Error("pr merge requires a non-task PR against baseBranch");
+      }
+    }
     if (expectedHead !== undefined && item.headRefOid !== expectedHead) {
       throw new Error("Head moved after conflict certification; approval not carried");
     }
@@ -1249,7 +1335,7 @@ export class TaskFlow {
       let certification: string | undefined;
       let autopilot = false;
       if (carryApproval !== undefined) {
-        for (const approved of await this.host.candidates(ref)) {
+        for (const approved of nonTask ? [] : await this.host.candidates(ref)) {
           if ((await this.host.approved(ref, approved)) !== true) {
             continue;
           }
@@ -1282,7 +1368,7 @@ export class TaskFlow {
       } else if ((await this.host.approved(ref)) !== true) {
         autopilot = (await this.host.autopilotApproved?.(ref, head)) === true;
         let survived = autopilot;
-        for (const approved of await this.host.candidates(ref)) {
+        for (const approved of nonTask ? [] : await this.host.candidates(ref)) {
           if (
             (await this.host.approved(ref, approved)) === true &&
             (await cleanBaseMerges((...args) => git.run(...args), approved, head, baseSha))
@@ -1302,7 +1388,7 @@ export class TaskFlow {
         if (
           base === String(this.config.releaseBranch) ||
           files.some((file) =>
-            /(?:^|\/)people\.ya?ml$|^(?:\.claude\/|\.opencode\/|opencode\.jsonc?$|vmethod\.yaml$|\.github\/CODEOWNERS$)/.test(
+            /(?:^|\/)people\.ya?ml$|(?:^|\/)CODEOWNERS$|^(?:\.claude\/|\.opencode\/|opencode\.jsonc?$|vmethod\.yaml$)/.test(
               file
             )
           )
@@ -1326,6 +1412,12 @@ export class TaskFlow {
         await this.verifyMerge(ref, liveBase, head);
       }
       const current = await this.pr(ref);
+      if (nonTask) {
+        this.nonTaskBranch(String(current.headRefName));
+        if (taskIssueNumbers(String(current.body)) !== undefined) {
+          throw new Error("PR became a task during merge checks; use merge-task");
+        }
+      }
       // Hook execution can take minutes: re-fetch rather than trusting the PR's
       // potentially stale baseRefOid to detect base movement during verification.
       if (!(await git.transferOk("fetch", [`+refs/heads/${base}:refs/remotes/origin/${base}`]))) {
@@ -1341,6 +1433,9 @@ export class TaskFlow {
       }
       if ((await this.status(ref, true)) !== "stopped") {
         throw new Error("Worker restarted before merge");
+      }
+      if (nonTask && !autopilot && (await this.host.approved(ref)) !== true) {
+        throw new Error("Owner approval is not valid for current head");
       }
       if (item.isDraft) {
         await this.ready(item, false);
@@ -1379,7 +1474,7 @@ export class TaskFlow {
     // Stop first, then inspect the remote branch before any destructive cleanup.
     // #275: with no worker record the PR never had a worker; the worker is absent,
     // not unknown, and the stop is skipped silently.
-    if (!(await this.workerAbsent(ref))) {
+    if (!nonTask && !(await this.workerAbsent(ref))) {
       try {
         if (!this.deps.workers?.stop) {
           this.deps.report(
@@ -1430,17 +1525,17 @@ export class TaskFlow {
       );
       return { exists: true, preserve: true };
     };
-    let keepBranch = (await preserveBranch()).preserve;
+    let keepBranch = nonTask ? false : (await preserveBranch()).preserve;
     const file = this.stateFile(ref);
     const journal: Journal = existsSync(file)
       ? (JSON.parse(readFileSync(file, "utf8")) as Journal)
-      : { head, base, branch, issues: await this.issues(item), done: [] };
+      : { head, base, branch, issues: nonTask ? [] : await this.issues(item), done: [] };
     if (journal.head !== head || journal.base !== base || journal.branch !== branch) {
       throw new Error("Merge journal does not match PR");
     }
     // Older completed journals may have missed the issue entirely. Reconcile newly
     // discoverable relations without replaying already-checkpointed issue writes.
-    if (existsSync(file)) {
+    if (!nonTask && existsSync(file)) {
       const issues = await this.issues(item);
       if (JSON.stringify(journal.issues) !== JSON.stringify(issues)) {
         journal.issues = issues;
@@ -1450,7 +1545,7 @@ export class TaskFlow {
     this.save(file, journal);
     // One operation for the merge follow-up's issue and PR card writes (#199): the
     // watcher stays quiet while closures, board moves and turn clears land.
-    this.host.github.writes.beginOperation("merge-task", [
+    this.host.github.writes.beginOperation(nonTask ? "pr-merge" : "merge-task", [
       { repo: this.repo, number: this.number(ref) },
       ...journal.issues.map((number) => ({ repo: this.repo, number })),
     ]);
@@ -1521,7 +1616,7 @@ export class TaskFlow {
         await this.host.board().capDone();
       }
     });
-    if (!pack) {
+    if (!pack && !nonTask) {
       await step("branch", async () => {
         // Recheck immediately before delete too: a late push must be preserved.
         const latest = await preserveBranch();
@@ -1571,7 +1666,7 @@ export class TaskFlow {
         journal.install = Boolean(changed.trim());
       });
     }
-    if (!pack) {
+    if (!pack && !nonTask) {
       const worktrees = new WorktreeService(
         this.root,
         this.config,

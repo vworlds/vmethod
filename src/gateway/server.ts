@@ -1276,6 +1276,8 @@ class GatewayServer {
   };
 
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
+  prOpen: Handlers["prOpen"] = async (input) => this.flow.openPr(input);
+  prMerge: Handlers["prMerge"] = async (input) => this.flow.mergePr(input.ref);
   reviewTask: Handlers["reviewTask"] = async (input) => this.flow.review(input);
   askIssue: Handlers["askIssue"] = async (input) => this.flow.ask(input.ref, input.file);
   mergeTask: Handlers["mergeTask"] = async (input) =>
@@ -2512,6 +2514,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     grade: server.grade,
     suggestModel: server.suggestModel,
     openTask: server.openTask,
+    prOpen: server.prOpen,
+    prMerge: server.prMerge,
     reviewTask: server.reviewTask,
     askIssue: server.askIssue,
     mergeTask: server.mergeTask,
@@ -2561,6 +2565,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     grade: ["orchestrator"],
     suggestModel: ["orchestrator"],
     openTask: ["orchestrator"],
+    prOpen: ["orchestrator"],
+    prMerge: ["orchestrator"],
     reviewTask: ["orchestrator"],
     askIssue: ["orchestrator"],
     mergeTask: ["orchestrator"],
