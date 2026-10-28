@@ -32,6 +32,158 @@ import { proc } from "./watch-fake.js";
 
 const holdBanner = "> ⛔ ON HOLD. Wait for [orchestrator] GO.";
 
+test.each([false, true])("pr open creates a pushed non-task PR (draft=%s)", async (draft) => {
+  const f = fixture();
+  f.set({ branch: "adoption" });
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "Adopt the pinned methodology.\n");
+  await expect(
+    f.flow().openPr({ branch: "adoption", title: "chore: adopt methodology", file, draft })
+  ).resolves.toBe("https://github.com/example/project/pull/27");
+  expect(f.writes.find((write) => write.path.endsWith("/pulls"))?.body).toEqual({
+    head: "adoption",
+    base: "dev",
+    title: "chore: adopt methodology",
+    body: "Adopt the pinned methodology.\n",
+    draft,
+  });
+  expect(f.touched).toEqual([]);
+  f.done();
+});
+
+test.each([
+  { branch: "8-task", body: "Adoption", error: "Task branches" },
+  { branch: "deadbeef-task", body: "Adoption", error: "Task branches" },
+  { branch: "pack/release", body: "Adoption", error: "Task branches" },
+  { branch: "unpushed", body: "Adoption", error: "already be pushed" },
+  { branch: "adoption", body: "Fixes #8", error: "closing" },
+  { branch: "adoption", body: "```ts\nunbalanced", error: "fence" },
+  { branch: "adoption", body: '<!-- vmethod-task {"issues":[8]} -->', error: "open-task" },
+])("pr open rejects $branch / $error before creating", async ({ branch, body, error }) => {
+  const f = fixture();
+  f.set({ branch: "adoption" });
+  const file = join(f.root, "body.md");
+  writeFileSync(file, body);
+  await expect(f.flow().openPr({ branch, title: "chore: adopt", file })).rejects.toThrow(
+    new RegExp(error, "i")
+  );
+  expect(f.writes.some((write) => write.path.endsWith("/pulls"))).toBe(false);
+  f.done();
+});
+
+test.each(["owner", "autopilot"])(
+  "pr merge squashes with %s approval and fast-forwards only the main checkout",
+  async (approval) => {
+    const f = fixture();
+    f.set({ branch: "adoption", body: "Adoption", approved: approval === "owner", changed: false });
+    if (approval === "autopilot") {
+      f.host.autopilotApproved = async () => true;
+    }
+    await expect(f.flow().mergePr("27")).resolves.toBe("Merged #27");
+    expect(f.writes.find((write) => write.path.endsWith("/merge"))?.body).toEqual({
+      sha,
+      merge_method: "squash",
+      commit_title: "feat: task (#27)",
+    });
+    expect(f.events).toContain(`git merge --ff-only ${mergedSha}`);
+    expect(f.events.some((event) => event.includes("worktree"))).toBe(false);
+    expect(f.writes.some((write) => write.path.includes("/git/refs/heads/"))).toBe(false);
+    expect(f.touched.some((write) => write.id === "issue")).toBe(false);
+    f.done();
+  }
+);
+
+test.each(["approval", "identity", "red", "stale", "base", "task", "marker", "revoked"])(
+  "pr merge refuses %s",
+  async (gate) => {
+    const f = fixture();
+    f.set({ branch: "adoption", body: "Adoption", changed: false });
+    const errors: Record<string, string> = {
+      approval: "Owner approval",
+      identity: "identity or permission",
+      red: "CI",
+      stale: "CI",
+      base: "older base",
+      task: "Task branches",
+      marker: "non-task PR",
+      revoked: "revoked",
+    };
+    if (["approval", "identity", "revoked"].includes(gate)) {
+      f.set({ approved: false });
+    }
+    if (gate === "identity" || gate === "revoked") {
+      let calls = 0;
+      f.host.autopilotApproved = async () => gate === "identity" || ++calls === 1;
+    }
+    if (gate === "identity") {
+      const original = f.deps.exec;
+      f.deps.exec = async (file, args, options) =>
+        args[0] === "diff" ? ".claude/settings.json" : original(file, args, options);
+    }
+    if (gate === "red") {
+      f.red();
+    }
+    if (gate === "stale") {
+      f.greenHead("e".repeat(40));
+    }
+    if (gate === "base") {
+      f.set({ fail: "base" });
+    }
+    if (gate === "task") {
+      f.set({ branch: "8-task" });
+    }
+    if (gate === "marker") {
+      f.set({ body: '<!-- vmethod-task {"issues":[8]} -->' });
+    }
+    await expect(f.flow().mergePr("27")).rejects.toThrow(new RegExp(errors[gate], "i"));
+    expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+    f.done();
+  }
+);
+
+test("pr merge retries interrupted follow-up without another merge or issue closure", async () => {
+  const f = fixture();
+  f.set({ branch: "adoption", body: "Adoption", fail: "board", changed: false });
+  await expect(f.flow().mergePr("27")).rejects.toThrow("board failed");
+  f.set({ fail: "", approved: false });
+  await expect(f.flow().mergePr("27")).resolves.toBe("Merged #27");
+  expect(f.writes.filter((write) => write.path.endsWith("/merge"))).toHaveLength(1);
+  expect(f.touched.some((write) => write.id === "issue")).toBe(false);
+  expect(f.events).toContain(`git merge --ff-only ${mergedSha}`);
+  f.done();
+});
+
+test.each(["people.yaml", ".claude/settings.json", "CODEOWNERS", ".github/CODEOWNERS"])(
+  "pr merge reserves %s for owner approval under autopilot",
+  async (path) => {
+    const f = fixture();
+    f.set({ branch: "adoption", body: "Adoption", approved: false });
+    f.host.autopilotApproved = async () => true;
+    const original = f.deps.exec;
+    f.deps.exec = async (file, args, options) =>
+      args[0] === "diff" ? path : original(file, args, options);
+    await expect(f.flow().mergePr("27")).rejects.toThrow("identity or permission");
+    expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+    f.done();
+  }
+);
+
+test("non-task review uses the existing owner handover without touching linked issue cards", async () => {
+  const f = fixture();
+  f.set({ branch: "adoption", body: "Adoption", boardValues: { Status: "Executing" } });
+  const file = join(f.root, "review.md");
+  writeFileSync(file, "Please review the adoption.\n");
+  await f.flow().review({ ref: "27", outcome: "owner", file });
+  expect(f.touched).toContainEqual(
+    expect.objectContaining({ id: "pr", field: "Status", value: "Owner review" })
+  );
+  expect(f.touched.some((write) => write.id === "issue")).toBe(false);
+  expect(f.writes.some((write) => String(write.body.body).includes(`Current head: ${sha}`))).toBe(
+    true
+  );
+  f.done();
+});
+
 test("autopilot delivery review advances Owner review to Approved with per-step comments", async () => {
   const f = fixture();
   f.set({ boardValues: { Status: "Executing", Progress: "🤖👍" } });
@@ -107,6 +259,8 @@ test.each([
   "vmethod.yaml",
   ".opencode/permissions.json",
   ".github/CODEOWNERS",
+  "CODEOWNERS",
+  "docs/CODEOWNERS",
 ])("autopilot cannot authorize owner-reserved file %s", async (path) => {
   const f = fixture();
   f.set({ approved: false });

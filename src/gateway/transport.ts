@@ -43,6 +43,13 @@ export interface Operations {
   suggestModel: { input: { ref: string }; output: string };
   grade: { input: { ref: string; points?: number }; output: string };
   openTask: { input: OpenTaskInput; output: string };
+  /** Open an already-pushed non-task branch against baseBranch; orchestrator only. */
+  prOpen: {
+    input: { branch: string; title: string; file: string; draft?: boolean };
+    output: string;
+  };
+  /** Squash a non-task PR with exact-head owner or delegated review and normal CI/base gates. */
+  prMerge: { input: { ref: string }; output: string };
   reviewTask: { input: ReviewInput; output: string };
   askIssue: { input: { ref: string; file: string }; output: string };
   mergeTask: {
