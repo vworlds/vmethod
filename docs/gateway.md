@@ -498,8 +498,9 @@ the typed gateway transport; Basic authentication is in headers, never argv.
 
 Workers never run in the orchestrator's checkout. They run in worktrees of the
 **worker checkout**: a separate clone of the repository named by `workerCheckout`
-in `vmethod.yaml` (relative to the orchestrator's checkout), overridden per machine
-by `VMETHOD_WORKER_CHECKOUT`. Its gitignored `.claude/settings.local.json` holds the
+in `vmethod.yaml` (relative to the main orchestrator checkout, even when the command
+runs from a linked worktree), overridden per machine by `VMETHOD_WORKER_CHECKOUT`.
+Its gitignored `.claude/settings.local.json` holds the
 worker identity (`VMETHOD_ROLE=worker`, the worker's `GH_CONFIG_DIR`, git author and
 SSH command); OpenCode applies it to every session in that project, whatever the
 model. `vmethod check` (as orchestrator) refuses a missing clone, and start refuses
@@ -1539,6 +1540,17 @@ An empty list is recorded explicitly. This is an orchestrator semantic assertion
 not an automated proof of unchanged behaviour: behaviour changes or an algorithmic
 revamp require re-asking the owner. All other merge gates and journaling remain
 unchanged; see the [owner rule](orchestrator-guide.md#merge-and-release).
+
+An exact-head autopilot approval can also survive a clean `refresh-checks` base
+merge: use `merge-task --carry-approval "<reason>"` without repeating
+`review <pr> owner`. Automatic carry after a conflict fixer is supported too.
+Delegated carries additionally require the `cleanBaseMerges` proof described above;
+the orchestrator's semantic certification alone is insufficient. The record uses
+`APPROVAL CARRIED (autopilot)` with the approved/current heads and reason. The
+PR's or linked issue's delegation must still be current at merge time; revocation
+or stopping refuses with `autopilot delegation is no longer current; ask the owner`.
+Ordinary task commits require fresh review, and autopilot still cannot authorize
+releases or owner-reserved identity/permission files.
 
 Tests inject strict fake fetch/exec, clock and sleep implementations. No test
 needs a real GitHub token or opencode server. Base-merge proof tests also use

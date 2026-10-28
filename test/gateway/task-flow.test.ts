@@ -3805,6 +3805,82 @@ test.each([true, false])("merge gateway recomputes clean base proof (clean=%s)",
 });
 
 test.each([
+  "explicit",
+  "automatic",
+  "task commit",
+  "edited merge",
+  "revoked",
+  "stopped during checks",
+  "reserved file",
+  "release",
+])("autopilot base-merge approval carry: %s", async (scenario) => {
+  const f = fixture();
+  const old = "d".repeat(40),
+    tree = "e".repeat(40);
+  f.host.approved = async () => false;
+  f.host.candidates = async () => [old];
+  let historicalReads = 0;
+  f.host.autopilotApproved = async (_ref, head) => {
+    if (head === old && scenario === "revoked") {
+      throw new Error("autopilot delegation is no longer current; ask the owner");
+    }
+    return head === old && (scenario !== "stopped during checks" || ++historicalReads === 1);
+  };
+  if (scenario === "release") {
+    f.config.releaseBranch = "dev";
+  }
+  const exec = f.deps.exec;
+  const commands: Record<string, string> = {
+    [`rev-list --parents ${old}..${sha} --not ${baseSha}`]: `${sha} ${old} ${baseSha}`,
+    [`show --remerge-diff --format= --name-only -z ${sha}`]: "",
+    [`rev-list --first-parent --parents ${old}..${sha}`]:
+      scenario === "task commit" ? `${sha} ${old}` : `${sha} ${old} ${baseSha}`,
+    [`merge-tree --write-tree ${old} ${baseSha}`]: tree,
+    [`rev-parse ${sha}^{tree}`]: scenario === "edited merge" ? old : tree,
+    [`merge-base ${old} ${baseSha}`]: old,
+    [`merge-base ${sha} ${baseSha}`]: baseSha,
+    [`diff --name-only -z ${old} ${old}`]: "task.ts\0",
+    [`diff --name-only -z ${baseSha} ${sha}`]: "task.ts\0",
+    [`diff --binary --full-index ${old} ${old} -- task.ts`]: "patch",
+    [`diff --binary --full-index ${baseSha} ${sha} -- task.ts`]: "patch",
+    [`diff --name-only ${baseSha}...${sha}`]:
+      scenario === "reserved file" ? "people.yaml" : "task.ts",
+  };
+  f.deps.exec = async (file, args, options) => {
+    const key = args.join(" ");
+    if (file === "git" && key in commands) {
+      return commands[key];
+    }
+    return exec(file, args, options);
+  };
+  const merge = () =>
+    f.flow().merge("27", false, scenario === "automatic" ? undefined : "Clean base update");
+  if (["explicit", "automatic"].includes(scenario)) {
+    await expect(merge()).resolves.toBe("Merged #27");
+    if (scenario === "explicit") {
+      expect(
+        f.writes.some((write) =>
+          String(write.body.body).includes(
+            `APPROVAL CARRIED (autopilot) from ${old} to ${sha}: Clean base update`
+          )
+        )
+      ).toBe(true);
+    }
+    expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(true);
+  } else {
+    await expect(merge()).rejects.toThrow(
+      ["reserved file", "release"].includes(scenario)
+        ? "Autopilot cannot authorize"
+        : ["revoked", "stopped during checks"].includes(scenario)
+          ? "autopilot delegation is no longer current; ask the owner"
+          : "cannot be carried"
+    );
+    expect(f.writes.some((write) => write.path.endsWith("/merge"))).toBe(false);
+  }
+  f.done();
+});
+
+test.each([
   "merge",
   "commit",
   "no approval",

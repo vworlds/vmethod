@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { expect, test } from "vitest";
 import { githubToken } from "../../src/gateway/github-token.js";
@@ -6,10 +7,13 @@ import { taskEnvironment } from "../../src/gateway/worker-context.js";
 import {
   workerCheckout,
   workerCheckoutIsSelf,
+  mainCheckoutRoot,
   workerWorktreeName,
   workerWorktreePrefix,
 } from "../../src/gateway/worker-path.js";
 import { getConfig } from "../../src/config.js";
+import { check } from "../../src/check.js";
+import { parse, stringify } from "yaml";
 import { fixture, ghConfig, validProject } from "../helpers.js";
 
 test("workerCheckout resolves relative to the orchestrator checkout and refuses the checkout itself", () => {
@@ -24,6 +28,78 @@ test("VMETHOD_WORKER_CHECKOUT overrides workerCheckout per machine", () => {
   const root = validProject();
   const config = getConfig(root, { VMETHOD_WORKER_CHECKOUT: "/srv/machine-worker" });
   expect(workerCheckout(root, config)).toBe("/srv/machine-worker");
+});
+
+test("workerCheckout resolves relative to the main checkout from a linked worktree", () => {
+  const root = fixture();
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", [
+    "-C",
+    root,
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.com",
+    "commit",
+    "--allow-empty",
+    "-qm",
+    "initial",
+  ]);
+  const linked = join(root, ".worktrees/review");
+  mkdirSync(join(root, ".worktrees"));
+  execFileSync("git", ["-C", root, "worktree", "add", "-q", "--detach", linked, "HEAD"]);
+
+  expect(mainCheckoutRoot(root)).toBe(root);
+  expect(mainCheckoutRoot(linked)).toBe(root);
+  expect(workerCheckout(root, { workerCheckout: "../worker" })).toBe(resolve(root, "../worker"));
+  expect(workerCheckout(linked, { workerCheckout: "../worker" })).toBe(resolve(root, "../worker"));
+});
+
+test("check from a linked worktree accepts a worker clone beside the main checkout", () => {
+  const root = validProject();
+  const workerName = `${basename(root)}-worker`;
+  const worker = join(root, "..", workerName);
+  const linked = join(root, ".worktrees/review");
+  mkdirSync(join(root, ".worktrees"));
+  mkdirSync(join(worker, ".git"), { recursive: true });
+  writeFileSync(
+    join(root, "vmethod.yaml"),
+    readFileSync(join(root, "vmethod.yaml"), "utf8").replace(
+      "workerCheckout: ../example-worker",
+      `workerCheckout: ../${workerName}`
+    )
+  );
+  const modelFile = join(root, "models.yaml");
+  const models = parse(readFileSync(modelFile, "utf8")) as Record<string, unknown>[];
+  writeFileSync(
+    modelFile,
+    stringify(models.map((model) => ({ ...model, price: { input: 1, output: 2, cached: 0.1 } })))
+  );
+  execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["-C", root, "add", "-A"]);
+  execFileSync("git", ["-C", root, "add", "-f", ".claude/settings.json"]);
+  execFileSync("git", [
+    "-C",
+    root,
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.com",
+    "commit",
+    "-qm",
+    "initial",
+  ]);
+  execFileSync("git", ["-C", root, "worktree", "add", "-q", "--detach", linked, "HEAD"]);
+
+  const result = check(linked, {
+    VMETHOD_ROLE: "orchestrator",
+    GIT_AUTHOR_NAME: "A",
+    GIT_AUTHOR_EMAIL: "a@b",
+    GIT_COMMITTER_NAME: "C",
+    GIT_COMMITTER_EMAIL: "c@b",
+  });
+  rmSync(worker, { recursive: true, force: true });
+  expect(result).toEqual({ code: 0, messages: [] });
 });
 
 test("workerCheckoutIsSelf reports a worker checkout's own config and never a missing value", () => {

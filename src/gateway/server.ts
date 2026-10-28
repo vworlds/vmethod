@@ -750,7 +750,9 @@ class GatewayServer {
         await this.flow.conflictTask(String(pr));
         return this.ci.snapshot(String(pr));
       },
-      approved: (pr, head) => this.approvalFor(String(pr), head),
+      approved: async (pr, head) =>
+        (await this.approvalFor(String(pr), head)) === true ||
+        (await this.autopilotApprovalFor(String(pr), head)),
       update: async (pr, head) => {
         await this.github.rest(
           `/repos/${String(this.config.repo)}/pulls/${pr}/update-branch`,
@@ -1436,22 +1438,7 @@ class GatewayServer {
           await inheritAutopilot(this.github, this.filter, this.config, issue, pr);
         }
       },
-      autopilotApproved: async (ref, head) => {
-        const pr = await this.flowThread(ref, "pr");
-        if (pr.headRefOid !== head) {
-          return false;
-        }
-        const state = await this.autopilotFor(pr);
-        return (
-          state.active &&
-          (await this.flowComments(String(pr.id))).some(
-            (comment) =>
-              String(comment.body).startsWith(
-                `[orchestrator] AUTOPILOT APPROVED\n\nCurrent head: ${head}\n`
-              ) && state.at(Date.parse(String(comment.lastEditedAt ?? comment.createdAt)))
-          )
-        );
-      },
+      autopilotApproved: (ref, head) => this.autopilotApprovalFor(ref, head),
       thread: (ref, kind) => this.flowThread(ref, kind),
       conflictPending: async (ref) => this.conflicts.pending(Number(ref)),
       comments: (id, kind) => this.flowComments(id, kind === "issue" ? "Issue" : "PullRequest"),
@@ -1477,6 +1464,13 @@ class GatewayServer {
           }
         }
         for (const comment of await this.flowComments(String(item.id))) {
+          const delegated =
+            /^\[orchestrator\] AUTOPILOT APPROVED\n\nCurrent head: ([a-f\d]{40})\n/i.exec(
+              String(comment.body)
+            );
+          if (delegated) {
+            candidates.add(delegated[1]);
+          }
           if (/^\[orchestrator\] OWNER REVIEW(?:\s|$)/.test(String(comment.body))) {
             for (const head of String(comment.body).match(/\b[a-f\d]{40}\b/gi) ?? []) {
               candidates.add(head);
@@ -1518,6 +1512,26 @@ class GatewayServer {
     });
   }
   /** Gate reads are fresh; watcher state and label presence are not credentials. */
+  /** Historical exact-head review evidence never replaces a current delegation. */
+  private async autopilotApprovalFor(ref: string, head: string): Promise<boolean> {
+    const pr = await this.flowThread(ref, "pr");
+    const state = await this.autopilotFor(pr);
+    const reviews = (await this.flowComments(String(pr.id))).filter((comment) =>
+      String(comment.body).startsWith(
+        `[orchestrator] AUTOPILOT APPROVED\n\nCurrent head: ${head}\n`
+      )
+    );
+    if (reviews.length && !state.active) {
+      throw new Error("autopilot delegation is no longer current; ask the owner");
+    }
+    return (
+      state.active &&
+      reviews.some((comment) =>
+        state.at(Date.parse(String(comment.lastEditedAt ?? comment.createdAt)))
+      )
+    );
+  }
+
   private async autopilotFor(item: ObjectData): Promise<AutopilotState> {
     const items = [item];
     if (item.__typename === "PullRequest") {

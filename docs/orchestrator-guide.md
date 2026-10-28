@@ -45,7 +45,8 @@ move. You still make and document the engineering decisions:
 4. Run `merge-task` normally. It requires your exact-head autopilot review, current
    delegation and all ordinary CI/base/worker checks. It rechecks delegation after
    verification and comments that the merge is under autopilot. Finish the ordinary
-   merge follow-up to Done.
+   merge follow-up to Done. For a later clean base-only merge, carry that review
+   instead of repeating it; see [merge and release](#merge-and-release).
 
 If the label is added while already in Spec review or Owner review, perform your
 corresponding review through the same wrapper; label presence alone is never a
@@ -325,6 +326,15 @@ a new run; re-running the old event still tests its old base. Conflicts go back 
 the worker. Record base-only changes after owner approval rather than implying a
 different head was reviewed. Emergency overrides must be explicit and logged and
 never replace review.
+
+After a clean `refresh-checks` base merge, you can also carry an exact-head
+autopilot approval with `merge-task <pr> --carry-approval "<reason>"` without
+re-running `review <pr> owner`. The gateway proves the intervening merges are
+clean base-only changes and checks that the delegation is still current, including
+immediately before merging. The carry record is marked `(autopilot)`. The automatic
+carry after a conflict fixer uses the same proof; a task commit or changed task
+patch needs fresh review. Releases and owner-reserved identity/permission files
+still require the owner.
 
 For your own adoption, configuration or documentation changes outside the task
 lifecycle, push a non-task branch and run
