@@ -78,6 +78,56 @@ export function smoke() {
     if (jsdom.version !== manifest.devDependencies.jsdom) {
       throw new Error(`Smoke must use lowest-supported jsdom; installed ${jsdom.version}`);
     }
+    // Follow the packed npm README in a blank directory, not a source-tree copy.
+    // Substitute only the registry spec with this candidate's tarball so this
+    // check stays offline and tests the package being released, not npm's next tag.
+    const readme = readFileSync(join(consumer, "node_modules/@vworlds/vmethod/README.md"), "utf8");
+    const install = readme.match(/```sh\s*\n(npm install [^\n]+)\n```/);
+    if (!install) {
+      throw new Error("Packed README must provide an npm install command");
+    }
+    const installArgs = install[1].split(" ").slice(1);
+    if (
+      installArgs.length !== 4 ||
+      !installArgs.includes("--save-dev") ||
+      !installArgs.includes("--save-exact") ||
+      !/^@vworlds\/vmethod@(?:next|\d+\.\d+\.\d+(?:-[\w.-]+)?)$/.test(installArgs[3])
+    ) {
+      throw new Error("README install must save an exact vmethod devDependency");
+    }
+    installArgs[3] = tarball;
+    const blank = join(temp, "readme-adopter");
+    mkdirSync(blank);
+    run(
+      "npm",
+      [
+        ...installArgs,
+        "--offline",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--legacy-peer-deps",
+      ],
+      blank
+    );
+    const adopted = JSON.parse(readFileSync(join(blank, "package.json"), "utf8"));
+    const installed = JSON.parse(
+      readFileSync(join(blank, "node_modules/@vworlds/vmethod/package.json"), "utf8")
+    );
+    if (!adopted.devDependencies?.["@vworlds/vmethod"] || installed.version !== packed[0].version) {
+      throw new Error("README install did not save the packed candidate as a devDependency");
+    }
+    const guidePaths = [...readme.matchAll(/`(node_modules\/@vworlds\/vmethod\/docs\/[^`]+)`/g)];
+    if (
+      guidePaths.length !== 1 ||
+      guidePaths[0][1] !== "node_modules/@vworlds/vmethod/docs/adoption.md"
+    ) {
+      throw new Error("README must route adoption to the installed adoption guide");
+    }
+    const guide = readFileSync(join(blank, guidePaths[0][1]), "utf8");
+    if (!guide.startsWith("# Adoption checklist\n")) {
+      throw new Error("README adoption path did not resolve to the packed guide");
+    }
     const bin = join(temp, "bin");
     mkdirSync(bin);
     symlinkSync(process.execPath, join(bin, "node"));
@@ -123,7 +173,7 @@ export function smoke() {
     if (!readFileSync(join(consumer, "package.json")).equals(originalPackage)) {
       throw new Error("Smoke unexpectedly modified consumer package.json");
     }
-    console.log("Tarball smoke passed (Mermaid 12.1.0, jsdom 24; no git/gh).");
+    console.log("Tarball smoke passed (README adoption; Mermaid 12.1.0, jsdom 24; no git/gh).");
     return output;
   } finally {
     rmSync(temp, { recursive: true, force: true });

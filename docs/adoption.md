@@ -4,19 +4,71 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
 
 ## Before you start
 
-### Owner prerequisites
+### Adoption interview: discover first, ask only for gaps
 
-1. Create separate GitHub logins/configuration directories for the owner, orchestrator
-   and worker identities as applicable; each identity must use its own `GH_CONFIG_DIR`.
-2. Prepare the orchestrator and worker checkouts and register both as OpenChamber
-   projects. The worker checkout is a separate clone.
-3. In **each** checkout, have the owner write its `.claude/settings.local.json`
-   before starting any agent session. It supplies `VMETHOD_ROLE`, `GH_CONFIG_DIR`
-   and git identity; a session already running when the file is written does not
-   acquire those environment variables. Restart that session. `vmethod check` warns
-   `the session predates the settings; restart it` when it sees the local settings
-   file but no `VMETHOD_ROLE` in its own environment.
-4. Create the base and release branches with an administrator.
+Start with local, non-credential data: `package.json`, the lockfile,
+`git remote -v`, `git branch -a` and any existing project configuration or guides.
+A blank repository may have none of these; ask for missing choices rather than
+inventing an organization, identities or board. Do not overwrite existing files.
+Read [security](security.md) and [protocol](protocol.md) before external reads or posts.
+
+Use this interview as the complete question list. Record discovered values and
+their source, propose defaults where appropriate, and ask the owner only for
+unresolved values or decisions. Never ask for tokens, passwords or private keys.
+
+| Value                                                | Discover without guessing                                                                                                                                              | Ask the owner when unresolved                                                                                                                       |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Package pin and runtime                              | Read the installed package version/engines and the exact devDependency/lockfile. The README install command resolves npm's `next` tag to an exact pin.                 | Is a different release required? Can Node be upgraded if below the package's requirement?                                                           |
+| Repository and organization (`repo`, `org`)          | Read `git remote -v` and existing config. A local folder name is not a repository identity.                                                                            | Which GitHub repository/organization should this use, and will you create it if absent?                                                             |
+| Owner login, numeric id and account type             | Reuse only owner-approved identity pins. A remote namespace or git author is not proof of ownership.                                                                   | Who is the owner, and what are their verified login, numeric id and account type?                                                                   |
+| Orchestrator and worker identities                   | Read owner-approved `people.yaml` and repository bindings, if present. After bootstrap, `vmethod check --online` verifies each checkout's authenticated identity.      | Which separate logins act as orchestrator and worker? Supply verified login/id/type pins, git identities and the orchestrator's repository binding. |
+| Board (`board.owner`, `board.number`, `board.repos`) | After minimal config and caller pins exist, use the bootstrap `gh-read` query below to list project URLs/numbers; reuse approved config for shared-board repositories. | Which project URL should be used (or created), and which repositories share it? Is offline/fork mode intentional instead?                           |
+| Base and release branches                            | Inspect local/remote branches and existing CI/release docs. Their existence does not select project policy.                                                            | Confirm the integration/default branch and release branch; if absent, may the administrator create them (suggest `dev` and `master`)?               |
+| Worker checkout and worktree paths                   | Inspect approved `workerCheckout`/branch settings and registered projects; confirm that the worker path is a separate clone, not the orchestrator checkout.            | Where should the worker clone live (suggest `../<project>-worker`), and where may task worktrees be created?                                        |
+| Models (`models.yaml`)                               | Inspect the configured backend's model catalog and any existing registry for real provider/model ids. Template families are examples, not proof of availability.       | Which available models/families may workers use, with which backend, price/tier and owner gates?                                                    |
+| State and branch naming                              | Preserve existing `stateName`, markers and `branches` settings. For a new repository propose a unique project state name and template branch patterns.                 | Are those proposed names/paths acceptable, or is there existing state to preserve/import?                                                           |
+| Verification, release hooks and changelog            | Read package scripts, CI, local engineering/release guides and existing fragments for `checks`, `postMerge` and `changelog`.                                           | What checks, CI check names, release/install hooks and fragment policy should a blank project use?                                                  |
+| Privacy and local routing                            | Read approved privacy policy and project guides; identify the actual agent entry point.                                                                                | Should learnings be public or private, and which local domain/engineering/verification guides should routing link?                                  |
+| Host setup and protection                            | Note only whether required tools, settings and launcher exist; do not inspect credential stores or treat settings as proof of effective protection.                    | Confirm the owner handoff below: identity config-directory paths, backend/server setup, permissions, branch/CODEOWNERS policy and central binding.  |
+
+**Bootstrap boundary:** `gh-read` cannot discover the first trusted caller: it
+requires valid local config and owner-approved pins. Ask the owner for the initial
+verified identities and repository choice first. Do not run `gh`, raw GitHub APIs
+or another client to get around that boundary. Once pinned, use only vmethod's
+gateway for GitHub discovery; ask the owner when a required read is unavailable.
+
+### One owner-only setup handoff
+
+Give the owner this numbered list once, filled with the interview's agreed values
+and outstanding decisions. The owner performs these operations; agents never
+create their own authority or edit their permission rules. Pause where a prerequisite
+is missing instead of discovering these requirements one command at a time.
+
+1. Create/choose the GitHub repository and separate owner, orchestrator and worker
+   identities. Verify their login, numeric id and account type, approve the local
+   `people.yaml` pins, permitted system events/application ids and orchestrator
+   `repos:` bindings, and authenticate each identity in its
+   own `GH_CONFIG_DIR` (owner-run `GH_CONFIG_DIR=<dir> gh auth login`). Do not give
+   tokens to the agent; vmethod never reads `GH_TOKEN`.
+2. Prepare separate orchestrator and worker clones and register both as OpenChamber
+   projects. Install the required Node/runtime and configure the chosen OpenCode
+   backend/server and reviewed monitor plugin as described in the checklist below.
+3. In **each** checkout, write `.claude/settings.local.json` with that identity's
+   `env` block (read by OpenCode and Claude alike): `VMETHOD_ROLE=orchestrator` or
+   `worker`, that login's `GH_CONFIG_DIR`, `GIT_SSH_COMMAND`, `GIT_AUTHOR_*` and
+   `GIT_COMMITTER_*`, plus the orchestrator's `OPENCODE_*` server settings. Install
+   and review the [permission templates](../templates/README.md), including effective
+   overrides, ownership of stubs, and the orchestrator's `external_directory` access
+   to the worker checkout and OpenCode worktree directory. Restart sessions after writing settings;
+   an existing session does not acquire them. `vmethod check` warns
+   `the session predates the settings; restart it` when local settings exist but
+   its environment lacks `VMETHOD_ROLE`.
+4. Have an administrator create the agreed base/release branches and project board
+   if absent, grant the identities the needed access, and choose branch protection
+   and code-owner review requirements. Approve CODEOWNERS entries for `vmethod.yaml`,
+   `people.yaml` and `.claude/`. CODEOWNERS only forces owner review when the branch
+   ruleset requires code-owner review; otherwise it merely requests review. Each
+   project's owner chooses that policy (vmethod's owner has not required reviews).
 5. Ask the vmethod owner to bind the orchestrator's verified identity to this
    consumer repository in vworlds/vmethod's central `people.yaml`. Until then,
    learning submissions and upstream issue creation are refused; a local binding
@@ -27,14 +79,16 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
 Follow these steps in order; even `gh-read` and `board status` require `vmethod.yaml`,
 and `gh-read` additionally requires its caller to be pinned in `people.yaml`.
 
-1. Install the exactly pinned package and commit the lockfile (`npm install`). Then,
+1. Install the exactly pinned package as shown in its README (if not already installed)
+   and include the lockfile in the adoption change. Then,
    once per machine, install the package-provided PATH launcher with
    `npm exec --no -- vmethod init --launcher`. The launcher cannot be installed
    before the package is installed. Until then, use `npm exec --no -- vmethod`;
    never use `npx`.
 2. Run `vmethod init` to create the absent local configuration.
-3. Create a minimal `people.yaml` containing the owner and orchestrator's verified
-   identities and the orchestrator's `repos: [<owner>/<repo>]` binding. Every verb
+3. Fill `vmethod.yaml` with the interview's repository values and replace placeholder
+   identities in `people.yaml` with the owner-approved pins and the orchestrator's
+   `repos: [<owner>/<repo>]` binding. Every verb
    needs valid `vmethod.yaml`; discovery via `gh-read` also authenticates a pinned
    caller.
 4. Save this query as `projects.graphql`:
@@ -106,22 +160,12 @@ the central orchestrator binding described above. See
       `branches`, `board`, `checks`, `postMerge` and `changelog` from local settings
       as appropriate. Preserve existing state names and markers so watchers do not
       replay old events. Configuration holds no credentials.
-- [ ] **Give workers their own checkout.** Clone the repository a second time, for
-      example next to the orchestrator's (`../<project>-worker`), and point
-      `workerCheckout` (or `VMETHOD_WORKER_CHECKOUT`) at it. Workers never run in the
-      orchestrator's checkout. Register both folders as OpenChamber projects. Check
+- [ ] Confirm the [owner-only setup handoff](#one-owner-only-setup-handoff) is complete.
+      Point `workerCheckout` (or `VMETHOD_WORKER_CHECKOUT`) at the separate worker
+      clone. Workers never run in the orchestrator's checkout. Check
       `branches.worktreePrefix` (default `"auto-"`), which names task worktrees.
       See [worker worktree configuration](package.md#worker-worktree-configuration).
 - [ ] **Ignore `.claude/`** in `.gitignore` (`init` adds it; `check` requires it).
-      In each checkout, the owner writes `.claude/settings.local.json` with an `env`
-      block for that identity, read by OpenCode and Claude alike. The orchestrator
-      checkout sets `VMETHOD_ROLE=orchestrator`, the `GH_CONFIG_DIR` of the
-      orchestrator's gh login, `GIT_SSH_COMMAND`, the `GIT_AUTHOR_*` and
-      `GIT_COMMITTER_*` identity, and the `OPENCODE_*` server credentials. The
-      worker checkout sets `VMETHOD_ROLE=worker`, the `GH_CONFIG_DIR` of the
-      worker's gh login, `GIT_SSH_COMMAND` and the worker's git identity. Give the
-      orchestrator's OpenCode permissions access to the worker checkout and
-      OpenCode's worktree directory (`external_directory`).
 - [ ] Install the [opencode-monitor](https://github.com/rndmcnlly/opencode-monitor)
       plugin on the orchestrator's OpenCode, pinned to a reviewed commit
       (`opencode plugin add github:rndmcnlly/opencode-monitor#<commit>`). It
@@ -130,25 +174,16 @@ the central orchestrator binding described above. See
 - [ ] Set `board.repos` to **every** repository sharing the board. Set
       `learningsPrivacy` before any submission. Keep concrete paths, hosts, commands
       and domain rules local. Port behavioral differences into reviewed project hooks.
-- [ ] Have the owner verify `people.yaml` logins, numeric ids, roles and permitted
-      system events, and give each `role: orchestrator` entry `repos:` bindings
-      (the role is per repository; `vmethod check` errors on an unbound
-      orchestrator or a repository no orchestrator binds). Configure real model
+- [ ] Confirm `people.yaml` matches the approved handoff (the orchestrator role is
+      per repository; `vmethod check` errors on an unbound orchestrator or a
+      repository no orchestrator binds). Configure real model
       ids, backend kinds and gates in
       `models.yaml`; match board families. `init` converts a root `models.tsv` once,
       preserving the original and gates. Other local registries need explicit relocation.
 - [ ] Rename old environment prefixes to `VMETHOD_*`. Use the
       [documented mapping](package.md#environment-mapping); do not assume old names
       remain aliases. Set `board.enabled: false` for intentional offline/fork work.
-- [ ] Ask the vmethod owner to bind the consumer orchestrator's verified login,
-      numeric id and type to this repository in vworlds/vmethod's central
-      `people.yaml` on `dev`. Your local registry cannot grant upstream access.
-      Raise methodology needs with `vmethod upstream issue <title> <body-file>`
-      and follow up with `vmethod upstream comment <n> <body-file>`, not raw `gh`.
-      See [upstream needs](gateway.md#upstream-needs).
-- [ ] Log each identity into its own gh config directory with
-      `GH_CONFIG_DIR=<dir> gh auth login`; vmethod never reads `GH_TOKEN`. Identity
-      kept only in git config is not used. `vmethod check` as the orchestrator
+- [ ] Run `vmethod check` as the orchestrator; it
       reports missing identities and a missing worker checkout. In each checkout,
       `vmethod check --online` reports which login it holds.
 - [ ] Migrate in-flight opencode sessions with `worker adopt <pr> <session-id>`,
@@ -160,14 +195,6 @@ the central orchestrator binding described above. See
       from the consumer. Keep any alternate agent entry point linked to the same routing.
 - [ ] Tell knip about the bin-only dependency: a package script naming the local
       invocation, or `ignoreDependencies`. Do not remove the pin as “unused”.
-- [ ] Ask the owner to install and review the [permission templates](../templates/README.md)
-      for the active backend. Agents do not edit their own permissions. Audit
-      effective overrides and ownership of stubs, not only JSON syntax.
-- [ ] Add `vmethod.yaml`, `people.yaml` and `.claude/` to the consumer's CODEOWNERS
-      with the owner as reviewer. `check` warns about missing entries. CODEOWNERS
-      only forces owner review when the branch ruleset requires code-owner review;
-      otherwise it requests review. Each project's owner chooses that policy
-      (vmethod's owner has not required reviews).
 - [ ] Install the release's exact Mermaid peer pin and required diagram-check peer
       dependencies. Run offline `check`; do not mistake skeleton validation for
       online identity, board or Markdown verification.
