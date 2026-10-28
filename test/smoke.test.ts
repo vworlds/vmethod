@@ -55,7 +55,7 @@ test("CLI uses its built version to gate explicit permission deferral", () => {
   }
 }, 15000);
 
-test("packed consumer installs offline with real Mermaid and lowest-supported jsdom, without git/gh", () => {
+test("packed README bootstraps a blank consumer and peers install offline without git/gh", () => {
   const map = JSON.parse(readFileSync("dist/vmethod.mjs.map", "utf8")) as {
     sources: string[];
     sourcesContent: string[];
@@ -79,7 +79,7 @@ test("packed consumer installs offline with real Mermaid and lowest-supported js
     timeout: 60000,
   });
   expect(result.status, result.stderr).toBe(0);
-  expect(result.stdout).toContain("Tarball smoke passed");
+  expect(result.stdout).toContain("Tarball smoke passed (README adoption;");
   const root = validProject();
   const cli = resolve("dist/vmethod.mjs");
   const run = () =>
