@@ -2286,7 +2286,7 @@ class GatewayServer {
         (await git.run("rev-list", "--count", `${commit}..${head}`)).trim() !== "0"
       ) {
         throw new Error(
-          "error: the remote branch moved or HEAD does not descend from the task PR head: fetch and merge it (never force-push)"
+          pushFailureMessage({ ok: false, outcome: "moved", detail: "" }, String(this.config.repo))
         );
       }
     }

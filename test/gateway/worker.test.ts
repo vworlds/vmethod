@@ -209,7 +209,7 @@ test.each(["moved", "diverged"])(
     const done = gitFake(f.deps, f.root, steps);
     await expect(
       f.gateway.call("push", { task: 3, worktree: f.root }, { role: "orchestrator" })
-    ).rejects.toThrow("fetch and merge it (never force-push)");
+    ).rejects.toThrow("error: the remote branch moved: fetch and merge it (never force-push)");
     expect(
       new WriteJournal(getConfig(f.root, f.env), f.env, f.deps.now).pushed(
         "example/project",
