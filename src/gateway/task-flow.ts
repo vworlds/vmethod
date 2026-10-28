@@ -26,7 +26,7 @@ import { approvalCarryFiles } from "./carry-approval.js";
 import type { ConflictPrior, OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
 import { modelGateError } from "./model-gate.js";
-import { setTurn, turnAssignees } from "./turn.js";
+import { ownerForTurn, setTurn, turnAssignees } from "./turn.js";
 import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
 import { runVerifyHook } from "./verify-hook.js";
 import { assertLockfileInSync, npmCiEnvironment } from "./lockfile.js";
@@ -203,7 +203,15 @@ export class TaskFlow {
       this.repo,
       this.number(ref),
       assigned,
-      turnAssignees(this.host.people, this.repo, assigned, role)
+      turnAssignees(
+        this.host.people,
+        this.repo,
+        assigned,
+        role,
+        role === "owner"
+          ? await ownerForTurn(this.host.github, this.host.people, this.repo, this.number(ref))
+          : undefined
+      )
     );
   }
   /** Capture the card turn a conflict dispatch will interrupt; store it in the resolution record. */

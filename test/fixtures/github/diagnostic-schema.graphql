@@ -1,0 +1,198 @@
+# Hand-written validation fixture for gh-read augmentation, not a GitHub schema snapshot.
+# Models the relevant GitHub concrete types, connection shapes and abstract memberships.
+interface Node {
+  id: ID!
+}
+interface Actor {
+  login: String!
+}
+type User implements Node & Actor {
+  id: ID!
+  login: String!
+  databaseId: Int
+  name: String
+}
+type Bot implements Actor {
+  login: String!
+  databaseId: Int
+}
+type Owner {
+  login: String!
+}
+type Repository {
+  name: String
+  nameWithOwner: String
+  owner: Owner
+  issue(number: Int): Issue
+  pullRequest(number: Int): PullRequest
+  issueOrPullRequest(number: Int): IssueOrPullRequest
+  issues(first: Int): IssueConnection
+  pullRequests(first: Int): PullRequestConnection
+  labels(first: Int): LabelConnection
+}
+type LabelConnection {
+  nodes: [Label]
+}
+type Label {
+  name: String
+  description: String
+}
+union IssueOrPullRequest = Issue | PullRequest
+type Issue implements Node {
+  id: ID!
+  title: String
+  body: String
+  bodyText: String
+  bodyHTML: String
+  url: String
+  author: Actor
+  editor: Actor
+  lastEditedAt: String
+  repository: Repository
+  comments(first: Int): IssueCommentConnection
+  timelineItems(first: Int): IssueTimelineConnection
+}
+type PullRequest implements Node {
+  id: ID!
+  title: String
+  body: String
+  url: String
+  author: Actor
+  editor: Actor
+  lastEditedAt: String
+  repository: Repository
+  comments(first: Int): IssueCommentConnection
+  reviews(first: Int): ReviewConnection
+  reviewThreads(first: Int): ReviewThreadConnection
+  timelineItems(first: Int): PullRequestTimelineConnection
+}
+type IssueComment implements Node {
+  id: ID!
+  body: String
+  url: String
+  author: Actor
+  editor: Actor
+  lastEditedAt: String
+  repository: Repository
+}
+type PullRequestReview implements Node {
+  id: ID!
+  body: String
+  url: String
+  author: Actor
+  editor: Actor
+  lastEditedAt: String
+  repository: Repository
+  comments(first: Int): ReviewCommentConnection
+}
+type PullRequestReviewComment implements Node {
+  id: ID!
+  body: String
+  url: String
+  author: Actor
+  editor: Actor
+  lastEditedAt: String
+  repository: Repository
+}
+type IssueConnection {
+  nodes: [Issue]
+  edges: [IssueEdge]
+}
+type IssueEdge {
+  node: Issue
+}
+type PullRequestConnection {
+  nodes: [PullRequest]
+}
+type IssueCommentConnection {
+  nodes: [IssueComment]
+}
+type ReviewConnection {
+  nodes: [PullRequestReview]
+}
+type ReviewCommentConnection {
+  nodes: [PullRequestReviewComment]
+}
+type ReviewThreadConnection {
+  nodes: [PullRequestReviewThread]
+}
+type PullRequestReviewThread {
+  comments(first: Int): ReviewCommentConnection
+}
+union IssueTimeline = IssueComment | Event
+union PullRequestTimeline = IssueComment | PullRequestReview | Event
+type Event {
+  id: ID
+}
+type IssueTimelineConnection {
+  nodes: [IssueTimeline]
+}
+type PullRequestTimelineConnection {
+  nodes: [PullRequestTimeline]
+}
+union SearchResult = Issue | PullRequest | User
+type SearchResultConnection {
+  nodes: [SearchResult]
+}
+union ProjectV2ItemContent = Issue | PullRequest | DraftIssue
+type DraftIssue {
+  title: String
+}
+type ProjectV2Item {
+  content: ProjectV2ItemContent
+}
+type ProjectV2ItemConnection {
+  nodes: [ProjectV2Item]
+}
+type ProjectV2 implements Node {
+  id: ID!
+  number: Int
+  title: String
+  url: String
+  items(first: Int): ProjectV2ItemConnection
+  fields(first: Int): ProjectV2FieldConfigurationConnection
+  shortDescription: String
+  readme: String
+  createdAt: String
+}
+type ProjectV2FieldConfigurationConnection {
+  nodes: [ProjectV2FieldConfiguration]
+}
+union ProjectV2FieldConfiguration = ProjectV2Field | ProjectV2SingleSelectField
+type ProjectV2Field {
+  name: String
+}
+type ProjectV2SingleSelectField {
+  name: String
+  options: [ProjectV2SingleSelectFieldOption]
+}
+type ProjectV2SingleSelectFieldOption {
+  name: String
+}
+type Gist {
+  description: String
+  comments: GistCommentConnection
+}
+type GistCommentConnection {
+  nodes: [GistComment]
+}
+type GistComment {
+  body: String
+  bodyText: String
+  bodyHTML: String
+}
+type ProjectV2Connection {
+  nodes: [ProjectV2]
+}
+type Organization {
+  projectsV2(first: Int): ProjectV2Connection
+}
+type Query {
+  viewer: User
+  gist: Gist
+  organization(login: String!): Organization
+  repository(owner: String!, name: String!): Repository
+  node(id: ID!): Node
+  nodes(ids: [ID!]!): [Node]
+  search(query: String!, type: String): SearchResultConnection
+}

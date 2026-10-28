@@ -9,7 +9,15 @@ export interface Operations {
   learnings: { input: LearningInput; output: string };
   learningCheck: { input: { ref: string; label?: boolean }; output: string };
   issueCreate: {
-    input: { title: string; file: string; labels?: string[]; estimate?: number; status?: string };
+    input: {
+      title: string;
+      file: string;
+      labels?: string[];
+      estimate?: number;
+      status?: string;
+      /** Attach the fresh issue to a configured-repository epic after creation. */
+      parent?: string;
+    };
     output: string;
   };
   issueClose: { input: { ref: string; comment?: string }; output: string };
@@ -19,6 +27,10 @@ export interface Operations {
   issueBlock: { input: { ref: string; blocker: string }; output: string };
   /** Clear a blocked-by relation on a configured-repository issue. */
   issueUnblock: { input: { ref: string; blocker: string }; output: string };
+  /** Attach configured-repository issue <n> beneath configured-repository epic <epic> (#327). */
+  issueParent: { input: { ref: string; epic: string }; output: string };
+  /** Detach configured-repository issue <n> from configured-repository epic <epic> (#327). */
+  issueUnparent: { input: { ref: string; epic: string }; output: string };
   /** Set an existing issue card's Estimate on the shared points scale; never a PR card. */
   issueEstimate: { input: { ref: string; points: number }; output: string };
   /** Publish body-bound scope review and give the owner the issue turn. */
@@ -116,7 +128,11 @@ export interface Operations {
   };
   /** Post exact file content; discussion_r reply URLs route to the inline thread. */
   post: { input: { ref: string; file: string; replyTo?: string }; output: string };
-  push: { input: { worktree: string; branch: string; commit?: string }; output: string };
+  /** task explicitly targets an open task PR (orchestrator only); its branch defaults to the PR head. */
+  push: {
+    input: { worktree: string; branch?: string; commit?: string; task?: number };
+    output: string;
+  };
   task: {
     input: { ref: string; fetch?: boolean };
     output: { branch: string; base: string };

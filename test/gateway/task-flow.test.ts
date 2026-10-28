@@ -32,6 +32,66 @@ import { proc } from "./watch-fake.js";
 
 const holdBanner = "> ⛔ ON HOLD. Wait for [orchestrator] GO.";
 
+test.each(["owner", "ask", "issue ask"])(
+  "%s assigns the owner who last interacted",
+  async (outcome) => {
+    const f = fixture();
+    const second = { ...people[0], login: "second-owner", id: 105 };
+    f.host.people = [...people, second];
+    const original = f.deps.fetch;
+    let reads = 0;
+    f.deps.fetch = async (input, init) => {
+      if (String(input).endsWith("/pulls?state=open&per_page=100&page=1")) {
+        return Response.json([]);
+      }
+      if (new URL(String(input)).pathname === "/graphql") {
+        const payload = JSON.parse(String(init?.body));
+        if (String(payload.query).includes("query OwnerTurn(")) {
+          parse(payload.query);
+          expect(payload.variables.number).toBe(outcome === "issue ask" ? 8 : 27);
+          reads++;
+          return Response.json({
+            data: {
+              repository: {
+                issueOrPullRequest: {
+                  ownerActivity: {
+                    nodes: [
+                      scopeMove({
+                        actor: {
+                          login: second.login,
+                          databaseId: second.id,
+                          __typename: second.type,
+                        },
+                      }),
+                    ],
+                    pageInfo: { hasPreviousPage: false, startCursor: null },
+                  },
+                },
+              },
+            },
+          });
+        }
+      }
+      return original(input, init);
+    };
+    const file = join(f.root, "owner-turn.md");
+    writeFileSync(file, "Please review this decision.\n");
+    if (outcome === "issue ask") {
+      await f.flow().ask("8", file);
+    } else {
+      await f.flow().review({ ref: "27", outcome: outcome as "owner" | "ask", file });
+    }
+    expect(reads).toBe(1);
+    expect(f.writes).toContainEqual(
+      expect.objectContaining({
+        path: `/repos/example/project/issues/${outcome === "issue ask" ? 8 : 27}/assignees`,
+        body: { assignees: [second.login] },
+      })
+    );
+    f.done();
+  }
+);
+
 test.each([false, true])("pr open creates a pushed non-task PR (draft=%s)", async (draft) => {
   const f = fixture();
   f.set({ branch: "adoption" });

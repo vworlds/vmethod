@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { stringify } from "yaml";
-import { actor, fixtureServer, graph, item } from "./helpers.js";
+import { actor, fixtureServer, graph, item, people } from "./helpers.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
 import { createGateway } from "../../src/gateway/server.js";
 import { object, type ObjectData } from "../../src/gateway/people.js";
@@ -11,7 +11,7 @@ import boardRecording from "../fixtures/github/board-write-inputs.json" with { t
 import { WatchFake } from "./watch-fake.js";
 import { bodyHash } from "../../src/gateway/scope.js";
 import autopilotWire from "../fixtures/github/autopilot-wire.json" with { type: "json" };
-import { scopeGraph } from "./scope-fixture.js";
+import { scopeGraph, scopeMove } from "./scope-fixture.js";
 
 test("scope-review advances both gates under verified owner autopilot and comments on each step", async () => {
   const recording = structuredClone(boardRecording);
@@ -111,84 +111,123 @@ test("scope-review advances both gates under verified owner autopilot and commen
   f.done();
 });
 
-test("scope-review publishes the body hash and hands the issue card to the owner without editing the body", async () => {
-  const recording = structuredClone(boardRecording);
-  const card = recording.items.nodes[0];
-  const status = recording.fields.nodes.find((field) => field.name === "Status")!;
-  const option = status.options![0];
-  option.name = "Spec review";
-  const issue = { ...acceptedIssue(), id: card.content.id };
-  const summary =
-    "- Folded the agreed acceptance cases into the body. Estimate revised to 5 because the new cases add work.";
-  const f = fixtureServer([
-    graph({ repository: { issue: item({ id: issue.id }) } }),
-    graph({ node: issue }),
-    ...boardReads(recording).slice(0, 2),
-    { path: "/graphql", json: { data: { node: { items: recording.items } } } },
-    graph({
-      node: item({
-        id: issue.id,
-        assignees: { nodes: [{ login: "peer" }], pageInfo: { hasNextPage: false } },
-      }),
-    }),
-    {
-      path: "/repos/example/project/issues/39/assignees",
-      method: "DELETE",
-      body: { assignees: ["peer"] },
-      json: {},
-    },
-    {
-      path: "/repos/example/project/issues/39/assignees",
-      method: "POST",
-      body: { assignees: ["owner"] },
-      json: {},
-    },
-    {
-      path: "/repos/example/project/issues/39/comments",
-      body: {
-        body: `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\nEstimate: 5\n\n${summary}\n\nbody sha256: ${bodyHash("Specification")}`,
-      },
-      json: {},
-    },
-    ...boardReads(recording),
-    {
-      path: "/graphql",
-      json: {
-        data: { m0: { projectV2Item: { id: card.id } }, m1: { projectV2Item: { id: card.id } } },
-      },
-      checkQuery(_query, variables) {
-        expect(
-          Object.values(variables).map((value) => (value as { value: unknown }).value)
-        ).toEqual([{ text: "👤🔍" }, { singleSelectOptionId: option.id }]);
-      },
-    },
-  ]);
-  const file = join(f.root, "scope-summary.md");
-  writeFileSync(file, summary);
-  await expect(
-    gatewayVerb(f.transport, "scope-review", ["39", file], { VMETHOD_ROLE: "orchestrator" })
-  ).resolves.toBe("Scope review requested for #39");
-  // The write journal records the operation first and each write at its landing:
-  // the watcher's violation checks skip exactly this in-flight window (#199).
-  const entries = readFileSync(
-    join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"),
-    "utf8"
-  )
-    .trim()
-    .split("\n")
-    .map((line) => JSON.parse(line));
-  expect(entries.map((entry) => entry.kind)).toEqual([
-    "operation",
-    "unassigned",
-    "assigned",
-    "comment",
-    "board",
-    "board",
-  ]);
-  expect(entries[0]).toMatchObject({ op: "scope-review", number: 39 });
-  expect(entries.map((entry) => entry.at)).toHaveLength(6);
-  f.done();
-});
+test.each([false, true])(
+  "scope-review publishes the body hash and assigns one owner (multiple=%s)",
+  async (multiple) => {
+    const second = { ...people[0], login: "second-owner", id: 105 };
+    const selected = multiple ? second.login : "owner";
+    const recording = structuredClone(boardRecording);
+    const card = recording.items.nodes[0];
+    const status = recording.fields.nodes.find((field) => field.name === "Status")!;
+    const option = status.options![0];
+    option.name = "Spec review";
+    const issue = { ...acceptedIssue(), id: card.content.id };
+    const summary =
+      "- Folded the agreed acceptance cases into the body. Estimate revised to 5 because the new cases add work.";
+    const f = fixtureServer(
+      [
+        graph({ repository: { issue: item({ id: issue.id }) } }),
+        graph({ node: issue }),
+        ...boardReads(recording).slice(0, 2),
+        { path: "/graphql", json: { data: { node: { items: recording.items } } } },
+        graph({
+          node: item({
+            id: issue.id,
+            assignees: { nodes: [{ login: "peer" }], pageInfo: { hasNextPage: false } },
+          }),
+        }),
+        ...(multiple
+          ? [
+              {
+                path: "/graphql",
+                json: {
+                  data: {
+                    repository: {
+                      issueOrPullRequest: {
+                        ownerActivity: {
+                          nodes: [
+                            scopeMove({
+                              actor: {
+                                login: second.login,
+                                databaseId: second.id,
+                                __typename: second.type,
+                              },
+                            }),
+                          ],
+                          pageInfo: { hasPreviousPage: false, startCursor: null },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            ]
+          : []),
+        {
+          path: "/repos/example/project/issues/39/assignees",
+          method: "DELETE",
+          body: { assignees: ["peer"] },
+          json: {},
+        },
+        {
+          path: "/repos/example/project/issues/39/assignees",
+          method: "POST",
+          body: { assignees: [selected] },
+          json: {},
+        },
+        {
+          path: "/repos/example/project/issues/39/comments",
+          body: {
+            body: `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\nEstimate: 5\n\n${summary}\n\nbody sha256: ${bodyHash("Specification")}`,
+          },
+          json: {},
+        },
+        ...boardReads(recording),
+        {
+          path: "/graphql",
+          json: {
+            data: {
+              m0: { projectV2Item: { id: card.id } },
+              m1: { projectV2Item: { id: card.id } },
+            },
+          },
+          checkQuery(_query, variables) {
+            expect(
+              Object.values(variables).map((value) => (value as { value: unknown }).value)
+            ).toEqual([{ text: "👤🔍" }, { singleSelectOptionId: option.id }]);
+          },
+        },
+      ],
+      actor(2),
+      multiple ? [...people, second] : people
+    );
+    const file = join(f.root, "scope-summary.md");
+    writeFileSync(file, summary);
+    await expect(
+      gatewayVerb(f.transport, "scope-review", ["39", file], { VMETHOD_ROLE: "orchestrator" })
+    ).resolves.toBe("Scope review requested for #39");
+    // The write journal records the operation first and each write at its landing:
+    // the watcher's violation checks skip exactly this in-flight window (#199).
+    const entries = readFileSync(
+      join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"),
+      "utf8"
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(entries.map((entry) => entry.kind)).toEqual([
+      "operation",
+      "unassigned",
+      "assigned",
+      "comment",
+      "board",
+      "board",
+    ]);
+    expect(entries[0]).toMatchObject({ op: "scope-review", number: 39 });
+    expect(entries.map((entry) => entry.at)).toHaveLength(6);
+    f.done();
+  }
+);
 
 test.each(
   ["issue create", "issue close", "board set"].flatMap((verb) =>

@@ -8,6 +8,13 @@ your checkout's `.claude/settings.local.json` sets the role and the other identi
 variables, and commands resolve the checkout from `VMETHOD_ROOT` or git discovery.
 `vmethod check` verifies the environment.
 
+You may work with several owners listed in `people.yaml`. `ask`, `review … owner|ask`
+and `scope-review` assign one owner using the [board assignment rule](board.md#status-and-assignee):
+the owner who last interacted with that issue or PR, otherwise the first-listed owner.
+Any pinned owner may supply approval evidence, `APPROVE MODEL`, an autopilot label
+grant, an agreed quotation or a button-merge; it need not be the assigned owner.
+Login, numeric id and account type must still match the registry.
+
 ## Autopilot
 
 An owner-applied `autopilot` label delegates the task's ordinary owner decisions to
@@ -83,6 +90,18 @@ clear relations with `vmethod issue block <n> <blocker>` and `vmethod issue unbl
 `issue edit` refuse a body whose line consists only of a dependency reference.
 Migrate old bodies with `issue block` to record the relation plus an `issue edit`
 that drops the prose line.
+
+Epics are issues with sub-issues ([board](board.md)): attach or detach a
+configured-repository sub-issue to a configured-repository epic with
+`vmethod issue parent <n> <epic>` and `vmethod issue unparent <n> <epic>`
+(`<epic>` is `#m` or `m`) instead of a raw `gh` call. A parent in another
+repository or org is refused before any write, and attaching is idempotent —
+an already attached issue reports so — while an issue parented elsewhere is
+refused, naming its current parent, before any write. File the sub-issue
+directly under its epic with
+`vmethod issue create <title> <body-file> --parent <epic>`: the attachment
+follows the board writes, a failed attachment keeps the created issue and names
+the exact `issue parent` retry, and the issue is never recreated.
 
 Read code, settled decisions and git history before proposing to reverse deliberate
 behavior. Separate verified facts from assumptions. Present options with a
@@ -326,6 +345,15 @@ worker record skips silently), posts the optional checked comment and closes the
 PR unmerged. The watcher moves the card to Done, reports the worktree cleanup
 candidate and leaves a linked issue open for your LAUNCH decision; the command's
 output reminds you to run `grade <pr>` on every closed delivery, merged or not.
+
+When a worker cannot push a workflow change because its login lacks `workflow`
+scope, use `vmethod push --task <pr> [worktree] [branch]` with your orchestrator
+login, not raw `git push`. Point it at the worktree containing the commit (the
+default is your current directory). It submits that worktree's `HEAD` to the
+task PR's pinned head branch, checks ancestry and the regular push policy, and
+journals the update as yours rather than worker activity. Your login must have
+the required scope; do not change worker permissions to bypass the refusal. See
+[orchestrator task pushes](gateway.md#orchestrator-task-pushes).
 
 Owner approval survives conflict fixes (owner rule, 2026-10-18). Do not ask for
 re-approval merely because the approved delivery needed conflicts resolved. Use

@@ -451,6 +451,8 @@ const approvedSpecScope = () => [
 ];
 
 const imposter = { login: "imposter", databaseId: 4242, __typename: "User" };
+const secondOwner = { ...people[0], login: "second-owner", id: 105 };
+const secondOwnerActor = { ...actor(), login: secondOwner.login, databaseId: secondOwner.id };
 
 /** A task card on the configured board with one optional field value. */
 const cardRead = (value?: ObjectData) =>
@@ -485,6 +487,13 @@ interface GateScenario {
 }
 
 const gateScenarios: GateScenario[] = [
+  {
+    case: "accepts APPROVE MODEL from the second pinned owner",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [lineMeta(secondOwnerActor)],
+    bodies: [lineBody("2026-01-07T00:00:00Z", secondOwnerActor)],
+    authorized: true,
+  },
   {
     case: "refuses a line predating the issue body's last edit",
     edited: "2026-01-06T00:00:00Z",
@@ -601,7 +610,7 @@ test.each(gateScenarios)(
         ...(readsCard ? [cardRead(scenario.card)] : []),
       ],
       actor(2),
-      people,
+      [...people, secondOwner],
       (root) => {
         const file = join(root, "vmethod.yaml");
         writeFileSync(file, readFileSync(file, "utf8").replace("enabled: true", "enabled: false"));

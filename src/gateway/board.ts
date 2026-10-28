@@ -16,7 +16,7 @@ import type {
 } from "../board/types.js";
 import { GitHubClient, GitHubHttpError, type Dependencies } from "./client.js";
 import { object, type ObjectData, type PeopleFilter } from "./people.js";
-import { sameAssignees, setTurn, turnAssignees } from "./turn.js";
+import { ownerForTurn, sameAssignees, setTurn, turnAssignees } from "./turn.js";
 import { ScopeReader } from "./scope.js";
 import { migrationIdentity, migrationHolderDead } from "./process-identity.js";
 import packageInfo from "../../package.json" with { type: "json" };
@@ -855,8 +855,12 @@ export class BoardService implements BoardIO {
           : ["Spec review", "Owner review"].includes(String(card.values.Status ?? ""))
             ? "owner"
             : null;
+    const owner =
+      expected === "owner" ? await ownerForTurn(this.github, people, repo, number) : undefined;
     const describe = (role: "owner" | "orchestrator" | null): string =>
-      role ? `${role} (${turnAssignees(people, repo, [], role)[0]})` : "no management assignee";
+      role
+        ? `${role} (${turnAssignees(people, repo, [], role, owner)[0]})`
+        : "no management assignee";
     if (value !== expected) {
       throw new Error(
         value === null
@@ -868,7 +872,8 @@ export class BoardService implements BoardIO {
     // Only the management turn assignee changes: workers keep their own assignments,
     // so the write adds or removes the management login over the kept non-management set.
     const kept = turnAssignees(people, repo, current, null);
-    const next = value === null ? kept : [...kept, turnAssignees(people, repo, [], value)[0]];
+    const next =
+      value === null ? kept : [...kept, turnAssignees(people, repo, [], value, owner)[0]];
     this.github.writes.beginOperation("board set assignees", [{ repo, number }]);
     await setTurn(this.github, repo, number, current, next);
     return sameAssignees(current, next)
