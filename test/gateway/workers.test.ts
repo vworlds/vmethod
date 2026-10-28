@@ -2807,6 +2807,58 @@ test("status distinguishes permission, running, unknown and idle without an auth
   f.done();
 });
 
+test("status shows each pending permission as bounded untrusted data", async () => {
+  // OpenCode V2 Permission.Request projection: action/resources, from
+  // https://opencode.ai/v2/openapi.json (2026-10-28). Metadata is not displayed.
+  const f = fixture([
+    ...start,
+    ...status(
+      true,
+      [],
+      [
+        { id: "per_read", sessionID: "ses_fake", action: "read", resources: ["apps/api/.env"] },
+        {
+          id: "per_shell",
+          sessionID: "ses_fake",
+          action: "shell",
+          resources: ["echo " + "x".repeat(250)],
+          metadata: { secret: "hidden" },
+        },
+      ]
+    ),
+  ]);
+  await f.service.command(["start", "31"]);
+  const output = String(await f.service.command(["status", "31"]));
+  expect(output).toContain('untrusted permission: «read: ["apps/api/.env"]»');
+  const details = [...output.matchAll(/untrusted permission: «([^»]*)»/g)].map((m) => m[1]);
+  expect(details).toHaveLength(2);
+  expect(details[1]).toHaveLength(200);
+  expect(details[1]).toContain("shell: ");
+  expect(output).not.toContain("hidden");
+  f.done();
+});
+
+test.each([false, true])(
+  "lock refusal identifies the holder and preserves the lock (dead=%s)",
+  async (dead) => {
+    const f = fixture();
+    const lock = join(f.root, "state/vmethod/example-state/workers/31.lock");
+    mkdirSync(lock, { recursive: true });
+    const holder = {
+      operation: "start",
+      pid: dead ? 2147483647 : process.pid,
+      at: new Date(0).toISOString(),
+    };
+    writeFileSync(join(lock, "holder.json"), JSON.stringify(holder));
+    await f.deps.sleep(125000);
+    await expect(f.service.command(["status", "31"])).rejects.toThrow(
+      `Worker #31 is locked: held by start (pid ${holder.pid}) for 125s${dead ? " (process not running; stale)" : ""}`
+    );
+    expect(JSON.parse(readFileSync(join(lock, "holder.json"), "utf8"))).toEqual(holder);
+    f.done();
+  }
+);
+
 test("unknown session starts a re-entry session with onboarding and a fresh PR read", async () => {
   const f = fixture([
     ...start,
@@ -3042,9 +3094,19 @@ test("simultaneous starts are serialized by an exclusive per-PR lock", async () 
   });
   const first = f.service.command(["start", "31"]);
   await preparing;
-  await expect(f.service.command(["start", "31"])).rejects.toThrow("locked");
+  const lock = join(f.root, "state/vmethod/example-state/workers/31.lock");
+  const holder = JSON.parse(readFileSync(join(lock, "holder.json"), "utf8"));
+  expect(holder).toMatchObject({
+    operation: "start",
+    pid: process.pid,
+    at: new Date(0).toISOString(),
+  });
+  await expect(f.service.command(["start", "31"])).rejects.toThrow(
+    `held by start (pid ${process.pid}) for 0s`
+  );
   release();
   await first;
+  expect(existsSync(lock)).toBe(false);
   f.done();
 });
 
