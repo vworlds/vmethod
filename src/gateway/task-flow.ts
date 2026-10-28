@@ -63,7 +63,7 @@ interface Host {
   /** Fresh owner-delegation evidence; never used by the expensive-model gate. */
   autopilot?(ref: string, kind: "pr" | "issue"): Promise<AutopilotState>;
   copyAutopilot?(issue: ObjectData, pr: ObjectData): Promise<void>;
-  /** Current delegation plus an authenticated review of the exact head. */
+  /** Verify an exact-head delegated review (including historical heads) and current delegation. */
   autopilotApproved?(ref: string, head: string): Promise<boolean>;
   github: GitHubClient;
   board: () => Pick<BoardService, "ensure" | "item" | "set" | "capDone" | "snapshot" | "cards">;
@@ -1238,7 +1238,7 @@ export class TaskFlow {
     );
   }
 
-  /** Merge a stopped/session-less task against the live base; carryApproval certifies no behaviour change after base merges. */
+  /** Merge a stopped/session-less task against the live base; delegated carries also require cleanBaseMerges proof. */
   async merge(
     ref: string,
     mergeCommit = false,
@@ -1334,9 +1334,18 @@ export class TaskFlow {
       const liveBase = await liveBaseHead(base, { git });
       let certification: string | undefined;
       let autopilot = false;
+      let autopilotHead = head;
       if (carryApproval !== undefined) {
         for (const approved of nonTask ? [] : await this.host.candidates(ref)) {
-          if ((await this.host.approved(ref, approved)) !== true) {
+          const owner = (await this.host.approved(ref, approved)) === true;
+          const delegated = !owner && (await this.host.autopilotApproved?.(ref, approved)) === true;
+          if (!owner && !delegated) {
+            continue;
+          }
+          if (
+            delegated &&
+            !(await cleanBaseMerges((...args) => git.run(...args), approved, head, baseSha))
+          ) {
             continue;
           }
           const files = await approvalCarryFiles(
@@ -1357,7 +1366,9 @@ export class TaskFlow {
               "Owner approval cannot be carried across an escalated conflict path; re-ask the owner"
             );
           }
-          certification = `[orchestrator] APPROVAL CARRIED from ${approved} to ${head}: ${carryApproval}\n\nI certify there is no behaviour change or algorithmic revamp.\n\nRemerge-diff files:\n${files.length ? files.map((file) => `- ${JSON.stringify(file)}`).join("\n") : "- (none)"}`;
+          autopilot = delegated;
+          autopilotHead = approved;
+          certification = `[orchestrator] APPROVAL CARRIED${delegated ? " (autopilot)" : ""} from ${approved} to ${head}: ${carryApproval}\n\nI certify there is no behaviour change or algorithmic revamp.\n\nRemerge-diff files:\n${files.length ? files.map((file) => `- ${JSON.stringify(file)}`).join("\n") : "- (none)"}`;
           break;
         }
         if (!certification) {
@@ -1369,11 +1380,18 @@ export class TaskFlow {
         autopilot = (await this.host.autopilotApproved?.(ref, head)) === true;
         let survived = autopilot;
         for (const approved of nonTask ? [] : await this.host.candidates(ref)) {
+          if (survived) {
+            break;
+          }
+          const owner = (await this.host.approved(ref, approved)) === true;
+          const delegated = !owner && (await this.host.autopilotApproved?.(ref, approved)) === true;
           if (
-            (await this.host.approved(ref, approved)) === true &&
+            (owner || delegated) &&
             (await cleanBaseMerges((...args) => git.run(...args), approved, head, baseSha))
           ) {
             survived = true;
+            autopilot = delegated;
+            autopilotHead = approved;
             break;
           }
         }
@@ -1440,15 +1458,19 @@ export class TaskFlow {
       if (item.isDraft) {
         await this.ready(item, false);
       }
+      if (autopilot) {
+        if (!(await this.host.autopilotApproved?.(ref, autopilotHead))) {
+          throw new Error(
+            autopilotHead === head
+              ? "Autopilot revoked during merge checks; ask the owner at the current step"
+              : "autopilot delegation is no longer current; ask the owner"
+          );
+        }
+      }
       if (certification) {
         await this.post(ref, certification);
       }
       if (autopilot) {
-        if (!(await this.host.autopilotApproved?.(ref, head))) {
-          throw new Error(
-            "Autopilot revoked during merge checks; ask the owner at the current step"
-          );
-        }
         await this.post(
           ref,
           `[orchestrator] AUTOPILOT\n\nMerging ${head} under autopilot, after my delivery review and the normal merge checks.`
