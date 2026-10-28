@@ -555,8 +555,7 @@ function filterDiagnosticValue(
 
 function isFreeText(key: string): boolean {
   return (
-    key.startsWith("body") ||
-    ["title", "shortDescription", "readme", "description", "name"].includes(key)
+    key.startsWith("body") || ["title", "shortDescription", "readme", "description"].includes(key)
   );
 }
 

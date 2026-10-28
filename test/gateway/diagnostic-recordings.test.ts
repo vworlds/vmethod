@@ -64,12 +64,6 @@ function branchWithoutDescription(value: unknown): ObjectData {
   return { ...branch, repo };
 }
 
-function signatureWithoutName(value: unknown): ObjectData {
-  const signature = { ...object(value) };
-  delete signature.name;
-  return signature;
-}
-
 test.each(["open", "closed"])(
   "recorded %s PR lists retain each accepted item using verified current text",
   async (state) => {
@@ -273,21 +267,15 @@ test.each(["git-commit", "commit"])(
     const original = name === "git-commit" ? data : object(data.commit);
     expect(result.sha).toBe(sha);
     expect(signature).toMatchObject({
-      author: signatureWithoutName(original.author),
-      committer: signatureWithoutName(original.committer),
+      author: original.author,
+      committer: original.committer,
       message: original.message,
       attribution: "git signature (unverified)",
     });
-    expect(object(signature.author)).not.toHaveProperty("name");
-    expect(object(signature.committer)).not.toHaveProperty("name");
     expect(result.attribution).toBe(
       name === "commit" ? "from owner (owner)" : "git signature (unverified)"
     );
-    expect(
-      output.endsWith(
-        "0 items dropped by the people filter\n2 text fields redacted from unattributable items"
-      )
-    ).toBe(true);
+    expect(output.endsWith("0 items dropped by the people filter")).toBe(true);
     fixture.done();
   },
   15000
@@ -329,11 +317,9 @@ test("recorded compare preserves counters and filters nested commits item by ite
     attribution: "from owner (owner)",
     commit: { attribution: "git signature (unverified)" },
   });
-  expect(
-    output.endsWith(
-      "0 items dropped by the people filter\n1 nested values redacted\n2 text fields redacted from unattributable items"
-    )
-  ).toBe(true);
+  expect(output.endsWith("0 items dropped by the people filter\n1 nested values redacted")).toBe(
+    true
+  );
   fixture.done();
 }, 15000);
 

@@ -20,6 +20,7 @@ type Owner {
   login: String!
 }
 type Repository {
+  name: String
   nameWithOwner: String
   owner: Owner
   issue(number: Int): Issue
@@ -27,6 +28,14 @@ type Repository {
   issueOrPullRequest(number: Int): IssueOrPullRequest
   issues(first: Int): IssueConnection
   pullRequests(first: Int): PullRequestConnection
+  labels(first: Int): LabelConnection
+}
+type LabelConnection {
+  nodes: [Label]
+}
+type Label {
+  name: String
+  description: String
 }
 union IssueOrPullRequest = Issue | PullRequest
 type Issue implements Node {
@@ -141,9 +150,24 @@ type ProjectV2 implements Node {
   title: String
   url: String
   items(first: Int): ProjectV2ItemConnection
+  fields(first: Int): ProjectV2FieldConfigurationConnection
   shortDescription: String
   readme: String
   createdAt: String
+}
+type ProjectV2FieldConfigurationConnection {
+  nodes: [ProjectV2FieldConfiguration]
+}
+union ProjectV2FieldConfiguration = ProjectV2Field | ProjectV2SingleSelectField
+type ProjectV2Field {
+  name: String
+}
+type ProjectV2SingleSelectField {
+  name: String
+  options: [ProjectV2SingleSelectFieldOption]
+}
+type ProjectV2SingleSelectFieldOption {
+  name: String
 }
 type Gist {
   description: String

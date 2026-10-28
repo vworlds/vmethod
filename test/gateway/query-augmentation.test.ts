@@ -138,6 +138,51 @@ test.each([
   expect(errors.map((error) => error.message)).toEqual([]);
 });
 
+test("unattributable label, repository and ProjectV2 field and option names survive", async () => {
+  const source =
+    '{ repository(owner:"example",name:"project") { name labels(first:2) { nodes { name description } } } organization(login:"example") { projectsV2 { nodes { fields(first:10) { nodes { ... on ProjectV2SingleSelectField { name options { name } } } } } } } }';
+  const result = graphqlSync({
+    schema,
+    source: readQuery(source),
+    rootValue: {
+      repository: {
+        ...object(item().repository),
+        name: "project",
+        labels: { nodes: [{ name: "bug", description: "NEVER DELIVER" }] },
+      },
+      organization: {
+        projectsV2: {
+          nodes: [
+            {
+              fields: {
+                nodes: [
+                  {
+                    __typename: "ProjectV2SingleSelectField",
+                    name: "Progress",
+                    options: [{ name: "Todo" }, { name: "Done" }],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    },
+  });
+  expect(result.errors).toBeUndefined();
+  const fixture = fixtureServer([{ path: "/graphql", json: result }]);
+  const file = join(fixture.root, "structural-names.graphql");
+  writeFileSync(file, source);
+  const output = await fixture.transport.call("ghRead", { source: file });
+  for (const name of ["project", "bug", "Progress", "Todo", "Done"]) {
+    expect(output).toContain(`"name": "${name}"`);
+  }
+  expect(output).not.toContain("NEVER DELIVER");
+  expect(output).toContain("0 items dropped by the people filter");
+  expect(output).toContain("1 text fields redacted from unattributable items");
+  fixture.done();
+});
+
 test("unattributable text aliases and all specified text fields are redacted without losing metadata", async () => {
   const source =
     '{ node(id:"x") { ...ProjectText } viewer { name label:login } gist { description comments { nodes { body bodyText html:bodyHTML } } } } fragment ProjectText on ProjectV2 { id number url createdAt label:title author:title shortDescription readme }';
@@ -155,7 +200,7 @@ test("unattributable text aliases and all specified text fields are redacted wit
         shortDescription: "NEVER DELIVER",
         readme: "NEVER DELIVER",
       },
-      viewer: { name: "NEVER DELIVER", login: "worker" },
+      viewer: { name: "Worker display name", login: "worker" },
       gist: {
         description: "NEVER DELIVER",
         comments: {
@@ -174,8 +219,9 @@ test("unattributable text aliases and all specified text fields are redacted wit
   expect(output).toContain('"number": 5');
   expect(output).toContain('"createdAt": "2026-10-28T17:00:00Z"');
   expect(output).toContain('"label": "worker"');
+  expect(output).toContain('"name": "Worker display name"');
   expect(output).toContain("0 items dropped by the people filter");
-  expect(output).toContain("9 text fields redacted from unattributable items");
+  expect(output).toContain("8 text fields redacted from unattributable items");
   fixture.done();
 });
 

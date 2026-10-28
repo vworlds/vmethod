@@ -219,13 +219,14 @@ REST commit accounts use the usual identity pins; git-only commit metadata passe
 with `attribution: "git signature (unverified)"`. Git signatures never establish a
 verified person or protocol authority. Nested lists are filtered item by item.
 PR branch owners and repository objects are structural metadata, not content
-authors: keep `head`/`base` refs, SHAs, repository identifiers (`full_name` or
-`nameWithOwner`) and owner identities even
-for foreign repositories. Without an attributable author, diagnostic objects keep
+authors: keep `head`/`base` refs, SHAs, repository identifiers and owner identities
+even for foreign repositories. Without an attributable author, diagnostic objects keep
 structural metadata but lose free-text fields: `title`, `body*`, `shortDescription`,
-`readme`, `description` and `name` (including GraphQL aliases). This also removes
-repository descriptions and git-signature display names; repository ownership and
-git signatures do not establish text authorship. For example, a ProjectV2 query
+`readme` and `description` (including GraphQL aliases). Repository descriptions are
+removed because repository ownership does not establish text authorship. Names
+remain structural identifiers: label names, ProjectV2 field and option names,
+repository `name` and git-signature names are retained, without granting protocol
+authority. For example, a ProjectV2 query
 selecting `number title url` returns each project's number and URL, not its title.
 Items carrying an unpinned author or editor are still dropped whole.
 
