@@ -850,7 +850,7 @@ test("conflict turn switches the existing session to the cheapest family and res
         path: "/api/session/ses_fake/prompt",
         method: "POST",
         body: {
-          text: "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY",
+          text: lockfileConflictLine,
           delivery: "queue",
         },
       },
@@ -981,6 +981,8 @@ test("session-less conflict starts a fixed generic fixer even for a non-draft di
   expect(f.prompts[0]).toContain(
     "Produce exactly one merge commit resolving the conflict; make no other commits or edits (no changelog fragments, no formatting fixes); if CI fails for any other reason, post [worker] BLOCKED."
   );
+  expect(f.prompts[0]).toContain(lockfileConflictLine);
+  expect(f.prompts[0]).toContain("Except for the lockfile-only regeneration rule above");
   expect(f.hooks.modelComment).toHaveBeenNthCalledWith(
     1,
     31,
@@ -1044,7 +1046,7 @@ test.each(["idle drain", "stop"])(
               path: "/api/session/ses_fake/prompt",
               method: "POST",
               body: {
-                text: "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY",
+                text: lockfileConflictLine,
                 delivery: "queue",
               },
             },
@@ -1066,14 +1068,16 @@ test.each(["idle drain", "stop"])(
   }
 );
 
+const lockfileConflictLine =
+  "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY. If every conflicted file is package-lock.json, npm-shrinkwrap.json, yarn.lock or pnpm-lock.yaml (at any path), do not hand-merge: keep package.json manifests as merged by git and regenerate the lockfiles with npm install --package-lock-only or the configured equivalent in postMerge.install. Commit the regeneration as the merge resolution; the remerge diff may touch only lockfiles, lockfile sync must pass and configured checks must be green. Mixed conflicts retain the conflicted-hunk rule.";
+
 const staleTimes = ["2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z", "2026-01-01T00:03:00Z"];
 test.each(["queued", "direct", "direct with REVIEW during conflict"])(
   "%s conflict send preserves REVIEW round 2 across the fixer's READY",
   async (mode) => {
     const reviewWake =
       "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 --new and act.";
-    const conflictLine =
-      "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+    const conflictLine = lockfileConflictLine;
     const busy = measuredStatus().map((request) =>
       request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
     );
@@ -1201,8 +1205,7 @@ test("an idle drain drops wakes older than the latest reply, while a conflict wa
     "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
   const reviewWake =
     "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 and act.";
-  const conflictLine =
-    "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+  const conflictLine = lockfileConflictLine;
   const switchTo = (id: string): Request[] => [
     {
       path: "/api/session/ses_fake/model",
@@ -1297,8 +1300,7 @@ test("fixer replies do not make queued wakes stale: the queued ANSWER is deliver
     "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
   const reviewWake =
     "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 and act.";
-  const conflictLine =
-    "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+  const conflictLine = lockfileConflictLine;
   const times = [
     "2026-01-01T00:00:00Z",
     "2026-01-01T00:01:00Z",
