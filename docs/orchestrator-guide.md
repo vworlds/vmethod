@@ -198,7 +198,14 @@ vmethod scope-review 42 .tmp/scope-changes.md
 ```
 
 The edit refuses a body changed since your read; re-read and reconcile rather
-than overwriting it. The summary file contains a short list of changes from the
+than overwriting it. On an issue whose scope is already approved, or that already
+has an open task PR, a plain `issue edit` also prints `scope approval for #<n>
+is now stale; run scope-review <n> <summary-file> before merging` (#359): the
+body-bound approval is void until the next review. Pass the summary to the edit
+itself, `issue edit 42 .tmp/scope.md --scope-review .tmp/scope-changes.md`, to
+pair the write with the review in one journaled operation and skip `scope-review`
+as a second verb.
+The summary file contains a short list of changes from the
 original and the new Estimate with the reason for its revision (or why it is unchanged),
 without a protocol tag or hash. `scope-review` generates SCOPE REVIEW
 with the live Estimate and `body sha256: …`, keeps Spec review, assigns the owner and
