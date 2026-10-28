@@ -7,7 +7,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, matchesGlob } from "node:path";
+import { dirname, join, matchesGlob } from "node:path";
 import type { Config } from "../config.js";
 import { GitHubHttpError } from "./client.js";
 import { stateRoot } from "./digest.js";
@@ -19,9 +19,13 @@ import type { ConflictPrior } from "./task-flow-types.js";
 import { cleanBaseMerges } from "./clean-base.js";
 import { liveBaseHead } from "./base-head.js";
 import { procStart, type EventDeps } from "./events.js";
+import { assertLockfileInSync, lockfilesOnly, npmCiEnvironment } from "./lockfile.js";
 
 export const conflictCertification =
   "conflict-only resolution; remerge diff limited to conflicted hunks; verify and CI green";
+
+const lockfileConflictCertification =
+  "lockfile-only resolution; remerge diff limited to lockfiles; lockfile sync, verify and CI green";
 
 interface Resolution {
   head: string;
@@ -430,6 +434,7 @@ export class ConflictService {
     ) {
       return this.block(pr, record, "update-branch produced more than a clean base merge");
     }
+    const lockfileOnly = record.step !== 1 && lockfilesOnly(record.files);
     if (
       record.step !== 1 &&
       !(await proveConflictMerge(
@@ -440,7 +445,31 @@ export class ConflictService {
         record.files
       ))
     ) {
-      return this.block(pr, record, "remerge diff is not limited to conflicted hunks");
+      return this.block(
+        pr,
+        record,
+        lockfileOnly
+          ? "lockfile-only merge proof failed (expected exact merge parents and remerge diff limited to lockfiles)"
+          : "remerge diff is not limited to conflicted hunks"
+      );
+    }
+    if (lockfileOnly) {
+      const changed = (
+        await git.run("show", "--remerge-diff", "--format=", "--name-only", "-z", snapshot.head)
+      )
+        .split("\0")
+        .filter(Boolean);
+      for (const path of new Set([...record.files, ...changed].map((file) => dirname(file)))) {
+        try {
+          await assertLockfileInSync(this.deps, join(directory, path), npmCiEnvironment(this.env));
+        } catch (error) {
+          return this.block(
+            pr,
+            record,
+            `lockfile sync check failed at ${path}: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
     }
     if (!snapshot.green || snapshot.stale) {
       if (
@@ -455,7 +484,7 @@ export class ConflictService {
       return `PENDING #${pr}: waiting for green CI on current base`;
     }
     if (
-      (record.step === 3 || record.approved) &&
+      (record.step === 3 || record.approved || lockfileOnly) &&
       !(await this.hooks.verify(directory, snapshot.head, () => {
         if (record.verifyNoticeReported) {
           return false;
@@ -484,7 +513,11 @@ export class ConflictService {
     this.save(pr, record);
     if (record.approved) {
       try {
-        await this.hooks.merge(pr, conflictCertification, snapshot.head);
+        await this.hooks.merge(
+          pr,
+          lockfileOnly ? lockfileConflictCertification : conflictCertification,
+          snapshot.head
+        );
         record.phase = "merged";
       } catch (error) {
         record.reason = `auto-merge refused (${error instanceof Error ? error.message : String(error)}); merge manually when ready`;
