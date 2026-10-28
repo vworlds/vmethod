@@ -15,6 +15,9 @@ import {
   workerFixtureServer as fixtureServer,
 } from "./helpers.js";
 import type { Person } from "../../src/gateway/people.js";
+import { getConfig } from "../../src/config.js";
+import { WriteJournal } from "../../src/gateway/write-journal.js";
+import { fixture } from "../helpers.js";
 
 /** A peer project's orchestrator, pinned in people.yaml plus its GraphQL actor shape. */
 const vecsmaster: Person = {
@@ -96,6 +99,168 @@ const count = (output = "1") => ({
 const diff = (output = "") => ({
   args: ["diff", "--name-only", "--diff-filter=ACMR", "-z", `refs/remotes/origin/pack/x...${sha}`],
   output,
+});
+
+const taskNode = (overrides = {}) =>
+  item({
+    body: "# Task: workflow change (issue #7)\n",
+    headRefOid: "b".repeat(40),
+    headRefName: "7-task",
+    baseRefName: "pack/x",
+    headRepository: { nameWithOwner: "example/project" },
+    state: "OPEN",
+    ...overrides,
+  });
+const targetedRequests = (overrides = {}) => [task(), graph({ node: taskNode(overrides) })];
+const targetedPrefix = (head = "b".repeat(40)) => [
+  { args: ["rev-parse", "--verify", "HEAD^{commit}"], output: sha },
+  { args: https("fetch", "+refs/heads/7-task:refs/remotes/origin/7-task") },
+  { args: ["rev-parse", "--verify", "refs/remotes/origin/7-task^{commit}"], output: head },
+  { args: ["rev-list", "--count", `${sha}..${head}`], output: "0" },
+];
+
+test.each(["default", "worktree", "branch"])(
+  "orchestrator push --task freezes HEAD, allows workflows and journals the orchestrator head (%s arguments)",
+  async (form) => {
+    const f = orchestratorFixture(targetedRequests());
+    const worktree = form === "default" ? process.cwd() : fixture();
+    const done = gitFake(f.deps, worktree, [
+      ...targetedPrefix(),
+      fetchBase,
+      count(),
+      diff(".github/workflows/ci.yml\0"),
+      { args: https("push", `${sha}:refs/heads/7-task`) },
+      { args: ["update-ref", "refs/remotes/origin/7-task", sha] },
+    ]);
+    const args = [
+      "--task",
+      "3",
+      ...(form === "default" ? [] : [worktree]),
+      ...(form === "branch" ? ["7-task"] : []),
+    ];
+    expect(
+      await workerVerb(f.gateway, f.root, "push", args, { VMETHOD_ROLE: "orchestrator" }, f.deps)
+    ).toBe(`pushed 7-task at ${sha.slice(0, 7)}`);
+    const journal = new WriteJournal(getConfig(f.root, f.env), f.env, f.deps.now);
+    expect(journal.pushed("example/project", 3, sha)).toBe(true);
+    expect(journal.pushed("example/project", 4, sha)).toBe(false);
+    expect(journal.pushed("example/other", 3, sha)).toBe(false);
+    expect(journal.pushed("example/project", 3, "b".repeat(40))).toBe(false);
+    done();
+    f.done();
+  }
+);
+
+test.each([
+  { body: "Not a task PR" },
+  { state: "CLOSED" },
+  { headRefName: "8-other" },
+  { headRepository: { nameWithOwner: "attacker/fork" } },
+])("orchestrator push --task rejects invalid task metadata before git: %j", async (overrides) => {
+  const f = orchestratorFixture(targetedRequests(overrides));
+  await expect(
+    f.gateway.call(
+      "push",
+      { task: 3, worktree: f.root, branch: "7-task" },
+      { role: "orchestrator" }
+    )
+  ).rejects.toThrow();
+  f.done();
+});
+
+test("workers cannot target a task PR through CLI or transport", async () => {
+  const f = fixtureServer([]);
+  await expect(
+    workerVerb(f.gateway, f.root, "push", ["--task", "3"], { VMETHOD_TASK_PR: "3" }, f.deps)
+  ).rejects.toThrow("Only orchestrators");
+  await expect(
+    f.gateway.call("push", { task: 3, worktree: f.root, branch: "7-task" }, ctx)
+  ).rejects.toThrow("Only orchestrators");
+  f.done();
+});
+
+test.each([
+  ["--task"],
+  ["--task", "0"],
+  ["--task", "3x"],
+  ["--task", "9007199254740992"],
+  ["--task", "3", "--force"],
+  ["--task", "3", ".", "7-task", "extra"],
+])("push --task rejects malformed CLI arguments %j before transport", async (...args) => {
+  const f = orchestratorFixture([]);
+  await expect(
+    workerVerb(f.gateway, f.root, "push", args, { VMETHOD_ROLE: "orchestrator" }, f.deps)
+  ).rejects.toThrow("Usage:");
+  f.done();
+});
+
+test.each(["moved", "diverged"])(
+  "orchestrator push --task refuses %s head before push",
+  async (kind) => {
+    const head = "b".repeat(40);
+    const f = orchestratorFixture(targetedRequests({ headRefOid: head }));
+    const steps = targetedPrefix(head);
+    if (kind === "moved") {
+      steps[2].output = sha;
+      steps.pop();
+    } else {
+      steps[3].output = "1";
+    }
+    const done = gitFake(f.deps, f.root, steps);
+    await expect(
+      f.gateway.call("push", { task: 3, worktree: f.root }, { role: "orchestrator" })
+    ).rejects.toThrow("error: the remote branch moved: fetch and merge it (never force-push)");
+    expect(
+      new WriteJournal(getConfig(f.root, f.env), f.env, f.deps.now).pushed(
+        "example/project",
+        3,
+        sha
+      )
+    ).toBe(false);
+    done();
+    f.done();
+  }
+);
+
+test("orchestrator push --task retains artifact policy", async () => {
+  const f = orchestratorFixture(targetedRequests());
+  const done = gitFake(f.deps, f.root, [
+    ...targetedPrefix(),
+    fetchBase,
+    count(),
+    diff("dist/output.js\0"),
+  ]);
+  await expect(
+    f.gateway.call("push", { task: 3, worktree: f.root }, { role: "orchestrator" })
+  ).rejects.toThrow("generated artefacts:\ndist/output.js");
+  done();
+  f.done();
+});
+
+test("orchestrator push --task classifies workflow refusal without journaling a failed push", async () => {
+  const f = orchestratorFixture(targetedRequests());
+  const done = gitFake(f.deps, f.root, [
+    ...targetedPrefix(),
+    fetchBase,
+    count(),
+    diff(".github/workflows/ci.yml\0"),
+    {
+      args: https("push", `${sha}:refs/heads/7-task`),
+      fail: true,
+      stderr:
+        "remote: refusing to allow an OAuth token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope",
+    },
+  ]);
+  await expect(
+    f.gateway.call("push", { task: 3, worktree: f.root }, { role: "orchestrator" })
+  ).rejects.toThrow(
+    "push refused: changing .github/workflows needs a token with the workflow scope; ask the orchestrator"
+  );
+  expect(
+    new WriteJournal(getConfig(f.root, f.env), f.env, f.deps.now).pushed("example/project", 3, sha)
+  ).toBe(false);
+  done();
+  f.done();
 });
 
 test("push freezes a local ref, uses the actual pack base, and never passes a secret in argv", async () => {
