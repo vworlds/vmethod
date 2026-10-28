@@ -1724,7 +1724,8 @@ export class WorkerService {
   private storedUsage(session: Session): boolean {
     return session.segments.some((segment) => segment.usage);
   }
-  async suggest(issue: number): Promise<string> {
+  /** #339: the structured suggestion behind `suggest-model`, reused by open-task's advisory lines. */
+  async recommend(issue: number): Promise<{ model: Model; reason: string }> {
     const meta = await this.hooks.issue(issue);
     const wanted =
       /architecture|security|design/i.test(meta.kind) || (meta.estimate ?? 0) >= 13 ? "sol" : "glm";
@@ -1732,12 +1733,16 @@ export class WorkerService {
     if (!model) {
       throw new Error(`Suggested family ${wanted} is not configured`);
     }
+    return { model, reason: `Estimate ${meta.estimate ?? "unset"}, kind ${meta.kind}` };
+  }
+  async suggest(issue: number): Promise<string> {
+    const { model, reason } = await this.recommend(issue);
     const file = join(this.root, "learnings/models", `${model.family}.md`);
     const lesson = existsSync(file)
       ? readFileSync(file, "utf8")
           .split("\n")
           .find((line) => line.trim() && !line.startsWith("#"))
       : "Shared model learnings not available locally yet";
-    return `${model.family}: Estimate ${meta.estimate ?? "unset"}, kind ${meta.kind}; gate ${model.gate}${model.gate === "owner" ? ' (requires --owner-approved and the owner\'s "APPROVE MODEL <family>" line or the owner-set card Model, see gateway.md)' : ""}\n${untrusted(lesson ?? "No matching learning")}`;
+    return `${model.family}: ${reason}; gate ${model.gate}${model.gate === "owner" ? ' (requires --owner-approved and the owner\'s "APPROVE MODEL <family>" line or the owner-set card Model, see gateway.md)' : ""}\n${untrusted(lesson ?? "No matching learning")}`;
   }
 }

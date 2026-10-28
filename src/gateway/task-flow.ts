@@ -48,6 +48,8 @@ interface Host {
   approved(ref: string, historical?: string): Promise<boolean | "unknown">;
   candidates(ref: string): Promise<string[]>;
   issueApproved(item: ObjectData): Promise<boolean | "unknown">;
+  approvalRefusal(ref: string): Promise<string>;
+  scopeRefusal(item: ObjectData): Promise<string>;
   /** Verify an owner quotation after the latest summons, behind the identity filter. */
   ownerAgreement?(
     ref: string,
@@ -58,6 +60,10 @@ interface Host {
   ): Promise<boolean>;
   /** #218: did the pinned owner verify this gated family on the task issue? */
   modelApproval(issue: number, family: string): Promise<boolean>;
+  /** #339: open-task's advisory suggestion for an issue, from suggest-model's code path. */
+  modelSuggestion?(issue: number): Promise<{ family: string; tier: string; reason: string }>;
+  /** #339: a family's graded learnings evidence for the advisory lines; undefined without data. */
+  learningEvidence?(family: string): { usdPerPoint: number; deliveries: number } | undefined;
   /** True while a conflict resolution record is starting or waiting for this PR. */
   conflictPending?(ref: string): Promise<boolean>;
   /** Fresh owner-delegation evidence; never used by the expensive-model gate. */
@@ -102,6 +108,19 @@ export function legacyIssueHeaders(body: string): number[] {
 }
 const roundText = (round: number) =>
   String(round).replace(/\d/g, (digit) => `${digit}\uFE0F\u20E3`);
+
+/** #339: model tier ordering for the cheaper-tier note; unknown tiers never count as more expensive. */
+const tierRank: Record<string, number> = { cheap: 0, standard: 1, expensive: 2 };
+
+/** #339: "<family> averages $<usd>/point over <k> ..." — the advisory evidence, undefined without data. */
+const averages = (
+  family: string,
+  evidence: { usdPerPoint: number; deliveries: number } | undefined,
+  unit: string
+): string | undefined =>
+  evidence
+    ? `${family} averages $${evidence.usdPerPoint.toFixed(2)}/point over ${evidence.deliveries} ${unit}`
+    : undefined;
 
 /** Named workflow operations; no raw responses or credentials are returned to clients. */
 export class TaskFlow {
@@ -400,7 +419,7 @@ export class TaskFlow {
         throw new Error("Issue is not open");
       }
       if (input.unapproved === undefined && (await this.host.issueApproved(issue)) !== true) {
-        throw new Error("scope not approved: post SCOPE REVIEW first");
+        throw new Error(await this.host.scopeRefusal(issue));
       }
     }
     let hint: string | undefined;
@@ -448,6 +467,14 @@ export class TaskFlow {
         `issue #${input.issue} has Model ${hint} on its card; use it (omit --model) or override with --model-override "<reason>"`
       );
     }
+    // #339: launching without a card Model first shows suggest-model's advice, inform only.
+    const advisory =
+      issue && !hint
+        ? await this.modelAdvisory(this.number(input.issue!), {
+            family: model.family,
+            tier: model.tier,
+          })
+        : [];
     let title = String(input.direct ?? issue?.title ?? "");
     if (!input.direct && issue) {
       title = title.replace(/^bug:\s*/, "fix: ");
@@ -585,7 +612,58 @@ export class TaskFlow {
       await this.turn(input.issue!, null);
       await this.host.copyAutopilot?.(issue, { id: created.node_id, number: created.number, body });
     }
-    return `Opened draft PR #${ref} (${branch})`;
+    return [...advisory, `Opened draft PR #${ref} (${branch})`].join("\n");
+  }
+
+  /** #339: the advisory lines open-task prints when launching without a card Model: one
+   * suggest-model line, plus a cheaper-tier note when the chosen family costs more. Advisory
+   * failures only shorten the output and are reported; the launch is never refused. */
+  private async modelAdvisory(
+    issue: number,
+    chosen: { family: string; tier: string }
+  ): Promise<string[]> {
+    let suggestion: { family: string; tier: string; reason: string } | undefined;
+    try {
+      suggestion = await this.host.modelSuggestion?.(issue);
+    } catch (error) {
+      this.deps.report(`Model suggestion unavailable: ${(error as Error).message}`);
+    }
+    if (!suggestion) {
+      return [];
+    }
+    const suggested = averages(
+      suggestion.family,
+      await this.familyEvidence(suggestion.family),
+      "graded tasks"
+    );
+    const lines = [
+      `suggest-model #${issue}: ${suggestion.family} (${suggestion.reason}${suggested ? `; ${suggested}` : ""})`,
+    ];
+    const chosenRank = tierRank[chosen.tier];
+    const suggestedRank = tierRank[suggestion.tier];
+    if (chosenRank !== undefined && suggestedRank !== undefined && chosenRank > suggestedRank) {
+      const chosenAverages = averages(
+        chosen.family,
+        await this.familyEvidence(chosen.family),
+        "tasks"
+      );
+      lines.push(
+        `note: ${chosen.family} is a more expensive tier than the suggestion${chosenAverages ? ` (${chosenAverages})` : ""}`
+      );
+    }
+    return lines;
+  }
+
+  /** #339: per-family learnings evidence for the advisory lines; failure only shortens a line. */
+  private async familyEvidence(
+    family: string
+  ): Promise<{ usdPerPoint: number; deliveries: number } | undefined> {
+    try {
+      return this.host.learningEvidence?.(family);
+    } catch (error) {
+      this.deps.report(`Learnings evidence unavailable: ${(error as Error).message}`);
+      return undefined;
+    }
   }
 
   /** Start from existing work: merge origin/<from> into the fresh task branch with a true merge
@@ -1319,7 +1397,7 @@ export class TaskFlow {
           !(typeof exception === "string" && exception.trim()) &&
           (await this.host.issueApproved(issue)) !== true
         ) {
-          throw new Error("scope not approved: post SCOPE REVIEW first");
+          throw new Error(await this.host.scopeRefusal(issue));
         }
       }
       const baseSha = sha(item.baseRefOid);
@@ -1396,7 +1474,7 @@ export class TaskFlow {
           }
         }
         if (!survived) {
-          throw new Error("Owner approval is not valid for current head");
+          throw new Error(await this.host.approvalRefusal(ref));
         }
       }
       if (autopilot) {
@@ -1453,7 +1531,7 @@ export class TaskFlow {
         throw new Error("Worker restarted before merge");
       }
       if (nonTask && !autopilot && (await this.host.approved(ref)) !== true) {
-        throw new Error("Owner approval is not valid for current head");
+        throw new Error(await this.host.approvalRefusal(ref));
       }
       if (item.isDraft) {
         await this.ready(item, false);

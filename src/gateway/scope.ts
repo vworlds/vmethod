@@ -138,6 +138,66 @@ function matchesBody(review: ObjectData, body: string): boolean {
   return lines.length === 1 && hash !== null && (hash[1] ?? hash[2]) === bodyHash(body);
 }
 
+/** Refusal diagnostics use metadata only for non-orchestrator comments, never their bodies. */
+export function scopeRefusal(
+  issue: ObjectData,
+  comments: ObjectData[],
+  timeline: ObjectData[],
+  config: Config,
+  filter: PeopleFilter
+): string {
+  const reasons: { at: number; text: string }[] = [];
+  const time = (item: ObjectData) => Date.parse(String(item.lastEditedAt ?? item.createdAt));
+  const repo = repoOf(issue).repo || String(config.repo);
+  const trusted = (item: ObjectData) =>
+    orchestrates(filter, filter.identity(item.author), repo) &&
+    (item.lastEditedAt == null || orchestrates(filter, filter.identity(item.editor), repo));
+  const reviews = comments
+    .filter(
+      (comment) =>
+        trusted(comment) && /^\[orchestrator\] SCOPE REVIEW(?:\r?\n|$)/.test(String(comment.body))
+    )
+    .sort((a, b) => time(b) - time(a));
+  const review = reviews[0];
+  const events = timeline.filter(
+    (event) =>
+      event.__typename === "ProjectV2ItemStatusChangedEvent" &&
+      object(event.project).number === Number(object(config.board).number)
+  );
+  const approvalAt = ownerApprovalAt(timeline, config, filter, review ? "Spec review" : "Scoping");
+  if (
+    issue.lastEditedAt != null &&
+    approvalAt !== null &&
+    time(issue) > approvalAt &&
+    (!review || !matchesBody(review, String(issue.body)))
+  ) {
+    reasons.push({
+      at: time(issue),
+      text: `scope approval is stale: issue body edited by ${String(object(issue.editor).login ?? "<unknown>")} at ${String(issue.lastEditedAt)} after approval; run scope-review ${String(issue.number)} <file>`,
+    });
+  }
+  for (const event of events) {
+    if (event.previousStatus === "Backlog" && event.status === "Executing") {
+      reasons.push({
+        at: Date.parse(String(event.createdAt)),
+        text: "Backlog → Executing is not a scope approval; move it Scoping → Executing, or run scope-review",
+      });
+    }
+  }
+  if (!review) {
+    for (const comment of comments.filter((comment) => !trusted(comment))) {
+      reasons.push({
+        at: time(comment),
+        text: `the trivial shortcut is void: comment ${String(comment.url ?? "<unknown>")} by ${String(object(comment.lastEditedAt == null ? comment.author : comment.editor).login ?? "<unknown>")}; run scope-review ${String(issue.number)} <file>`,
+      });
+    }
+  }
+  return (
+    reasons.filter((reason) => Number.isFinite(reason.at)).sort((a, b) => b.at - a.at)[0]?.text ??
+    `scope not approved: run scope-review ${String(issue.number)} <file> and ask the owner to move Spec review → Executing`
+  );
+}
+
 function reviewPending(
   issue: ObjectData,
   comments: ObjectData[],
@@ -169,7 +229,7 @@ function reviewPending(
   );
 }
 
-/** Batch scope reads for a board poll. Unknown authors are filtered before body reads.
+/** Batch scope reads and refusal reasons for a board poll. Unknown authors are filtered before body reads.
  * Connections paginate; non-orchestrator comments (including rejected authors) void the shortcut.
  */
 export class ScopeReader {
@@ -187,10 +247,16 @@ export class ScopeReader {
 
   async read(
     ids: string[]
-  ): Promise<Map<string, { approved: boolean; ownerApproved: boolean; reviewPending: boolean }>> {
-    const result = new Map(
-      ids.map((id) => [id, { approved: false, ownerApproved: false, reviewPending: false }])
-    );
+  ): Promise<
+    Map<
+      string,
+      { approved: boolean; ownerApproved: boolean; reviewPending: boolean; refusal?: string }
+    >
+  > {
+    const result = new Map<
+      string,
+      { approved: boolean; ownerApproved: boolean; reviewPending: boolean; refusal?: string }
+    >(ids.map((id) => [id, { approved: false, ownerApproved: false, reviewPending: false }]));
     if (ids.length > 100) {
       for (let index = 0; index < ids.length; index += 100) {
         for (const [id, state] of await this.read(ids.slice(index, index + 100))) {
@@ -207,7 +273,7 @@ export class ScopeReader {
     const issues = await this.nodes(
       accepted.map((item) => String(item.id)),
       "Issue",
-      "body createdAt labels(first: 100) { nodes { name } pageInfo { hasNextPage } }"
+      "number body createdAt labels(first: 100) { nodes { name } pageInfo { hasNextPage } }"
     );
     const comments = await this.connections(issues, "comments");
     const timeline = await this.connections(issues, "timelineItems");
@@ -261,6 +327,7 @@ export class ScopeReader {
       );
       const discussion = commentMetas.map((meta) => bodies.get(meta.id) ?? meta);
       result.set(id, {
+        refusal: scopeRefusal(issue, discussion, events, this.config, this.filter),
         approved:
           complete &&
           scopeApproved(
@@ -308,7 +375,7 @@ export class ScopeReader {
         declarations.push(`$id${i}: ID!`, `$cursor${i}: String`);
         const selection =
           field === "comments"
-            ? `${identityFields} createdAt`
+            ? `${identityFields} url createdAt`
             : `__typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } }`;
         return `n${i}: node(id: $id${i}) { ... on Issue { ${identityFields} ${field}(first: 100, after: $cursor${i}${field === "timelineItems" ? ", itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]" : ""}) { nodes { ${selection} } pageInfo { hasNextPage endCursor } } } }`;
       });

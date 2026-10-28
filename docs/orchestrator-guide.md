@@ -425,6 +425,16 @@ apply it to ordinary models. See [shared learnings](../learnings/lessons.md).
 Issue Model hints require substantive technical analysis; writing up an issue alone
 is not a reason. Leave the hint empty when the evidence does not support one.
 
+When launching without a Model on the issue card, `open-task` prints its own advice
+before the opened-PR line: `suggest-model #<issue>: <family> (<reason>; <family>
+averages $<usd>/point over <k> graded tasks)`, without the evidence clause while
+`learnings` has no graded tasks for the family; and a second
+`note: <chosen> is a more expensive tier than the suggestion (<chosen> averages
+$<usd>/point over <k> tasks)` line when the chosen family's tier costs more than
+the suggestion's. Both lines inform only — never refuse the launch over them; read
+the evidence, tell the owner, and let them correct the family as in §2.6 of the
+NNext adoption review.
+
 Use a capable generalist for design, judgment and cross-cutting work; consider a
 cheaper model for a well-specified bounded task, and require vision when needed.
 The baseline default family is sol unless an explicit selection or an issue hint

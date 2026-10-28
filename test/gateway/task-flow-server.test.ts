@@ -110,6 +110,98 @@ const grantHistory = {
   },
 };
 
+test.each(["non-owner", "bounce", "head"])(
+  "pr merge exposes the authenticated %s approval refusal",
+  async (cause) => {
+    const old = "d".repeat(40);
+    const pr = item({
+      __typename: "PullRequest",
+      number: 27,
+      title: "chore: adoption",
+      body: "Adoption",
+      state: "OPEN",
+      headRefName: "adoption",
+      baseRefName: "dev",
+      baseRefOid: sha,
+      headRepository: { nameWithOwner: "example/project" },
+      labels: { nodes: [], pageInfo: { hasNextPage: false } },
+    });
+    const thread = () => graph({ repository: { pullRequest: pr } });
+    const comment = scopeComment({
+      body: `[orchestrator] OWNER REVIEW\nHead: ${cause === "head" ? old : sha}`,
+    });
+    const approval = {
+      ...scopeMove({
+        actor: cause === "non-owner" ? actor(2) : actor(),
+        status: "Approved",
+        previousStatus: "Owner review",
+      }),
+    };
+    const timeline = [
+      approval,
+      ...(cause === "bounce"
+        ? [
+            scopeMove({
+              status: "Executing",
+              previousStatus: "Approved",
+              createdAt: "2026-01-04T00:00:00Z",
+            }),
+          ]
+        : []),
+    ];
+    const evidence = () => [
+      thread(),
+      graph({ node: item({ reviews: scopeConnection([]) }) }),
+      graph({ node: item({ comments: scopeConnection([comment]) }) }),
+      graph({ node: comment }),
+      graph({ node: item({ timelineItems: scopeConnection(timeline) }) }),
+    ];
+    const f = fixtureServer(
+      [
+        thread(),
+        graph({ node: pr }),
+        ...evidence(),
+        // No current delegation: read the live PR and its comments without trusting tags alone.
+        thread(),
+        graph({ node: pr }),
+        graph({ node: item({ comments: scopeConnection([comment]) }) }),
+        graph({ node: comment }),
+        ...evidence(),
+      ],
+      actor(2),
+      people,
+      (root) => {
+        const file = join(root, "vmethod.yaml");
+        writeFileSync(file, readFileSync(file, "utf8").replace("enabled: true", "enabled: false"));
+      }
+    );
+    f.deps.workers = {
+      status: async () => "stopped",
+      resume: async () => {
+        throw new Error("Unexpected worker resume");
+      },
+    };
+    f.deps.exec = async (file, args) => {
+      expect(file).toBe("git");
+      if (args.includes("fetch")) {
+        return "";
+      }
+      if (args[0] === "rev-parse") {
+        return sha;
+      }
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    };
+    const expected =
+      cause === "non-owner"
+        ? `approval by ${actor(2).login} does not count (not an owner in people.yaml); ask an owner to approve after review 27 owner`
+        : cause === "bounce"
+          ? "approval at 2026-01-03T00:00:00Z precedes a bounce to Executing; hand over again with review 27 owner"
+          : `head moved from ${old} to ${sha} since approval; use --carry-approval if only base merges`;
+    await expect(f.transport.call("prMerge", { ref: "27" })).rejects.toThrow(expected);
+    f.done();
+  }
+);
+
 test.each([false, true])(
   "historical autopilot review reaches the merge proof only with a current grant (revoked=%s)",
   async (revoked) => {
@@ -427,38 +519,49 @@ test("link-task reaches the authenticated Development mutation path without edit
   f.done();
 });
 
-test("open-task checks the issue timeline actor at the server, not the card's Status", async () => {
-  const f = fixtureServer([
-    graph({ repository: { issue: item() } }),
-    graph({
-      node: item({
-        body: "Approved specification",
-        title: "feat: task",
-        state: "OPEN",
-        labels: { nodes: [], pageInfo: { hasNextPage: false } },
+test.each([false, true])(
+  "open-task reports scope evidence at the server (backlog=%s)",
+  async (backlog) => {
+    const f = fixtureServer([
+      graph({ repository: { issue: item() } }),
+      graph({
+        node: item({
+          body: "Approved specification",
+          title: "feat: task",
+          state: "OPEN",
+          labels: { nodes: [], pageInfo: { hasNextPage: false } },
+        }),
       }),
-    }),
-    {
-      path: "/graphql",
-      json: {
-        data: {
-          organization: { projectV2: { id: boardRecording.id, readme: boardRecording.readme } },
+      {
+        path: "/graphql",
+        json: {
+          data: {
+            organization: { projectV2: { id: boardRecording.id, readme: boardRecording.readme } },
+          },
         },
       },
-    },
-    { path: "/graphql", json: { data: { node: { fields: boardRecording.fields } } } },
-    scopeGraph({ nodes: [scopeIssue()] }),
-    scopeGraph({ nodes: [scopeIssue()] }),
-    scopeGraph({ n0: scopeIssue({ comments: scopeConnection([]) }) }),
-    scopeGraph({
-      n0: scopeIssue({ timelineItems: scopeConnection([scopeMove({ actor: actor(2) })]) }),
-    }),
-  ]);
-  await expect(f.transport.call("openTask", { issue: "8", model: "sol" })).rejects.toThrow(
-    "scope not approved: post SCOPE REVIEW first"
-  );
-  f.done();
-});
+      { path: "/graphql", json: { data: { node: { fields: boardRecording.fields } } } },
+      scopeGraph({ nodes: [scopeIssue()] }),
+      scopeGraph({ nodes: [scopeIssue()] }),
+      scopeGraph({ n0: scopeIssue({ comments: scopeConnection([]) }) }),
+      scopeGraph({
+        n0: scopeIssue({
+          timelineItems: scopeConnection([
+            scopeMove(
+              backlog ? { status: "Executing", previousStatus: "Backlog" } : { actor: actor(2) }
+            ),
+          ]),
+        }),
+      }),
+    ]);
+    await expect(f.transport.call("openTask", { issue: "8", model: "sol" })).rejects.toThrow(
+      backlog
+        ? "Backlog → Executing is not a scope approval; move it Scoping → Executing, or run scope-review"
+        : "scope not approved: run scope-review 8 <file> and ask the owner to move Spec review → Executing"
+    );
+    f.done();
+  }
+);
 
 const editedIssue = (lastEditedAt: string | null, createdAt = "2026-01-05T00:00:00Z") =>
   graph({
@@ -705,6 +808,33 @@ test.each(gateScenarios)(
         graph({ node: item({ comments: scopeConnection(scenario.metas) }) }),
         ...scenario.bodies,
         ...(readsCard ? [cardRead(scenario.card)] : []),
+        // #339: once the gate passes, the launch's advisory advice re-reads the issue
+        // through suggest-model's path; the card carries only an Estimate, and with no
+        // local learnings the line prints without its evidence clause.
+        ...(scenario.authorized
+          ? [
+              graph({ repository: { issue: item() } }),
+              graph({
+                node: item({
+                  body: "Issue",
+                  labels: { nodes: [], pageInfo: { hasNextPage: false } },
+                  projectItems: {
+                    nodes: [
+                      {
+                        id: "card-1",
+                        project: { number: 1, owner: { login: "example" } },
+                        fieldValues: {
+                          nodes: [{ field: { name: "Estimate" }, number: 1 }],
+                          pageInfo: { hasNextPage: false },
+                        },
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false },
+                  },
+                }),
+              }),
+            ]
+          : []),
       ],
       actor(2),
       [...people, secondOwner],

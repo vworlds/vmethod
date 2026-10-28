@@ -1154,6 +1154,50 @@ test("report reads local JSONL or the bundled records and fails for missing scan
   expect(JSON.parse(await service.command({ action: "report", json: true })).deliveries).toBe(2);
 }, 15000);
 
+test("familyEvidence returns one family's graded aggregate and undefined without data", () => {
+  const root = fixture();
+  const deps: Dependencies = {
+    fetch: async () => {
+      throw new Error("Unexpected network");
+    },
+    exec: async () => {
+      throw new Error("Unexpected subprocess");
+    },
+    now: () => 0,
+    sleep: async () => {},
+    report: () => {},
+  };
+  const noClient = () => {
+    throw new Error("familyEvidence must not construct a GitHub client");
+  };
+  const withData = new LearningsService(root, {}, {}, deps, noClient, {
+    "learnings/models/example.jsonl":
+      JSON.stringify(
+        record({
+          points_final: 2,
+          segments: [
+            { family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd: 0.5 },
+          ],
+        })
+      ) +
+      "\n" +
+      JSON.stringify(
+        record({
+          pr: 77,
+          points_final: 3,
+          segments: [
+            { family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd: 0.5 },
+          ],
+        })
+      ) +
+      "\n",
+  });
+  expect(withData.familyEvidence("sol")).toEqual({ usdPerPoint: 0.2, deliveries: 2 });
+  expect(withData.familyEvidence("glm")).toBeUndefined();
+  const noData = new LearningsService(root, {}, {}, deps, noClient, {});
+  expect(noData.familyEvidence("sol")).toBeUndefined();
+});
+
 test("show reads dev, fences hostile advice and falls back to the injected bundled snapshot offline", async () => {
   const calls: string[] = [];
   let offline = false;

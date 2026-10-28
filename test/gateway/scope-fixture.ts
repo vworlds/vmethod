@@ -12,6 +12,7 @@ export function scopeIssue(overrides: ObjectData = {}): ObjectData {
   return item({
     ...projection,
     id: "node-1",
+    number: 8,
     author: actor(2),
     editor: null,
     lastEditedAt: null,
