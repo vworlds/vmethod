@@ -64,11 +64,19 @@ Names, titles, protocol tags and commit metadata confer no authority.
 
 Learning operations use the same transport: `learnings(LearningInput) → string`
 and central CI's `learningCheck({ref, label?}) → string`. Read/show/report are
-available to workers; submit, annotate, aggregate and label writes require orchestrator context.
+available to workers; submit, annotate, aggregate, merge and label writes require orchestrator context.
 Annotation and aggregation use the gateway's OpenCode client with tool-denied
 sessions; neither launches a task worker. See the [generation commands](learnings.md#annotate-threads-and-regenerate-advice).
 Submission additionally verifies the token viewer against central numeric identity
 and explicit `repos` bindings. See [shared learnings](learnings.md).
+
+`learnings merge <pr>` (vmethod 1.0, #308) is the central-only orchestrator merge of one
+learning submission. It refuses before any write unless the PR is open, carries the
+`learning` label that central automation applies, passes the full add-only check-pr
+validation (authorized project paths, add-only changed files) and has the central
+`check` job green on its exact head; then it squash-merges with the validated head
+pinned and reports the merge commit. A head that moved during validation or a refused
+merge fails closed with retry guidance without partial writes.
 
 - `vmethod read pr <n> [--files|--diff|--reviews|--checks|--new]`
 - `vmethod read issue <n> [--new]`
@@ -308,6 +316,18 @@ shared points scale. A foreign reference, a PR and a closed issue are refused
 before any write. `board status --fix` is unchanged by this verb: it repairs the
 README's own drift, never a missing board membership. The typed operation is
 `boardAdd({ref, estimate?, status?})` in `src/gateway/transport.ts`.
+
+`release next` (vmethod 1.0, #308) is the orchestrator-only release publication step for the
+`Publish` workflow. It refuses before any write unless the checkout sits on
+`baseBranch` with its local head equal to the remote branch head, then dispatches
+`publish.yml` on `baseBranch` and waits for that run with a bound. A green run reports
+the published version, the npm `next` dist-tag (verified against the run's commit),
+the git tag and the GitHub release URL. A red run reports its failed step names and
+the run URL; a run completing on a head that raced the dispatch is refused without
+release evidence. Missing tag or release after a green run asks for the retry-safe
+publish rerun that repairs missing release metadata. The typed operation is
+`releaseNext() → string`. The owner's go for a release remains a separate decision
+this verb does not replace; see [before a release](orchestrator-guide.md#before-a-release).
 
 ## Worker commands
 

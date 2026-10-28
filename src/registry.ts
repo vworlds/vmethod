@@ -13,6 +13,7 @@ export const verbs = [
   { name: "resolve-conflicts", stub: "scripts/orchestrator/resolve-conflicts.sh" },
   { name: "link-task", stub: "scripts/orchestrator/link-task.sh" },
   { name: "release-hold", stub: "scripts/orchestrator/release-hold.sh" },
+  { name: "release", stub: "scripts/orchestrator/release.sh" },
   { name: "watch", stub: "scripts/agent/watch.sh" },
   { name: "mute", stub: "scripts/agent/mute.sh" },
   { name: "unmute", stub: "scripts/agent/unmute.sh" },

@@ -12,6 +12,7 @@ import { workerVerb } from "./worker.js";
 import { taskFlowVerb } from "./task-flow.js";
 import { ciVerb } from "./ci.js";
 import { learningsVerb } from "./learnings.js";
+import { releaseVerb } from "./release.js";
 import { MarkdownDependencyError } from "../gateway/markdown.js";
 import { execFile, execFileSync } from "node:child_process";
 import { watchClient } from "./watch.js";
@@ -46,6 +47,7 @@ function root(): string {
 try {
   switch (verb) {
     case "learnings":
+    case "release":
     case "worker":
     case "worktrees":
     case "suggest-model":
@@ -96,6 +98,10 @@ try {
       const env = taskEnvironment(root(), process.env);
       if (verb === "learnings") {
         console.log(await learningsVerb(transport, args, env));
+        break;
+      }
+      if (verb === "release") {
+        console.log(await releaseVerb(transport, args, env));
         break;
       }
       if (verb === "watch") {

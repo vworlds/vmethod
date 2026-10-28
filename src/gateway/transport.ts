@@ -56,6 +56,8 @@ export interface Operations {
   /** Orchestrator-only Development links; complete promotes, unlink demotes. Flags are exclusive. */
   linkTask: { input: { ref: string; complete?: boolean; unlink?: boolean }; output: string };
   releaseHold: { input: { ref: string }; output: string };
+  /** Orchestrator-only publish dispatch run report (#308). */
+  releaseNext: { input: Record<string, never>; output: string };
   workerStatus: { input: { ref: string }; output: "live" | "stopped" | "unknown" };
   nextEvents: {
     /** watchStart marks a CLI invocation; replay reads history without polling or acknowledging. */

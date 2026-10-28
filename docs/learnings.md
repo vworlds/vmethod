@@ -58,8 +58,10 @@ and are not sent again; this includes legacy seed-file submissions during migrat
 Records found only in closed-unmerged submissions are eligible again. You can submit
 another increment to the same PR while it is open. After it merges, the next
 submission starts a fresh branch from fork `dev`, without resending merged records.
-Merging remains the vmethod orchestrator's reviewed action, typically before a release;
-neither `grade` nor submission merges anything. Already shared/pending notes are
+Merging is the vmethod orchestrator's reviewed action, typically before a release
+through `learnings merge <pr>`
+(see [gateway commands](gateway.md#commands)); neither `grade` nor submission merges
+anything. Already shared/pending notes are
 deduplicated by content too. Reports deduplicate identical deliveries and reject
 conflicting records for the same repository/PR.
 

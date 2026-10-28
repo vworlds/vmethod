@@ -69,7 +69,7 @@ export interface LearningReadInput {
   notes?: string;
   includeText?: number[];
 }
-export type LearningInput = LearningReadInput | AnnotationInput;
+export type LearningInput = LearningReadInput | AnnotationInput | { action: "merge"; pr: number };
 
 /** Private reduction reconstructs every field; no unconstrained narrative survives by copying. */
 export function privateLearning(record: ModelRecord, includeText = false): ModelRecord {

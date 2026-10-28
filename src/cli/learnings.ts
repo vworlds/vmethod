@@ -52,6 +52,12 @@ export async function learningsVerb(
     }
     return transport.call("learnings", input, ctx);
   }
+  if (action === "merge") {
+    if (flags.length !== 1 || !/^[1-9]\d*$/.test(flags[0] ?? "")) {
+      throw new Error("Usage: learnings merge <pr> (central repository)");
+    }
+    return transport.call("learnings", { action: "merge", pr: Number(flags[0]) }, ctx);
+  }
   if (action === "check-pr") {
     if (
       flags.length < 1 ||
@@ -64,7 +70,7 @@ export async function learningsVerb(
     return transport.call("learningCheck", { ref: flags[0], label: flags[1] === "--label" }, ctx);
   }
   if (!["submit", "show", "report"].includes(action)) {
-    throw new Error("Usage: learnings submit|show|report|annotate|aggregate");
+    throw new Error("Usage: learnings submit|show|report|annotate|aggregate|check-pr|merge");
   }
   const input: LearningInput = { action: action as "submit" | "show" | "report" };
   const seen = new Set<string>();

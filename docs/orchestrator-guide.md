@@ -481,11 +481,20 @@ claim. See [watch attribution and scope selection](gateway.md#watching-and-mutin
 
 ## Before a release
 
-1. Merge every open `learning` PR (they merge on the orchestrator's review), then distil
+1. Merge every open `learning` PR with `learnings merge <pr>` (vmethod 1.0, #308): it
+   refuses any write unless the PR is open, carries the `learning` label, passes the
+   check-pr validation and has the central `check` job green on its exact head, then
+   squash-merges and reports the merge commit. Then distil
    the evidence: `learnings annotate --since <last release>` and `learnings aggregate`
    regenerate `learnings/models/<family>.md` and `by-domain.md` (see `docs/learnings.md`).
    Spot-check a few annotations against their threads, review the page diff, and commit
    both in a learning PR. `learnings report` gives the numbers; add any new general lesson
    to `learnings/lessons.md`.
 2. Confirm dev is green and that no approved PR is waiting to merge.
-3. Publish the release candidate (the `Publish` workflow on `dev`) or the stable release (`master`).
+3. Publish the release candidate with `release next` (vmethod 1.0, #308): it refuses
+   unless the checkout sits on `dev` (`baseBranch`) with its local head at the remote head,
+   dispatches the `Publish` workflow on `dev`, waits for that run with a bound, and reports
+   the published version, the npm `next` dist-tag, the git tag and the GitHub release URL.
+   A red run reports its failed step and the run URL; rerun the workflow to repair missing
+   release metadata. The owner's go for a release remains a separate decision the verb does
+   not replace: a stable release still moves `master` through the release process.

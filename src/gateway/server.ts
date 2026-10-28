@@ -79,6 +79,8 @@ import { blockerLabel, blockerReference, reference, type ThreadRef } from "./ref
 import { LearningsService } from "./learnings.js";
 import { LearningAnnotations, type LearningBundle } from "./learning-annotations.js";
 import { checkLearningPr } from "./learning-check.js";
+import { mergeLearningPr } from "./learning-merge.js";
+import { releaseNext } from "./release.js";
 import { ConflictService } from "./conflicts.js";
 import { verifyConflictHead } from "./verify-hook.js";
 import { isModelApproved } from "./model-gate.js";
@@ -295,6 +297,16 @@ class GatewayServer {
         () => this.learningService().records(),
         (pr) => this.learningBundle(pr)
       ).command(input);
+    }
+    // Orchestrator-only central merge of an authorized learning submission (#308).
+    if (input.action === "merge") {
+      if (String(this.config.repo).toLowerCase() !== "vworlds/vmethod") {
+        throw new Error("Learning PR merges run only in the central repository");
+      }
+      if (!Number.isSafeInteger(input.pr) || input.pr < 1) {
+        throw new Error("Invalid learning PR number");
+      }
+      return mergeLearningPr(this.github, this.filter, input.pr);
     }
     return this.learningService().command(input);
   };
@@ -714,6 +726,9 @@ class GatewayServer {
   checkTaskCi: Handlers["checkTaskCi"] = async ({ ref }) => this.ci.check(ref);
   refreshChecks: Handlers["refreshChecks"] = async ({ ref }) => this.verification.refresh(ref);
   verify: Handlers["verify"] = async (input) => this.verification.verify(input);
+
+  releaseNext: Handlers["releaseNext"] = async () =>
+    releaseNext(this.root, this.config, this.env, this.deps, () => this.github);
 
   private get board(): BoardService {
     return (this.boardClient ??= new BoardService(
@@ -2502,6 +2517,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     resolveConflicts: server.resolveConflicts,
     linkTask: server.linkTask,
     releaseHold: server.releaseHold,
+    releaseNext: server.releaseNext,
     workerStatus: server.workerStatus,
     nextEvents: server.nextEvents,
     watchMute: server.watchMute,
@@ -2550,6 +2566,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     resolveConflicts: ["orchestrator"],
     linkTask: ["orchestrator"],
     releaseHold: ["orchestrator"],
+    releaseNext: ["orchestrator"],
     workerStatus: ["orchestrator"],
     nextEvents: ["orchestrator"],
     watchMute: ["orchestrator"],
@@ -2576,7 +2593,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
   return inProcess(handlers, async (operation, input, ctx) => {
     if (
       (operation === "learnings" &&
-        ["submit", "annotate", "aggregate"].includes(
+        ["submit", "annotate", "aggregate", "merge"].includes(
           (input as Operations["learnings"]["input"]).action
         ) &&
         ctx?.role !== "orchestrator") ||

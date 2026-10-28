@@ -36,6 +36,8 @@ const verbIssues = new Map<string, number | null>([
   ["learnings submit", 11],
   ["learnings show", 11],
   ["learnings report", 11],
+  ["learnings merge", 308],
+  ["release next", 308],
   ["propose", null],
 ]);
 
