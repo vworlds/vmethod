@@ -24,6 +24,13 @@ test.each([
   15000
 );
 
+/** Parse the fenced untrusted-data document, which is always valid JSON. */
+function decode(output: string): unknown {
+  const match = /\n(`{3,})text\n([\s\S]*)\n\1(?:\n|$)/.exec(output);
+  expect(match).not.toBeNull();
+  return JSON.parse(match![2]);
+}
+
 test("GraphQL parser handles strings, block strings and comments without confusing query data for operations", () => {
   const query = readQuery(
     'query Q { repository(owner: "example", name: "mutation") { issue(number: 3) { alias: body author { login } } } } # mutation\n'
@@ -99,9 +106,87 @@ test("GraphQL aliases and fragments cannot hide author-bearing text or foreign r
   expect(output).toContain("APPROVED");
   expect(output).not.toContain("NEVER DELIVER");
   expect(output).not.toContain("__vm_");
-  expect(output.endsWith("0 items dropped by the people filter\n4 nested values redacted")).toBe(
+  expect(output.endsWith("1 items dropped by the people filter\n3 nested values redacted")).toBe(
     true
   );
+  fixture.done();
+}, 15000);
+
+test("an unaliased top-level user(login:) for a pinned login returns its data", async () => {
+  const user = actor(1);
+  const fixture = fixtureServer([{ path: "/graphql", json: { data: { user } } }]);
+  const file = join(fixture.root, "query.graphql");
+  writeFileSync(file, 'query { user(login:"worker") { __typename login databaseId } }');
+  const output = await fixture.transport.call("ghRead", { source: file });
+  expect(decode(output)).toEqual({ user: { ...user, attribution: "from worker (worker)" } });
+  expect(output.endsWith("0 items dropped by the people filter")).toBe(true);
+  fixture.done();
+}, 15000);
+
+test("an unaliased top-level user(login:) for an unpinned login is dropped and counted", async () => {
+  const stranger = { __typename: "User", login: "stranger", databaseId: 999 };
+  const fixture = fixtureServer([{ path: "/graphql", json: { data: { user: stranger } } }]);
+  const file = join(fixture.root, "query.graphql");
+  writeFileSync(file, 'query { user(login:"stranger") { __typename login databaseId } }');
+  const output = await fixture.transport.call("ghRead", { source: file });
+  expect(decode(output)).toEqual({});
+  expect(output.endsWith("1 items dropped by the people filter")).toBe(true);
+  fixture.done();
+}, 15000);
+
+test("an aliased top-level user(login:) verifies exactly like the unaliased form", async () => {
+  const user = actor(1);
+  const fixture = fixtureServer([{ path: "/graphql", json: { data: { anyone: user } } }]);
+  const file = join(fixture.root, "query.graphql");
+  writeFileSync(file, 'query { anyone: user(login:"worker") { __typename login databaseId } }');
+  const output = await fixture.transport.call("ghRead", { source: file });
+  expect(decode(output)).toEqual({ anyone: { ...user, attribution: "from worker (worker)" } });
+  expect(output.endsWith("0 items dropped by the people filter")).toBe(true);
+  fixture.done();
+}, 15000);
+
+test("a GraphQL user lookup inside a repository no longer poses as a REST item author", async () => {
+  const fixture = fixtureServer([
+    {
+      path: "/graphql",
+      json: {
+        data: {
+          repo: { __vm_owner: { login: "example" }, user: actor(1) },
+        },
+      },
+    },
+  ]);
+  const file = join(fixture.root, "query.graphql");
+  writeFileSync(
+    file,
+    'query { repo: repository(owner:"example", name:"project") { user(login:"worker") { __typename login databaseId } } }'
+  );
+  const output = await fixture.transport.call("ghRead", { source: file });
+  expect(decode(output)).toEqual({ repo: { user: actor(1) } });
+  expect(output.endsWith("0 items dropped by the people filter")).toBe(true);
+  fixture.done();
+}, 15000);
+
+test("a rejected REST single thread counts as a dropped item", async () => {
+  const fixture = fixtureServer([
+    {
+      path: "/repos/example/project/issues/3",
+      method: "GET",
+      json: {
+        node_id: "node-1",
+        number: 3,
+        title: "NEVER DELIVER",
+        body: "NEVER DELIVER",
+        user: { id: 999, type: "User", login: "stranger" },
+      },
+    },
+  ]);
+  const output = await fixture.transport.call("ghRead", {
+    source: "repos/example/project/issues/3",
+  });
+  expect(decode(output)).toBeNull();
+  expect(output).not.toContain("NEVER DELIVER");
+  expect(output.endsWith("1 items dropped by the people filter")).toBe(true);
   fixture.done();
 }, 15000);
 

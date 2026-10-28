@@ -17,6 +17,7 @@ import {
 } from "./people.js";
 import {
   actorFields,
+  filterData,
   filterDiagnostic,
   identityFields,
   readQuery,
@@ -2285,15 +2286,10 @@ class GatewayServer {
     if (source.endsWith(".graphql")) {
       const query = readQuery(readFileSync(source, "utf8"));
       const data = await this.github.graphql(query);
+      const repo = String(this.config.repo);
       const output = untrusted(
         JSON.stringify(
-          filterDiagnostic(
-            data,
-            this.filter,
-            String(this.config.repo),
-            `https://github.com/${String(this.config.repo)}`,
-            counts
-          ),
+          filterData(data, this.filter, repo, `https://github.com/${repo}`, counts),
           null,
           2
         ) ?? "null"
@@ -2326,6 +2322,10 @@ class GatewayServer {
     let data = await this.github.rest(source.startsWith("/") ? source : `/${source}`);
     if (/^\/(?:issues|pulls)\/[1-9]\d*$/.test(match[3] ?? "")) {
       data = await this.diagnosticThread(object(data), repo, match[3]!.startsWith("/pulls/"));
+      // A thread the people filter rejected is a dropped top-level item, not an invisible one.
+      if (data === undefined) {
+        counts.dropped++;
+      }
     } else if (/^\/(?:issues|pulls)$/.test(match[3] ?? "") && Array.isArray(data)) {
       const entries: unknown[] = [];
       for (const entry of data) {

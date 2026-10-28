@@ -220,10 +220,15 @@ forks owned by a fully pinned listed identity; only the description is redacted 
 other repositories.
 
 Each diagnostic response includes `N items dropped by the people filter`, including
-zero. This counts only removed entries of a top-level response list, so a
-filtered-empty list is distinguishable from an empty source list. If fields or
-nested list entries are removed inside retained data, a separate trailing
-`M nested values redacted` note reports them without inflating the entry count.
+zero. It counts removed entries of a top-level response list and rejected top-level
+GraphQL fields or single objects, so no drop hides behind a "0 items dropped" note.
+A complete top-level GraphQL account value (for example an unaliased or aliased
+`user(login:)` selection) verifies itself against the pins: a pinned login is kept
+with its attribution, an unpinned one is dropped. If fields or nested list entries
+are removed inside retained data, a separate trailing `M nested values redacted`
+note reports them without inflating the item count. A REST `user` or `author`
+value acts as an identity only with its REST fields (`id`, `type`); without them
+the value stays unverified and author-bearing content is still refused.
 
 The diagnostic verb is not a generic write transport. New writes belong in named,
 policy-enforcing server operations. Future operations can extend the typed map

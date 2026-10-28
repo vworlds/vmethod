@@ -153,7 +153,61 @@ export function restActor(value: unknown): ObjectData {
   return { databaseId: actor.id, __typename: actor.type, login: actor.login };
 }
 
-/** Filter diagnostic values; count removed root-list entries separately from nested redactions. */
+/** REST list items call their accounts `user` or `author`; GraphQL ones use actor fields. */
+function restActorFields(value: unknown): boolean {
+  const fields = object(value);
+  return "id" in fields || "type" in fields;
+}
+
+/** A complete GraphQL account value: verifiable or unmistakably unpinned. */
+function verifiableActor(value: unknown): ObjectData | undefined {
+  const actor = object(value);
+  return ["User", "Bot"].includes(String(actor.__typename)) &&
+    Number.isSafeInteger(actor.databaseId) &&
+    Number(actor.databaseId) >= 1 &&
+    typeof actor.login === "string"
+    ? actor
+    : undefined;
+}
+
+/**
+ * Filter a GraphQL data object: every top-level field filters on its own and the
+ * root itself is never treated as an item (#323: an unaliased top-level
+ * `user(login:)` must not be misread as a REST issue whose author is `item.user`).
+ * A complete GraphQL account value is its own author: keep it only when pinned.
+ */
+export function filterData(
+  data: unknown,
+  filter: PeopleFilter,
+  repo: string,
+  link: string,
+  counts = { dropped: 0, redacted: 0 }
+): ObjectData {
+  const output: ObjectData = {};
+  for (const [field, value] of Object.entries(object(data))) {
+    const actor = verifiableActor(value);
+    if (actor) {
+      const person = filter.accept(
+        { author: actor, repository: { nameWithOwner: repo } },
+        repo.split("/")[0],
+        link
+      );
+      if (!person) {
+        counts.dropped++;
+      } else {
+        output[field] = { ...object(value), attribution: `from ${person.login} (${person.role})` };
+      }
+      continue;
+    }
+    const filtered = filterDiagnostic(value, filter, repo, link, counts);
+    if (filtered !== undefined) {
+      output[field] = filtered;
+    }
+  }
+  return output;
+}
+
+/** Filter one diagnostic response; top-level removals count as drops, nested ones as redactions. */
 export function filterDiagnostic(
   value: unknown,
   filter: PeopleFilter,
@@ -170,6 +224,13 @@ export function filterDiagnostic(
       }
       return [result];
     });
+  }
+  if (value !== null && typeof value === "object") {
+    const result = filterDiagnosticValue(value, filter, repo, link, counts);
+    if (result === undefined) {
+      counts.dropped++;
+    }
+    return result;
   }
   return filterDiagnosticValue(value, filter, repo, link, counts);
 }
@@ -290,7 +351,10 @@ function filterDiagnosticValue(
     filter.accept({}, "", link);
     return undefined;
   }
-  const hasIdentity = "__vm_author" in item || "author" in item || "user" in item;
+  // Only a `user` value with REST actor fields is a REST identity (#323): GraphQL-shaped
+  // or removed values must not pose as authors.
+  const restUser = "user" in item && restActorFields(item.user);
+  const hasIdentity = "__vm_author" in item || "author" in item || restUser;
   const hasContent = Object.keys(item).some((key) =>
     ["body", "body_text", "body_html", "title"].includes(key)
   );
@@ -307,7 +371,7 @@ function filterDiagnosticValue(
   // Git metadata is not a GitHub identity and can never authorize instructions.
   const signatureOnly =
     !("__vm_author" in item) &&
-    !("user" in item) &&
+    !restUser &&
     !hasContent &&
     (gitCommit(item) || (item.author === null && gitCommit(object(item.commit))));
   if (signatureOnly) {
@@ -317,8 +381,10 @@ function filterDiagnosticValue(
     const author = injected
       ? item.__vm_author
       : "user" in item
-        ? restActor(item.user)
-        : "id" in object(item.author) || "type" in object(item.author)
+        ? restUser
+          ? restActor(item.user)
+          : item.user // without REST actor fields nothing here is a verifiable author
+        : restActorFields(item.author)
           ? restActor(item.author)
           : item.author;
     const owner = injected ? repoOf(item).owner : repo.split("/")[0];

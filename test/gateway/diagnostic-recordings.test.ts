@@ -282,7 +282,7 @@ test.each(["unknown", "malformed", "null"])(
     } else {
       expect(decode(output)).toBeNull();
       expect(output).not.toContain("Merge pull request");
-      expect(output.endsWith("0 items dropped by the people filter")).toBe(true);
+      expect(output.endsWith("1 items dropped by the people filter")).toBe(true);
     }
     fixture.done();
   },
