@@ -3015,6 +3015,21 @@ test("suggest-model prints Estimate/kind, local learning and owner gate without 
   f.done();
 });
 
+test("recommend returns the structured suggestion behind suggest-model for open-task's lines", async () => {
+  const f = fixture();
+  vi.mocked(f.hooks.issue).mockResolvedValue({ estimate: 1, kind: "tooling" });
+  await expect(f.service.recommend(9)).resolves.toEqual({
+    model: expect.objectContaining({ family: "glm", tier: "cheap" }),
+    reason: "Estimate 1, kind tooling",
+  });
+  vi.mocked(f.hooks.issue).mockResolvedValue({ estimate: 13, kind: "architecture" });
+  await expect(f.service.recommend(9)).resolves.toEqual({
+    model: expect.objectContaining({ family: "sol", tier: "expensive", gate: "owner" }),
+    reason: "Estimate 13, kind architecture",
+  });
+  f.done();
+});
+
 test("OpencodeClient status(directory, id) preserves explicit worker session status", async () => {
   const f = fixture([
     { path: "/api/session/active", data: { ses_fake: { location: { directory: "/task" } } } },

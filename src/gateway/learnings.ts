@@ -220,6 +220,25 @@ export class LearningsService {
     return unionRecords(texts);
   }
 
+  /** #339: one family's graded-task aggregate for open-task's advisory lines; undefined without
+   * data, because a launch without learnings still needs its advisory line, only shorter. */
+  familyEvidence(family: string): { usdPerPoint: number; deliveries: number } | undefined {
+    let records: ModelRecord[];
+    try {
+      records = this.records();
+    } catch (error) {
+      if ((error as Error).message !== "No model-log inputs available") {
+        throw error;
+      }
+      return undefined;
+    }
+    const group = learningReport(records).byFamily[family];
+    if (!group || !group.deliveries || group.usdPerPoint === null) {
+      return undefined;
+    }
+    return { usdPerPoint: group.usdPerPoint, deliveries: group.deliveries };
+  }
+
   private report(input: LearningReadInput): string {
     const directory = join(this.root, "learnings/models");
     const texts = existsSync(directory)
