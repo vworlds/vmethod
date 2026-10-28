@@ -57,6 +57,19 @@ test("check validates role and root overrides from the checkout environment", ()
   expect(check(root, { VMETHOD_ROOT: join(root, "vmethod.yaml") }).code).toBe(1);
 });
 
+test("check warns when a session predates local settings, but not with its role set", () => {
+  const root = validProject();
+  writeFileSync(
+    join(root, ".claude/settings.local.json"),
+    JSON.stringify({ env: { VMETHOD_ROLE: "worker" } })
+  );
+  expect(check(root)).toEqual({
+    code: 0,
+    messages: ["WARN the session predates the settings; restart it"],
+  });
+  expect(check(root, { VMETHOD_ROLE: "worker" })).toEqual({ code: 0, messages: [] });
+});
+
 test("only explicit prerelease deferral softens absent settings, on every run", () => {
   const root = validProject();
   rmSync(join(root, ".claude/settings.json"));

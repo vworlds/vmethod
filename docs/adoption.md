@@ -2,6 +2,86 @@
 
 Adopt the pinned package in one reviewed change without copying shared methodology.
 
+## Before you start
+
+### Owner prerequisites
+
+1. Create separate GitHub logins/configuration directories for the owner, orchestrator
+   and worker identities as applicable; each identity must use its own `GH_CONFIG_DIR`.
+2. Prepare the orchestrator and worker checkouts and register both as OpenChamber
+   projects. The worker checkout is a separate clone.
+3. In **each** checkout, have the owner write its `.claude/settings.local.json`
+   before starting any agent session. It supplies `VMETHOD_ROLE`, `GH_CONFIG_DIR`
+   and git identity; a session already running when the file is written does not
+   acquire those environment variables. Restart that session. `vmethod check` warns
+   `the session predates the settings; restart it` when it sees the local settings
+   file but no `VMETHOD_ROLE` in its own environment.
+4. Create the base and release branches with an administrator.
+5. Ask the vmethod owner to bind the orchestrator's verified identity to this
+   consumer repository in vworlds/vmethod's central `people.yaml`. Until then,
+   learning submissions and upstream issue creation are refused; a local binding
+   cannot grant central authority.
+
+### Bootstrap sequence
+
+Follow these steps in order; even `gh-read` and `board status` require `vmethod.yaml`,
+and `gh-read` additionally requires its caller to be pinned in `people.yaml`.
+
+1. Install the exactly pinned package and commit the lockfile (`npm install`). Then,
+   once per machine, install the package-provided PATH launcher with
+   `npm exec --no -- vmethod init --launcher`. The launcher cannot be installed
+   before the package is installed. Until then, use `npm exec --no -- vmethod`;
+   never use `npx`.
+2. Run `vmethod init` to create the absent local configuration.
+3. Create a minimal `people.yaml` containing the owner and orchestrator's verified
+   identities and the orchestrator's `repos: [<owner>/<repo>]` binding. Every verb
+   needs valid `vmethod.yaml`; discovery via `gh-read` also authenticates a pinned
+   caller.
+4. Save this query as `projects.graphql`:
+
+   ```graphql
+   query {
+     viewer {
+       login
+     }
+     organization(login: "<org>") {
+       projectsV2(first: 20) {
+         nodes {
+           number
+           url
+         }
+       }
+     }
+   }
+   ```
+
+   Run `vmethod gh-read projects.graphql`. Each project's `number` and `url` come
+   back; titles are redacted because projects carry no author. Pick the board by
+   its URL. Do not run `board status` before the project config and caller pin are
+   ready.
+
+5. Complete `vmethod.yaml`, `people.yaml` and `models.yaml`, then run
+   `board init` (vmethod 1.0, #325) on an empty project; see
+   [board initialization](board.md#migrations-what-adopters-see).
+6. Deliver the adoption as one reviewed non-task PR: open it with
+   `pr open <branch> <title> <body-file>` and, after approval and green checks,
+   merge it with `pr merge <n>` (vmethod 1.0, #326).
+7. After that PR merges, run `vmethod board migrate` to migrate past v3. The
+   contract guard reads the adopted config and pins from remote branches.
+
+### Watcher delivery
+
+Start the watcher with `background: true` and `monitor: true`, even if the harness
+shell tool schema does not list `monitor`; without it, event delivery may wait until
+the 30-minute expiry. The opencode-monitor plugin is cached under
+`~/.cache/opencode`, so it may look absent from the project. See
+[watching](orchestrator-guide.md#watch-without-wasting-budget).
+
+Raise methodology needs with `upstream issue <title> <body-file>` or
+`upstream comment <n> <body-file>` (vmethod 1.0, #333), never `gh`. Both require
+the central orchestrator binding described above. See
+[upstream needs](gateway.md#upstream-needs).
+
 ## Initial adoption
 
 - [ ] Install an **exactly pinned** `@vworlds/vmethod` devDependency and commit the
@@ -12,7 +92,7 @@ Adopt the pinned package in one reviewed change without copying shared methodolo
       registered compatibility stubs; it never overwrites existing configuration or
       an unmarked script. Resolve conflicting local scripts explicitly, not by
       deleting them blindly. Current verbs are listed in [Package commands](package.md).
-- [ ] **Install the PATH launcher on every machine agents run commands on:**
+- [ ] **After installing the package, install the PATH launcher on every machine agents run commands on:**
       `npm exec --no -- vmethod init --launcher` writes a marked `vmethod` script to
       `~/.local/bin` by default (pass a different `dir` when needed), mode 755. Keep
       the directory on `PATH`; `vmethod check` reports whether the `vmethod` on PATH

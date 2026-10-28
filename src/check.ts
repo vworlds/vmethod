@@ -26,6 +26,9 @@ export function check(
   const messages: string[] = [];
   const warnings: string[] = [];
   const version = options.version ?? packageMetadata.version;
+  if (env.VMETHOD_ROLE === undefined && existsSync(join(root, ".claude/settings.local.json"))) {
+    warnings.push("WARN the session predates the settings; restart it");
+  }
   if (
     options.deferPermissions &&
     !/^\d+\.\d+\.\d+-[\da-z-]+(?:\.[\da-z-]+)*(?:\+[\da-z.-]+)?$/i.test(version)
