@@ -1230,7 +1230,11 @@ test.each([false, true])(
     const report = JSON.parse(await f.service.command({ action: "report", json: true }));
     expect(report.usd).toBe(1.03);
     expect(report.byFamily.sol.usdPerPoint).toBe(0.515);
-    expect(f.service.familyEvidence("sol")).toEqual({ usdPerPoint: 0.515, deliveries: 1 });
+    expect(f.service.familyEvidence("sol")).toEqual({
+      usdPerPoint: 0.515,
+      deliveries: 1,
+      totalDeliveries: 1,
+    });
     const shown = await f.service.show("sol");
     expect(shown).toContain(JSON.stringify(filled));
     expect(f.warnings).toEqual([]);
@@ -1255,7 +1259,11 @@ test("conflicting deliveries are excluded once per read without losing other evi
   expect(report.deliveries).toBe(1);
   expect(report.usd).toBe(2);
   expect(f.warnings.splice(0)).toEqual([warning]);
-  expect(f.service.familyEvidence("sol")).toEqual({ usdPerPoint: 1, deliveries: 1 });
+  expect(f.service.familyEvidence("sol")).toEqual({
+    usdPerPoint: 1,
+    deliveries: 1,
+    totalDeliveries: 1,
+  });
   expect(f.warnings.splice(0)).toEqual([warning]);
   const shown = await f.service.show("sol");
   expect(shown).toContain(JSON.stringify(other));
@@ -1329,7 +1337,11 @@ test("familyEvidence returns one family's graded aggregate and undefined without
       ) +
       "\n",
   });
-  expect(withData.familyEvidence("sol")).toEqual({ usdPerPoint: 0.2, deliveries: 2 });
+  expect(withData.familyEvidence("sol")).toEqual({
+    usdPerPoint: 0.2,
+    deliveries: 2,
+    totalDeliveries: 2,
+  });
   expect(withData.familyEvidence("glm")).toBeUndefined();
   const noData = new LearningsService(root, {}, {}, deps, noClient, {});
   expect(noData.familyEvidence("sol")).toBeUndefined();

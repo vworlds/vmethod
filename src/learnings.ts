@@ -92,6 +92,18 @@ export function learningReport(records: readonly ModelRecord[], family?: string,
           : record.usd
       )
     );
+    const covered = items.flatMap((record) => {
+      const cost = familyName
+        ? sumUsd(
+            record.segments
+              .filter((segment) => segment.family === familyName)
+              .map((segment) => segment.usd)
+          )
+        : record.usd;
+      return cost == null ? [] : [{ cost, points: record.points_final }];
+    });
+    const coveredUsd = covered.reduce((sum, entry) => sum + entry.cost, 0);
+    const coveredPoints = covered.reduce((sum, entry) => sum + entry.points, 0);
     const count: Record<string, number> = Object.create(null) as Record<string, number>;
     const caught: Record<string, number> = Object.create(null) as Record<string, number>;
     const outcomes: Record<string, number> = Object.create(null) as Record<string, number>;
@@ -110,11 +122,12 @@ export function learningReport(records: readonly ModelRecord[], family?: string,
     }
     return {
       deliveries: items.length,
+      costDeliveries: covered.length,
       points,
       rounds,
       roundsPerPoint: points ? rounds / points : null,
       usd,
-      usdPerPoint: points && usd !== null ? usd / points : null,
+      usdPerPoint: coveredPoints ? coveredUsd / coveredPoints : null,
       findingsRate: Object.fromEntries(
         Object.entries(count).map(([tag, n]) => [tag, n / items.length])
       ),

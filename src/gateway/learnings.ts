@@ -224,7 +224,9 @@ export class LearningsService {
 
   /** #339: one family's graded-task aggregate for open-task's advisory lines; undefined without
    * data, because a launch without learnings still needs its advisory line, only shorter. */
-  familyEvidence(family: string): { usdPerPoint: number; deliveries: number } | undefined {
+  familyEvidence(
+    family: string
+  ): { usdPerPoint: number; deliveries: number; totalDeliveries: number } | undefined {
     let records: ModelRecord[];
     try {
       records = this.records();
@@ -235,10 +237,14 @@ export class LearningsService {
       return undefined;
     }
     const group = learningReport(records).byFamily[family];
-    if (!group || !group.deliveries || group.usdPerPoint === null) {
+    if (!group || !group.costDeliveries || group.usdPerPoint === null) {
       return undefined;
     }
-    return { usdPerPoint: group.usdPerPoint, deliveries: group.deliveries };
+    return {
+      usdPerPoint: group.usdPerPoint,
+      deliveries: group.costDeliveries,
+      totalDeliveries: group.deliveries,
+    };
   }
 
   private report(input: LearningReadInput): string {
@@ -1014,7 +1020,7 @@ function plainReport(report: ReturnType<typeof learningReport>): string {
   ];
   const group = (value: typeof report | (typeof report.byFamily)[string]) => [
     `Deliveries: ${value.deliveries}; rounds: ${value.rounds}; points: ${value.points}; rounds per point: ${ratio(value.roundsPerPoint)}`,
-    `USD: ${ratio(value.usd)}; USD per estimate point: ${ratio(value.usdPerPoint)}`,
+    `USD: ${ratio(value.usd)}; USD per estimate point: ${ratio(value.usdPerPoint)} (${value.costDeliveries} of ${value.deliveries} deliveries with cost data)`,
     ...counts("Finding rates", value.findingsRate, true),
     ...counts("Caught by", value.caughtBy),
     ...counts("Outcomes", value.outcomes),

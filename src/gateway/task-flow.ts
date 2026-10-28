@@ -65,7 +65,9 @@ interface Host {
   /** #339: open-task's advisory suggestion for an issue, from suggest-model's code path. */
   modelSuggestion?(issue: number): Promise<{ family: string; tier: string; reason: string }>;
   /** #339: a family's graded learnings evidence for the advisory lines; undefined without data. */
-  learningEvidence?(family: string): { usdPerPoint: number; deliveries: number } | undefined;
+  learningEvidence?(
+    family: string
+  ): { usdPerPoint: number; deliveries: number; totalDeliveries: number } | undefined;
   /** True while an active conflict record still blocks a handover: the
    * implementation closes a recoverable blocked record at once first (#373),
    * then reports whether a dispatched resolution keeps owning the turn. */
@@ -119,11 +121,11 @@ const tierRank: Record<string, number> = { cheap: 0, standard: 1, expensive: 2 }
 /** #339: "<family> averages $<usd>/point over <k> ..." — the advisory evidence, undefined without data. */
 const averages = (
   family: string,
-  evidence: { usdPerPoint: number; deliveries: number } | undefined,
+  evidence: { usdPerPoint: number; deliveries: number; totalDeliveries: number } | undefined,
   unit: string
 ): string | undefined =>
   evidence
-    ? `${family} averages $${evidence.usdPerPoint.toFixed(2)}/point over ${evidence.deliveries} ${unit}`
+    ? `${family} averages $${evidence.usdPerPoint.toFixed(2)}/point over ${evidence.deliveries} of ${evidence.totalDeliveries} ${unit}`
     : undefined;
 
 /** Named workflow operations; no raw responses or credentials are returned to clients. */
@@ -665,7 +667,7 @@ export class TaskFlow {
   /** #339: per-family learnings evidence for the advisory lines; failure only shortens a line. */
   private async familyEvidence(
     family: string
-  ): Promise<{ usdPerPoint: number; deliveries: number } | undefined> {
+  ): Promise<{ usdPerPoint: number; deliveries: number; totalDeliveries: number } | undefined> {
     try {
       return this.host.learningEvidence?.(family);
     } catch (error) {

@@ -292,11 +292,13 @@ session can no longer be resolved; only a record with nothing stored is refused
 **Migration:** old model-log records remain valid without the new fields; absent
 cost is unknown. Do not backfill zero or edit immutable submitted records. New
 grades always emit the cost fields (`tokens: null` when unavailable). Private
-reduction retains these numeric measurements. Reports add `usd` and `usdPerPoint`
-(USD per final estimate point), by kind and family. Family USD includes only that
-family's segments; its denominator counts each participating delivery once. Any
-unknown cost makes the corresponding total and ratio `null`/`n/a`; zero points also
-give an unavailable ratio. Orchestrator usage is excluded.
+reduction retains these numeric measurements. Reports add `usd`, `usdPerPoint`
+(USD per final estimate point) and `costDeliveries` (deliveries with complete cost
+data), by kind and family. Family USD includes only that family's segments; its
+denominator counts each participating delivery once. Totals remain unavailable when
+any cost is unknown, while per-point ratios use only cost-covered deliveries and
+expose that coverage. A ratio is `null`/`n/a` when no delivery has cost data or
+covered deliveries have zero points. Orchestrator usage is excluded.
 
 ## Central automation
 
