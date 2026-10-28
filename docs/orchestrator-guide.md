@@ -491,9 +491,12 @@ it as a monitored background shell with a 30-minute timeout (`background: true`,
 plugin), so each line reaches you as it prints and the timeout is the expiry.
 The plugin stops forwarding after 100 lines while the command keeps running and
 acknowledging; treat its `[monitor stopped …]` line as an expiry: stop that
-watch and re-arm. A `quiet since the last wake-up:` digest
-always rides on a wake event. A digest without its wake line means a lost event:
-replay it with `watch --replay previous`.
+watch and re-arm. Stop it with `watch --stop` instead of a pattern kill: the
+verb verifies the lock holder before it signals, so it cannot match an
+unrelated command line, and it leaves the state directory ready to re-arm; see
+[stopping the watcher](gateway.md#watching-and-muting). A `quiet since the
+last wake-up:` digest always rides on a wake event. A digest without its wake
+line means a lost event: replay it with `watch --replay previous`.
 
 On every re-arm, run `watch --replay previous` first, then list the cards on your
 orchestrator turn and act on any you have not yet handled. Replay uses the previous
