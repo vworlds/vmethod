@@ -48,6 +48,8 @@ interface Host {
   approved(ref: string, historical?: string): Promise<boolean | "unknown">;
   candidates(ref: string): Promise<string[]>;
   issueApproved(item: ObjectData): Promise<boolean | "unknown">;
+  approvalRefusal(ref: string): Promise<string>;
+  scopeRefusal(item: ObjectData): Promise<string>;
   /** Verify an owner quotation after the latest summons, behind the identity filter. */
   ownerAgreement?(
     ref: string,
@@ -400,7 +402,7 @@ export class TaskFlow {
         throw new Error("Issue is not open");
       }
       if (input.unapproved === undefined && (await this.host.issueApproved(issue)) !== true) {
-        throw new Error("scope not approved: post SCOPE REVIEW first");
+        throw new Error(await this.host.scopeRefusal(issue));
       }
     }
     let hint: string | undefined;
@@ -1319,7 +1321,7 @@ export class TaskFlow {
           !(typeof exception === "string" && exception.trim()) &&
           (await this.host.issueApproved(issue)) !== true
         ) {
-          throw new Error("scope not approved: post SCOPE REVIEW first");
+          throw new Error(await this.host.scopeRefusal(issue));
         }
       }
       const baseSha = sha(item.baseRefOid);
@@ -1396,7 +1398,7 @@ export class TaskFlow {
           }
         }
         if (!survived) {
-          throw new Error("Owner approval is not valid for current head");
+          throw new Error(await this.host.approvalRefusal(ref));
         }
       }
       if (autopilot) {
@@ -1453,7 +1455,7 @@ export class TaskFlow {
         throw new Error("Worker restarted before merge");
       }
       if (nonTask && !autopilot && (await this.host.approved(ref)) !== true) {
-        throw new Error("Owner approval is not valid for current head");
+        throw new Error(await this.host.approvalRefusal(ref));
       }
       if (item.isDraft) {
         await this.ready(item, false);
