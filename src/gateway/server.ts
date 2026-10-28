@@ -1094,12 +1094,15 @@ class GatewayServer {
 
   /** Close an accepted own-repository issue, optionally posting a validated file comment first. */
   /** Rewrite only the exact body previously returned by read issue. */
-  issueEdit: Handlers["issueEdit"] = async ({ ref, file }) => {
+  issueEdit: Handlers["issueEdit"] = async ({ ref, file, scopeReview }) => {
     const number = this.localNumber(ref);
     const body = readFileSync(file, "utf8");
     guardDependencyText(body);
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
+    // #359: validate the paired summary before any write, exactly like the standalone
+    // scope-review verb; the edit below then hands the new body straight to review.
+    const summary = scopeReview === undefined ? undefined : this.scopeSummary(scopeReview);
     const item = await this.flowThread(String(number), "issue");
     const snapshot = resolve(this.root, ".tmp", `issue-read-${number}.sha256`);
     if (!existsSync(snapshot) || readFileSync(snapshot, "utf8") !== bodyHash(String(item.body))) {
@@ -1107,6 +1110,9 @@ class GatewayServer {
         "Issue body changed since read (or not read); read issue again before editing"
       );
     }
+    // #359: the current, pre-edit approval is what the edit voids; read it before writing.
+    // The paired --scope-review flow voids and re-approves in one verb, so it skips the warning.
+    const stale = summary === undefined ? await this.staleScopeApproval(number, item) : undefined;
     // Journal the body write as the verb's operation (#199) so a poll between it and
     // a sibling write cannot report the card.
     this.github.writes.beginOperation("issue edit", [{ repo: String(this.config.repo), number }]);
@@ -1117,18 +1123,74 @@ class GatewayServer {
       false
     );
     writeFileSync(snapshot, bodyHash(body));
-    return `Updated issue #${number}`;
+    if (summary !== undefined) {
+      return `Updated issue #${number}; ${await this.scopeReviewCore(number, summary)}`;
+    }
+    return `Updated issue #${number}${stale === undefined ? "" : `\n${stale}`}`;
   };
 
+  /** The edit-time scope warning (#359): an edit voids a body-bound approval or an open
+   * task PR's merge-time scope recheck, which merge-task would only refuse at the end. */
+  private staleMessage(number: number): string {
+    return `scope approval for #${number} is now stale; run scope-review ${number} <summary-file> before merging`;
+  }
+
+  private async staleScopeApproval(number: number, item: ObjectData): Promise<string | undefined> {
+    if ((await this.scopeState(item))?.approved === true) {
+      return this.staleMessage(number);
+    }
+    return (await this.openTaskPr(number)) ? this.staleMessage(number) : undefined;
+  }
+
+  /** One open pull request whose task header or marker lists this issue (#359). */
+  private async openTaskPr(number: number): Promise<boolean> {
+    for (let page = 1; ; page++) {
+      const pulls = await this.github.rest(
+        `/repos/${String(this.config.repo)}/pulls?state=open&per_page=100&page=${page}`
+      );
+      if (!Array.isArray(pulls)) {
+        throw new Error("Missing open task PRs");
+      }
+      if (pulls.map(object).some((pr) => taskIssueNumbers(String(pr.body))?.includes(number))) {
+        return true;
+      }
+      if (pulls.length < 100) {
+        return false;
+      }
+    }
+  }
+
+  /** The batched scope read for one issue; open-task and merge-task's approval checks
+   * share it, so the edit-time warning and the merge gate see the same evidence. */
+  private async scopeState(item: ObjectData) {
+    return (
+      await new ScopeReader(
+        this.github,
+        this.filter,
+        this.config,
+        object(this.config.board).enabled === false
+          ? Infinity
+          : legacyScopeCutoff((await this.board.snapshot()).readme)
+      ).read([String(item.id)])
+    ).get(String(item.id));
+  }
+
   /** Publish checked summary with the live digest, then assign scope review to the owner. */
-  scopeReview: Handlers["scopeReview"] = async ({ ref, file }) => {
-    const number = this.localNumber(ref);
+  scopeReview: Handlers["scopeReview"] = async ({ ref, file }) =>
+    this.scopeReviewCore(this.localNumber(ref), this.scopeSummary(file));
+
+  /** Read and validate a change summary before any write: the posted comment already
+   * opens with `[orchestrator] SCOPE REVIEW`, so the summary must not forge a header. */
+  private scopeSummary(file: string): string {
     const summary = readFileSync(file, "utf8");
     if (!summary.trim() || /body sha256:|\[orchestrator\] SCOPE REVIEW/.test(summary)) {
       throw new Error("Provide a nonempty change summary, without a review tag or body hash");
     }
-    // Before any write: the posted comment already opens with `[orchestrator] SCOPE REVIEW`.
     guardProtocolHeader(summary, "scope-review");
+    return summary;
+  }
+
+  private async scopeReviewCore(number: number, summary: string): Promise<string> {
     const issue = await this.flowThread(String(number), "issue");
     if (issue.state !== "OPEN" || typeof issue.body !== "string") {
       throw new Error("Scope review requires an open issue with a readable body");
@@ -1201,7 +1263,7 @@ class GatewayServer {
       return `Scope approved under autopilot for #${number}`;
     }
     return `Scope review requested for #${number}`;
-  };
+  }
 
   issueClose: Handlers["issueClose"] = async ({ ref, comment }) => {
     const number = this.localNumber(ref);
@@ -1501,16 +1563,7 @@ class GatewayServer {
         return [...candidates];
       },
       issueApproved: async (item) => {
-        const state = (
-          await new ScopeReader(
-            this.github,
-            this.filter,
-            this.config,
-            object(this.config.board).enabled === false
-              ? Infinity
-              : legacyScopeCutoff((await this.board.snapshot()).readme)
-          ).read([String(item.id)])
-        ).get(String(item.id));
+        const state = await this.scopeState(item);
         if (state?.refusal) {
           scopeReasons.set(String(item.id), state.refusal);
         }

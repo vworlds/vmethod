@@ -4,7 +4,8 @@ import { expect, test } from "vitest";
 import { parse, visit } from "graphql";
 import { createGateway } from "../../src/gateway/server.js";
 import { fixtureServer, graph, type Request } from "./helpers.js";
-import { scopeIssue } from "./scope-fixture.js";
+import { scopeConnection, scopeGraph, scopeIssue } from "./scope-fixture.js";
+import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 
 const issue = () => scopeIssue({ state: "OPEN" });
 
@@ -185,6 +186,25 @@ test("a body that only mentions an issue passes edit", async () => {
     }),
     graph({ repository: { issue: issueData } }),
     graph({ node: issueData }),
+    // The edit checks the stale-scope and open-task-PR warnings first (#359): neither holds.
+    {
+      path: "/graphql",
+      json: {
+        data: {
+          organization: { projectV2: { id: boardRecording.id, readme: boardRecording.readme } },
+        },
+      },
+    },
+    { path: "/graphql", json: { data: { node: { fields: boardRecording.fields } } } },
+    scopeGraph({ nodes: [issueData] }),
+    scopeGraph({ nodes: [issueData] }),
+    scopeGraph({ n0: { ...issueData, comments: scopeConnection([]) } }),
+    scopeGraph({ n0: { ...issueData, timelineItems: scopeConnection([]) } }),
+    {
+      path: "/repos/example/project/pulls?state=open&per_page=100&page=1",
+      method: "GET",
+      json: [],
+    },
     { path: "/repos/example/project/issues/8", method: "PATCH", body: { body }, json: {} },
   ]);
   const file = join(f.root, "body.md");

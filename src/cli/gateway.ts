@@ -29,8 +29,15 @@ export async function gatewayVerb(
           ctx
         );
       }
-      if (args[0] === "edit" && args.length === 3) {
-        return transport.call("issueEdit", { ref: args[1], file: args[2] }, ctx);
+      if (
+        args[0] === "edit" &&
+        (args.length === 3 || (args.length === 5 && args[3] === "--scope-review"))
+      ) {
+        return transport.call(
+          "issueEdit",
+          { ref: args[1], file: args[2], scopeReview: args[4] },
+          ctx
+        );
       }
       if (args[0] === "create" && args.length >= 3) {
         const labels: string[] = [];
@@ -103,7 +110,7 @@ export async function gatewayVerb(
         return transport.call("issueEstimate", { ref: args[1], points: Number(args[2]) }, ctx);
       }
       throw new Error(
-        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic] | issue close <n> [--comment file] | issue edit <n> <body-file> | issue block <n> <blocker> | issue unblock <n> <blocker> | issue parent <n> <epic> | issue unparent <n> <epic> | issue estimate <n> <points>"
+        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic] | issue close <n> [--comment file] | issue edit <n> <body-file> [--scope-review <summary-file>] | issue block <n> <blocker> | issue unblock <n> <blocker> | issue parent <n> <epic> | issue unparent <n> <epic> | issue estimate <n> <points>"
       );
     }
     case "upstream":

@@ -21,8 +21,9 @@ export interface Operations {
     output: string;
   };
   issueClose: { input: { ref: string; comment?: string }; output: string };
-  /** Replace a previously read issue body, refusing stale read evidence. */
-  issueEdit: { input: { ref: string; file: string }; output: string };
+  /** Replace a previously read issue body, refusing stale read evidence; the optional
+   * summary file pairs the edit with a scope review of the new body (#359). */
+  issueEdit: { input: { ref: string; file: string; scopeReview?: string }; output: string };
   /** File an issue on the central repository for a bound consumer orchestrator (#333). */
   upstreamIssue: { input: { title: string; file: string }; output: string };
   /** Comment on an existing central-repository issue under the same gate and checks. */

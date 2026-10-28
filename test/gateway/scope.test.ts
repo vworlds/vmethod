@@ -1,12 +1,12 @@
 import { expect, test } from "vitest";
 import { join } from "node:path";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { bodyHash, scopeApproved, ScopeReader } from "../../src/gateway/scope.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { GitHubClient } from "../../src/gateway/client.js";
 import { getConfig } from "../../src/config.js";
-import { actor, fixtureServer, graph, people } from "./helpers.js";
+import { actor, fixtureServer, graph, item, people, type Request } from "./helpers.js";
 import {
   scopeIssue,
   scopeComment,
@@ -16,6 +16,9 @@ import {
 } from "./scope-fixture.js";
 import { fixture } from "../helpers.js";
 import { WatchFake } from "./watch-fake.js";
+import { gatewayVerb } from "../../src/cli/gateway.js";
+import type { Transport } from "../../src/gateway/transport.js";
+import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import recordedScope from "../fixtures/github/issue-scope.json" with { type: "json" };
 
 const filter = () =>
@@ -26,6 +29,39 @@ const review = (overrides: ObjectData = {}) =>
     body: `[orchestrator] SCOPE REVIEW\n\nUpdated scope.\n\nbody sha256: ${bodyHash("Final scope")}`,
     ...overrides,
   });
+
+/** The board's project and field snapshot reads, as `issueEdit`'s scope evidence begins.
+ * Only repository scope is renamed to the offline test project's configured repository. */
+function boardReads(recording = boardRecording) {
+  for (const card of recording.items.nodes) {
+    card.content.repository.nameWithOwner = "example/project";
+  }
+  return [
+    {
+      path: "/graphql",
+      json: {
+        data: {
+          organization: { projectV2: { id: recording.id, readme: recording.readme } },
+        },
+      },
+    },
+    { path: "/graphql", json: { data: { node: { fields: recording.fields } } } },
+  ];
+}
+
+/** The batched scope read for one issue: metadata, body, comments, then timeline. */
+function scopeReads(
+  issue: ObjectData,
+  comments: ObjectData[],
+  timeline: ObjectData[] = []
+): Request[] {
+  return [
+    scopeGraph({ nodes: [issue] }),
+    scopeGraph({ nodes: [issue] }),
+    scopeGraph({ n0: { ...issue, comments: scopeConnection(comments) } }),
+    scopeGraph({ n0: { ...issue, timelineItems: scopeConnection(timeline) } }),
+  ];
+}
 
 test.each([
   ["Spec review", true, true],
@@ -575,6 +611,13 @@ test("issue edit writes the checked body only when the previous read still match
     graph({ node: { ...issue, comments: scopeConnection([]) } }),
     graph({ repository: { issue } }),
     graph({ node: issue }),
+    ...boardReads(),
+    ...scopeReads(issue, []),
+    {
+      path: "/repos/example/project/pulls?state=open&per_page=100&page=1",
+      method: "GET",
+      json: [],
+    },
     {
       path: "/repos/example/project/issues/8",
       method: "PATCH",
@@ -587,4 +630,211 @@ test("issue edit writes the checked body only when the previous read still match
   await f.transport.call("read", { kind: "issue", ref: "8" });
   await expect(f.transport.call("issueEdit", { ref: "8", file })).resolves.toBe("Updated issue #8");
   f.done();
+});
+
+test("issue edit on an approved-scope issue prints the stale-scope warning (#359)", async () => {
+  const issue = scopeIssue({ state: "OPEN" });
+  const comment = review();
+  const f = fixtureServer([
+    graph({ repository: { issue } }),
+    graph({ node: issue }),
+    ...boardReads(),
+    ...scopeReads(
+      issue,
+      [comment],
+      [scopeMove({ status: "Executing", previousStatus: "Spec review" })]
+    ),
+    scopeGraph({ nodes: [comment] }),
+    {
+      path: "/repos/example/project/issues/8",
+      method: "PATCH",
+      body: { body: "New scope" },
+      json: {},
+    },
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "New scope");
+  mkdirSync(join(f.root, ".tmp"));
+  writeFileSync(join(f.root, ".tmp/issue-read-8.sha256"), bodyHash("Final scope"));
+  await expect(f.transport.call("issueEdit", { ref: "8", file })).resolves.toBe(
+    `Updated issue #8\nscope approval for #8 is now stale; run scope-review 8 <summary-file> before merging`
+  );
+  f.done();
+});
+
+test.each([
+  {
+    label: "an open task PR warns",
+    pulls: [{ number: 24, body: '<!-- vmethod-task {"issues":[8]} -->' }],
+    warned: true,
+  },
+  {
+    label: "no task PR stays quiet",
+    pulls: [],
+    warned: false,
+  },
+])("issue edit without an approved scope ($label)", async ({ pulls, warned }) => {
+  const issue = scopeIssue({ state: "OPEN" });
+  const f = fixtureServer([
+    graph({ repository: { issue } }),
+    graph({ node: issue }),
+    ...boardReads(),
+    ...scopeReads(issue, []),
+    {
+      path: "/repos/example/project/pulls?state=open&per_page=100&page=1",
+      method: "GET",
+      json: pulls,
+    },
+    {
+      path: "/repos/example/project/issues/8",
+      method: "PATCH",
+      body: { body: "New scope" },
+      json: {},
+    },
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "New scope");
+  mkdirSync(join(f.root, ".tmp"));
+  writeFileSync(join(f.root, ".tmp/issue-read-8.sha256"), bodyHash("Final scope"));
+  await expect(f.transport.call("issueEdit", { ref: "8", file })).resolves.toBe(
+    warned
+      ? `Updated issue #8\nscope approval for #8 is now stale; run scope-review 8 <summary-file> before merging`
+      : "Updated issue #8"
+  );
+  f.done();
+});
+
+test("issue edit --scope-review binds the new body's hash and requests the owner turn (#359)", async () => {
+  const recording = structuredClone(boardRecording);
+  const card = recording.items.nodes[0];
+  const status = recording.fields.nodes.find((field) => field.name === "Status")!;
+  status.options![0].name = "Spec review";
+  const option = status.options![0];
+  const issue = item({
+    id: card.content.id,
+    number: 8,
+    state: "OPEN",
+    title: "Issue",
+    body: "Final scope",
+    labels: { nodes: [], pageInfo: { hasNextPage: false } },
+  });
+  const summary =
+    "- Folded the agreed acceptance cases into the body. Estimate unchanged: the shape did not.";
+  const postedBody = `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\nEstimate: 5\n\n${summary}\n\nbody sha256: ${bodyHash("New scope")}`;
+  const f = fixtureServer([
+    graph({ repository: { issue: item({ id: issue.id }) } }),
+    graph({ node: issue }),
+    {
+      path: "/repos/example/project/issues/8",
+      method: "PATCH",
+      body: { body: "New scope" },
+      json: {},
+    },
+    graph({ repository: { issue: item({ id: issue.id }) } }),
+    graph({ node: { ...issue, body: "New scope" } }),
+    ...boardReads(recording),
+    { path: "/graphql", json: { data: { node: { items: recording.items } } } },
+    graph({
+      node: item({
+        id: issue.id,
+        assignees: { nodes: [], pageInfo: { hasNextPage: false } },
+      }),
+    }),
+    {
+      path: "/repos/example/project/issues/8/assignees",
+      method: "POST",
+      body: { assignees: ["owner"] },
+      json: {},
+    },
+    {
+      path: "/repos/example/project/issues/8/comments",
+      body: { body: postedBody },
+      json: {},
+    },
+    ...boardReads(recording),
+    {
+      path: "/graphql",
+      json: {
+        data: {
+          node: {
+            projectItems: {
+              nodes: [{ ...card, project: { id: recording.id } }],
+              pageInfo: { hasNextPage: false },
+            },
+          },
+        },
+      },
+    },
+    {
+      path: "/graphql",
+      json: {
+        data: { m0: { projectV2Item: { id: card.id } }, m1: { projectV2Item: { id: card.id } } },
+      },
+      checkQuery(_query, variables) {
+        expect(
+          Object.values(variables).map((value) => (value as { value: unknown }).value)
+        ).toEqual([{ text: "👤🔍" }, { singleSelectOptionId: option.id }]);
+      },
+    },
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "New scope");
+  const summaryFile = join(f.root, "scope-summary.md");
+  writeFileSync(summaryFile, summary);
+  mkdirSync(join(f.root, ".tmp"));
+  writeFileSync(join(f.root, ".tmp/issue-read-8.sha256"), bodyHash("Final scope"));
+  await expect(
+    f.transport.call("issueEdit", { ref: "8", file, scopeReview: summaryFile })
+  ).resolves.toBe("Updated issue #8; Scope review requested for #8");
+  // The one journaled flow: the edit's operation, the paired review's operation, then
+  // the shared writes. The PATCH itself is the edit's only card write.
+  expect(
+    readFileSync(join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .map((entry) => entry.kind)
+  ).toEqual(["operation", "PATCH issues/8", "operation", "assigned", "comment", "board", "board"]);
+  // The posted review binds the edited body, so the approval gate accepts the new body.
+  expect(
+    scopeApproved(
+      { ...issue, body: "New scope" },
+      [scopeComment({ body: postedBody })],
+      [scopeMove({ status: "Executing", previousStatus: "Spec review" })],
+      config,
+      filter()
+    )
+  ).toBe(true);
+  f.done();
+});
+
+test("issue edit --scope-review forwards the summary and refuses malformed flags", async () => {
+  const calls: unknown[] = [];
+  const transport: Transport = {
+    call: async (operation, input, ctx) => {
+      calls.push({ operation, input, ctx });
+      return "ok" as never;
+    },
+  };
+  const env = { VMETHOD_ROLE: "orchestrator" };
+  await gatewayVerb(transport, "issue", ["edit", "8", "body.md"], env);
+  await gatewayVerb(
+    transport,
+    "issue",
+    ["edit", "8", "body.md", "--scope-review", "summary.md"],
+    env
+  );
+  expect(calls).toEqual([
+    { operation: "issueEdit", input: { ref: "8", file: "body.md" }, ctx: { role: "orchestrator" } },
+    {
+      operation: "issueEdit",
+      input: { ref: "8", file: "body.md", scopeReview: "summary.md" },
+      ctx: { role: "orchestrator" },
+    },
+  ]);
+  calls.length = 0;
+  await expect(
+    gatewayVerb(transport, "issue", ["edit", "8", "body.md", "--scope-review"], env)
+  ).rejects.toThrow("Usage: issue");
+  expect(calls).toEqual([]);
 });

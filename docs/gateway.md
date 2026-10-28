@@ -133,7 +133,7 @@ merge fails closed with retry guidance without partial writes.
 - `vmethod issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic]`
 - `vmethod issue close <n> [--comment file]`
 - `vmethod issue estimate <n> <points>`
-- `vmethod issue edit <n> <body-file>`
+- `vmethod issue edit <n> <body-file> [--scope-review <summary-file>]`
 - `vmethod issue block <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`)
 - `vmethod issue unblock <n> <blocker>`
 - `vmethod upstream issue <title> <body-file>`
@@ -204,6 +204,19 @@ change summary, refuses a summary opening with a protocol header (`[orchestrator
 or `[worker] …`) before any write, adds the live hash itself and hands the issue
 to the owner. See the
 [scope review procedure](orchestrator-guide.md#scope-review).
+
+`issue edit` on an issue with an approved scope, an open task PR or both (#359)
+reports `scope approval for #<n> is now stale; run scope-review <n> <summary-file>
+before merging`. Scope approval is bound to the body hash, so the edit voids it
+and every gate from `open-task` on would refuse; without the check, only
+`merge-task` at the end would name the edit. Editing an issue with neither prints
+nothing extra. `issue edit <n> <body-file> --scope-review <summary-file>` does
+both in one journaled flow: it validates the summary like `scope-review` before
+any write, then the edit's and the review's own operation records, comment, owner
+turn and board handoff all land in sequence. The review comment carries the
+edited body's `body sha256:`, so approval continues to bind the new body;
+under autopilot it approves immediately, otherwise the owner re-approves from
+Spec review.
 
 `issue block`/`issue unblock` are orchestrator-only relation writes. They resolve
 the target from the configured repository and the blocker from any repository in
