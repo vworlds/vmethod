@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect } from "vitest";
-import { parse, Kind } from "graphql";
+import { parse, Kind, visit } from "graphql";
 import type { Config } from "../../src/config.js";
 import {
   EventLoop,
@@ -40,6 +40,26 @@ function pageCursor(cursor: unknown): string | null {
     throw new Error(`Invalid WatchBoard cursor ${String(cursor)}`);
   }
   return cursor;
+}
+
+/** Project requested connection metadata onto minimal card state/older recordings. */
+function boardCards(cards: ObjectData[]): ObjectData[] {
+  return structuredClone(cards).map((card) => {
+    const content = object(card.content);
+    const names =
+      content.__typename === "PullRequest"
+        ? ["labels", "reviews"]
+        : ["labels", "blockedBy", "subIssues"];
+    for (const name of names) {
+      const original = object(content[name]);
+      content[name] = {
+        nodes: [],
+        pageInfo: { hasNextPage: false, endCursor: null },
+        ...original,
+      };
+    }
+    return card;
+  });
 }
 export const user = (index = 1) => ({
   login: people[index].login,
@@ -101,6 +121,8 @@ export class WatchFake {
   requests: string[] = [];
   unexpected: string[] = [];
   reports: string[] = [];
+  /** Informational pacing reports are asserted separately from failures. */
+  pollReports: string[] = [];
   sleeps: number[] = [];
   writes: ObjectData[] = [];
   /** Executing order movements the loop requested through `board.moveToTop`. */
@@ -158,7 +180,17 @@ export class WatchFake {
       this.sleeps.push(ms);
       this.clock += ms;
     },
-    report: (message) => this.reports.push(message),
+    report: (message) => {
+      if (
+        /^watcher: board pages items=\d+ labels=\d+ blockers=\d+ sub-issues=\d+ reviews=\d+; measured cost=\d+ points\/poll; interval=\d+s$/.test(
+          message
+        )
+      ) {
+        this.pollReports.push(message);
+      } else {
+        this.reports.push(message);
+      }
+    },
     fetch: async (input, init) => {
       const url = new URL(String(input));
       const route = url.pathname;
@@ -582,12 +614,13 @@ export class WatchFake {
             }
             response = {
               data: {
+                rateLimit: { cost: 1 },
                 organization: {
                   projectV2: {
                     id: "project",
                     readme: this.readme,
                     items: {
-                      nodes: page,
+                      nodes: boardCards(page),
                       pageInfo: {
                         hasNextPage: index + 1 < this.boardPages.length,
                         endCursor: String(index + 1),
@@ -598,18 +631,42 @@ export class WatchFake {
               },
             };
           } else {
-            expect(payload.variables).toEqual({ owner: "example", number: 5, cursor: null });
+            expect(payload.variables).toEqual({
+              owner: "example",
+              number: 5,
+              cursor: pageCursor(payload.variables.cursor),
+            });
+            let pageSize = 0;
+            visit(parse(String(payload.query)), {
+              Field(field) {
+                if (field.name.value === "items") {
+                  const first = field.arguments?.find((arg) => arg.name.value === "first")?.value;
+                  if (first?.kind !== Kind.INT) {
+                    throw new Error("Missing board page size");
+                  }
+                  pageSize = Number(first.value);
+                }
+              },
+            });
+            expect(pageSize).toBeGreaterThanOrEqual(10);
+            expect(pageSize).toBeLessThanOrEqual(100);
+            const cards = this.boardSnapshot ?? this.cards;
+            const start = Number(payload.variables.cursor);
             response = this.queryError
               ? { errors: [{ message: "scripted invalid query" }] }
               : {
                   data: {
+                    rateLimit: { cost: 1 },
                     organization: {
                       projectV2: {
                         id: "project",
                         readme: this.readme,
                         items: {
-                          nodes: this.boardSnapshot ?? this.cards,
-                          pageInfo: { hasNextPage: false },
+                          nodes: boardCards(cards.slice(start, start + pageSize)),
+                          pageInfo: {
+                            hasNextPage: start + pageSize < cards.length,
+                            endCursor: String(start + pageSize),
+                          },
                         },
                       },
                     },
@@ -1023,6 +1080,17 @@ export class WatchFake {
         author: actor(1),
         repository: { nameWithOwner: "example/project", owner: { login: "example" } },
         assignees: { nodes: [] },
+        labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+        ...(kind === "Issue"
+          ? {
+              blockedBy: {
+                nodes: [],
+                totalCount: 0,
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+              subIssues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            }
+          : { reviews: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } }),
       },
       ...overrides,
     };

@@ -17,6 +17,8 @@ import { procStart } from "./process-identity.js";
 import { dirname, join, resolve } from "node:path";
 import manifest from "../../package.json" with { type: "json" };
 import { WatchDelivery } from "./watch-delivery.js";
+import { WatchBoard } from "./watch-board.js";
+import { WatchPacing } from "./watch-pacing.js";
 import type { Config } from "../config.js";
 import { boardCost } from "../cost.js";
 import { parseProgress, renderProgress, revivedProgressStates } from "../board/progress.js";
@@ -75,7 +77,6 @@ const CHAT_REMINDER =
 const BOARD_ABSENT_POLLS = 3;
 /** A board baseline is pruned only once its absence window spans at least this long. */
 const BOARD_ABSENT_MS = 24 * 60 * 60_000;
-const POLL_COST = 2;
 const PAGE_LIMIT = 20;
 const PREVIEW_LIMIT = 120;
 const reviewCommentFields = `id databaseId url author { ${actorFields} } editor { ${actorFields} } lastEditedAt body createdAt`;
@@ -406,6 +407,10 @@ export class EventLoop {
   private observedPrs: PrInfo[] = [];
   private nextBoardAt = 0;
   private lastBoardAt = 0;
+  private readonly boardReader: WatchBoard;
+  private readonly pacing = new WatchPacing();
+  private pacingReport = "";
+  private reportedInterval = 0;
   private nextSignature = "";
   private nextAt = 0;
   private opencode?: OpencodeClient;
@@ -456,6 +461,7 @@ export class EventLoop {
     );
     const reserve = object(config.gateway).reserve;
     this.reserve = typeof reserve === "number" ? reserve : 100;
+    this.boardReader = new WatchBoard(host.github);
     this.preview = object(config.watch).preview === true;
     this.boardEnabled = object(config.board).enabled !== false;
   }
@@ -1373,6 +1379,7 @@ export class EventLoop {
     }
     const itemsOk = await this.step("subscribed items", () => this.pollSubscribedItems());
     const assignedOk = await this.step("assignments", () => this.pollAssigned());
+    await this.step("budget", () => this.checkBudget());
     const boardOk = await this.step("board", () => this.pollBoard(pullsOk));
     if (!boardOk) {
       remove(join(this.dir, "unestimated.json"));
@@ -3074,43 +3081,15 @@ export class EventLoop {
     owner: string,
     number: number
   ): Promise<{ readme: string; list: CardInfo[] }> {
-    const cards: CardInfo[] = [];
-    let cursor: string | null = null;
-    const seen = new Set<string>();
     try {
-      for (;;) {
-        const data = object(
-          await this.host.github.graphql(
-            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { ${this.owners.size > 1 ? ownerActivityFields(false) : ""} id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state stateReason closedAt blockedBy(first: 100) { totalCount nodes { number state repository { nameWithOwner } } } subIssues(first: 100) { nodes { id } pageInfo { hasNextPage } } closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { ${this.owners.size > 1 ? ownerActivityFields(true) : ""} id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
-            { owner, number, cursor }
-          )
-        );
-        const project = object(object(object(data.organization)).projectV2);
-        if (!str(project.id)) {
-          throw new Error("Missing board project");
-        }
-        const readme = str(project.readme);
-        const connection = object(project.items);
-        for (const node of this.list(connection.nodes)) {
-          const card = this.decodeCard(node);
-          if (card) {
-            cards.push(card);
-          }
-        }
-        const info = object(connection.pageInfo);
-        if (info.hasNextPage === false) {
-          return { readme, list: cards };
-        }
-        if (
-          info.hasNextPage !== true ||
-          typeof info.endCursor !== "string" ||
-          seen.has(info.endCursor)
-        ) {
-          throw new Error("Invalid board pagination cursor");
-        }
-        cursor = info.endCursor;
-        seen.add(cursor);
-      }
+      const result = await this.boardReader.read(owner, number, {
+        issue: this.owners.size > 1 ? ownerActivityFields(false) : "",
+        pr: this.owners.size > 1 ? ownerActivityFields(true) : "",
+      });
+      return {
+        readme: result.readme,
+        list: result.nodes.map((node) => this.decodeCard(node)).filter((card) => card !== null),
+      };
     } catch (error) {
       if (error instanceof GraphQLResponseError) {
         // An invalid query once made a watcher blind for hours: report at once.
@@ -3121,6 +3100,8 @@ export class EventLoop {
         );
       }
       throw error;
+    } finally {
+      this.pacing.recordPoll(this.boardReader.cost);
     }
   }
 
@@ -4227,16 +4208,29 @@ export class EventLoop {
           `BUDGET: ${status.remaining} ${resource} points left of ${status.limit}; polls slow until ${until}; comments and assignments continue`
         );
       }
-      const pause = Math.ceil(
-        (POLL_COST * (status.reset * 1000 - now)) / Math.max(1, status.remaining - this.reserve)
+    }
+    const graphql = budget.resources.graphql;
+    const interval = this.pacing.observe(graphql, this.reserve, now);
+    // The main watch loop already supplies the ten-second floor. Explicit
+    // pollOnce calls remain immediate unless the account needs slower pacing.
+    this.nextBoardAt =
+      graphql && interval >= graphql.reset * 1000 - now
+        ? graphql.reset * 1000
+        : interval > INTERVAL_MS
+          ? this.lastBoardAt + interval
+          : 0;
+    const sizes = this.boardReader.sizes;
+    const signature = `${Object.values(sizes).join("/")}:${this.boardReader.cost}`;
+    if (
+      this.boardReader.cost > 0 &&
+      (signature !== this.pacingReport ||
+        Math.abs(interval - this.reportedInterval) >= Math.max(1000, this.reportedInterval * 0.1))
+    ) {
+      this.host.deps.report(
+        `watcher: board pages items=${sizes.items} labels=${sizes.labels} blockers=${sizes.blockedBy} sub-issues=${sizes.subIssues} reviews=${sizes.reviews}; measured cost=${this.boardReader.cost} points/poll; interval=${Math.ceil(interval / 1000)}s`
       );
-      if (pause > INTERVAL_MS) {
-        this.nextBoardAt = Math.max(this.nextBoardAt, this.lastBoardAt + pause);
-        this.quietOnce(
-          `slow-${resource}-${Math.floor(status.reset)}`,
-          `NOTE: ${status.remaining} ${resource} points left; board polls run slower until ${until}`
-        );
-      }
+      this.pacingReport = signature;
+      this.reportedInterval = interval;
     }
     if (budget.secondaryUntil > now) {
       this.produceOnce(

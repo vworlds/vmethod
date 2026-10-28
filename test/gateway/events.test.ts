@@ -208,7 +208,9 @@ test.each(["Executing", "Done", "missing", "incomplete"])(
     f.advance();
     await f.tick(loop);
     expect(f.writes).toHaveLength(writes);
-    expect(f.reports).toEqual([]);
+    expect(f.reports).toEqual(
+      childStatus === "incomplete" ? ["watcher: board failed: Invalid watcher nested page"] : []
+    );
   }
 );
 
@@ -3042,6 +3044,28 @@ test("number-scoped watchers observe shared merge completion without consuming i
   expect(await f.tick(loop)).toEqual([]);
   expect(existsSync(marker)).toBe(true);
   expect(existsSync(join(`${f.dir}-only-24`, "open-24"))).toBe(false);
+});
+
+test("watch reports changed page sizes, measured cost and interval once per change", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog")];
+  const loop = f.loop();
+  await f.once(loop);
+  expect(f.pollReports).toEqual([
+    "watcher: board pages items=11 labels=10 blockers=10 sub-issues=10 reviews=10; measured cost=1 points/poll; interval=10s",
+  ]);
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.cards.push(f.card(7, "Backlog"));
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(2);
+  expect(f.pollReports[1]).toContain("items=12");
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(2);
+  expect(f.reports).toEqual([]);
 });
 
 test("budget events arrive before reset, board writes wait, healthy REST comments continue", async () => {
