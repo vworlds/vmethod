@@ -4,6 +4,9 @@ import { object, type ObjectData, type PeopleFilter } from "./people.js";
 import { actorFields, identityFields, repoOf } from "./queries.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 
+/** Labels managed by vmethod workflow rather than describing task kind. */
+export const workflowLabels = ["autopilot", "autopilot-stop"] as const;
+
 interface Decision {
   at: number;
   enabled: boolean;

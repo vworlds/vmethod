@@ -53,7 +53,12 @@ import {
   threadTime,
   type ThreadItem,
 } from "./thread.js";
-import { AutopilotReader, inheritAutopilot, type AutopilotState } from "./autopilot.js";
+import {
+  AutopilotReader,
+  inheritAutopilot,
+  workflowLabels,
+  type AutopilotState,
+} from "./autopilot.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { ownerForTurn, setTurn, turnAssignees } from "./turn.js";
 import { renderProgress } from "../board/progress.js";
@@ -486,7 +491,10 @@ class GatewayServer {
     return {
       estimate: typeof estimate === "number" ? estimate : undefined,
       kind: Array.isArray(labels)
-        ? labels.map((v) => String(object(v).name)).join(", ") || "other"
+        ? labels
+            .map((v) => String(object(v).name))
+            .filter((name) => !workflowLabels.includes(name as (typeof workflowLabels)[number]))
+            .join(", ") || "other"
         : "other",
     };
   }
@@ -549,7 +557,10 @@ class GatewayServer {
       blocked = blockers.nodes.some((v) => object(v).state === "OPEN");
       const labels = object(linked.labels).nodes;
       kind = Array.isArray(labels)
-        ? labels.map((v) => String(object(v).name)).join(", ") || "other"
+        ? labels
+            .map((v) => String(object(v).name))
+            .filter((name) => !workflowLabels.includes(name as (typeof workflowLabels)[number]))
+            .join(", ") || "other"
         : "other";
     }
     const comments: TaskMetadata["comments"] = [];
