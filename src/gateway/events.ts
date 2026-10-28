@@ -127,6 +127,8 @@ export interface LoopHost {
   conflictFixing?: (pr: number) => boolean;
   board: Pick<BoardService, "set" | "moveToTop">;
   digest: Digest;
+  /** Refresh registry/config before each poll, optionally replacing this loop. */
+  refresh?: () => EventLoop | undefined;
 }
 
 interface PendingEvent {
@@ -358,6 +360,8 @@ export function listMutes(config: Config, env: NodeJS.ProcessEnv): string {
  * gateway client, filters every author through people.yaml, and hands the client
  * metadata-only wake-up lines. Events are acknowledged only after the client
  * printed them, so a kill between fetch and print loses nothing.
+ * Registry/config refresh runs before each poll; a supplied session preserves the
+ * existing state directory across configuration rebuilds.
  * Scoped board closures reconcile Done/Progress/management turns silently.
  * Own task PRs include submitted inline review comments, deduplicated by database ID;
  * initially resolved threads are baselined without reporting their existing comments.
@@ -375,7 +379,6 @@ export class EventLoop {
   private readonly reserve: number;
   private readonly preview: boolean;
   private readonly boardEnabled: boolean;
-  private readonly owners: Set<string>;
   private readonly writes: WriteJournal;
   private readonly subjectPreviews = new Map<
     string,
@@ -431,10 +434,11 @@ export class EventLoop {
 
   constructor(
     private readonly host: LoopHost,
-    input: SessionInput
+    input: SessionInput,
+    session?: ResolvedSession
   ) {
     const config = host.config;
-    this.session = resolveSession(config, input);
+    this.session = session ?? resolveSession(config, input);
     this.dir = stateRoot(host.env, this.session.stateName);
     this.writes = new WriteJournal(config, host.env, host.deps.now, this.session.stateName);
     this.own = String(config.repo);
@@ -454,11 +458,6 @@ export class EventLoop {
     this.reserve = typeof reserve === "number" ? reserve : 100;
     this.preview = object(config.watch).preview === true;
     this.boardEnabled = object(config.board).enabled !== false;
-    this.owners = new Set(
-      host.filter.people
-        .filter((person) => person.role === "owner")
-        .map((person) => person.login.toLowerCase())
-    );
   }
 
   async nextEvents(input: WatchInput): Promise<{
@@ -1314,7 +1313,20 @@ export class EventLoop {
   }
 
   private async pollOnce(): Promise<void> {
+    const replacement = this.host.refresh?.();
+    if (replacement && replacement !== this) {
+      await replacement.pollOnce();
+      return;
+    }
     await this.host.github.polling(() => this.runPoll(), this.dir);
+  }
+
+  private get owners(): Set<string> {
+    return new Set(
+      this.host.filter.people
+        .filter((person) => person.role === "owner")
+        .map((person) => person.login.toLowerCase())
+    );
   }
 
   private async runPoll(): Promise<void> {

@@ -12,6 +12,19 @@ import actionsViewer from "../fixtures/github/actions-viewer.json" with { type: 
 
 const link = "https://github.com/example/project/issues/3";
 
+test("reload swaps identity pins atomically and rejects duplicate pins without losing the old list", () => {
+  const { filter } = setup();
+  expect(() => filter.reload([...people, { ...people[0], login: "another" }])).toThrow("duplicate");
+  expect(filter.identity(actor())).toBe(people[0]);
+  expect(() => filter.reload([...people, { ...people[0], login: "OWNER", id: 999 }])).toThrow(
+    "duplicate"
+  );
+  expect(filter.identity(actor())).toBe(people[0]);
+  filter.reload(people.slice(1));
+  expect(filter.identity(actor())).toBeUndefined();
+  expect(filter.identity(actor(1))).toBe(people[1]);
+});
+
 test("orchestrator project bindings are optional, explicit and schema-validated", () => {
   const orchestrator = people.find((person) => person.role === "orchestrator")!;
   const validate = (entry: unknown) => validateYaml(stringify([entry]), "people", "people.yaml");
