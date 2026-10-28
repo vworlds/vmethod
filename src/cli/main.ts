@@ -107,7 +107,13 @@ try {
         break;
       }
       if (verb === "watch") {
-        await watchClient(transport, args, env);
+        // A watcher terminated through `watch --stop` exits via SIGTERM: this
+        // handler lets the process run its exit hook and release the lock (#340).
+        process.on("SIGTERM", () => process.exit(0));
+        const stopCode = await watchClient(transport, args, env);
+        if (stopCode !== undefined) {
+          process.exitCode = stopCode;
+        }
         break;
       }
       if (["wait-checks", "verify", "refresh-checks", "check-task-ci"].includes(verb)) {

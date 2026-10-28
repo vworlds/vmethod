@@ -721,6 +721,7 @@ Run as an orchestrator (`VMETHOD_ROLE=orchestrator`):
 
 - `vmethod watch [--once] [--track <name>|--only <n,n>|--skip <n,n>]`
 - `vmethod watch --replay <previous|seq|time> [--track <name>|--only <n,n>|--skip <n,n>]`
+- `vmethod watch --stop [--force] [--track <name>|--only <n,n>|--skip <n,n>]`
 - `vmethod mute <org/repo#n>` (or a local number)
 - `vmethod unmute <org/repo#n>`
 - `vmethod mutes`
@@ -759,6 +760,24 @@ appear repeatedly in history. The watcher lock also protects replay and pruning.
 After printing the notice, the client sends `guideSeen: true`; only then does the
 server write `guide-seen-<version>`, suppressing later notices for that version in
 the state directory. A failed notice write leaves it unseen.
+
+`watch --stop` ends the running watcher for the state directory the session
+selectors choose (#340). Starting the stop never starts a loop: it reads the
+watcher lock's holder record (operation, pid and process start, written by the
+watcher at acquisition), verifies that the pid is a live process whose command
+line is the `vmethod watch` CLI for that same state directory, and only then
+sends SIGTERM and waits up to 30 seconds for the lock to clear, reporting
+`watcher stopped (pid <n>)`. It never sends SIGKILL: a lock still held after the
+wait is reported and left to the staleness handling on the next watcher start.
+With no lock it reports `no watcher running`; a dead-pid or reused-pid holder
+reports `stale watcher lock (pid <n> not running); remove with --stop --force`,
+and `--force` removes only that verified-stale lock. A lock without a usable
+holder record (legacy or initializing) is refused for inspection instead of
+being removed or signalled, and so is a live pid whose command line is not a
+`vmethod watch` — replay readers included, because they hold the same lock.
+The watcher CLI installs a SIGTERM handler, so a stopped watcher exits cleanly
+and its exit hook releases the lock; restarting the same session reuses the
+state directory's markers and pending events untouched.
 
 A nonempty delivery carries one reminder line for the orchestrator, at most once
 every 30 minutes, printed after the events: `REMINDER (owner rule): chat = #n

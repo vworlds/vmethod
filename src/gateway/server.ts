@@ -5,7 +5,7 @@ import { getConfig, loadYaml, type Config } from "../config.js";
 import { WorkerWorktrees } from "./worker-launch.js";
 import { WorktreeService, type WorktreeTask } from "./worktrees.js";
 import { GitHubClient, GitHubHttpError, type Dependencies } from "./client.js";
-import { Digest } from "./digest.js";
+import { Digest, stateRoot } from "./digest.js";
 import {
   PeopleFilter,
   labelled,
@@ -73,6 +73,7 @@ import {
   unmuteThread,
   listMutes,
 } from "./events.js";
+import { procWatchStopDeps, watchStop } from "./watch-stop.js";
 
 import { ChecksService } from "./checks.js";
 import { VerificationService } from "./verify.js";
@@ -739,6 +740,15 @@ class GatewayServer {
   watchUnmute: Handlers["watchUnmute"] = async ({ ref }) =>
     unmuteThread(this.config, this.env, ref);
   watchMutes: Handlers["watchMutes"] = async () => listMutes(this.config, this.env);
+  /** Stop the running watcher for this resolved session's state directory (#340):
+   * the same session resolution as `nextEvents`, without starting a loop.
+   */
+  watchStop: Handlers["watchStop"] = async ({ force, ...session }) =>
+    watchStop(
+      stateRoot(this.env, resolveSession(this.watchStateConfig, session).stateName),
+      force === true,
+      procWatchStopDeps(this.deps.now, this.deps.sleep)
+    );
 
   private get ci(): ChecksService {
     return new ChecksService(this.config, this.github, this.filter, this.deps);
@@ -2987,6 +2997,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     watchMute: server.watchMute,
     watchUnmute: server.watchUnmute,
     watchMutes: server.watchMutes,
+    watchStop: server.watchStop,
     waitChecks: server.waitChecks,
     checkTaskCi: server.checkTaskCi,
     refreshChecks: server.refreshChecks,
@@ -3043,6 +3054,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     watchMute: ["orchestrator"],
     watchUnmute: ["orchestrator"],
     watchMutes: ["orchestrator"],
+    watchStop: ["orchestrator"],
     waitChecks: ["worker", "orchestrator"],
     checkTaskCi: ["orchestrator"],
     refreshChecks: ["orchestrator"],
