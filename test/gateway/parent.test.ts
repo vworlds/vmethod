@@ -159,6 +159,35 @@ test("issue unparent refuses when the sub-issue has a different parent", async (
   f.done();
 });
 
+test.each([
+  null,
+  {},
+  { parent: {} },
+  { parent: { id: "epic-node" } },
+  { parent: { ...epicParent, number: 0 } },
+])("issue parent refuses incomplete parent metadata: %j", async (response) => {
+  const f = fixtureServer([
+    graph({ repository: { issue: issue() } }),
+    graph({ node: issue() }),
+    { path: "/graphql", json: { data: { repository: { issue: response } } } },
+  ]);
+  await expect(f.transport.call("issueParent", { ref: "8", epic: "379" })).rejects.toThrow(
+    /(?:Missing|Incomplete) sub-issue parent read/
+  );
+  f.done();
+});
+
+test.each(["issueParent", "issueUnparent"] as const)(
+  "%s refuses a foreign child before any target request",
+  async (operation) => {
+    const f = fixtureServer([]);
+    await expect(
+      f.transport.call(operation, { ref: "example/other#8", epic: "379" })
+    ).rejects.toThrow("configured repository");
+    f.done();
+  }
+);
+
 test.each(["issueParent", "issueUnparent"] as const)(
   "%s refuses a cross-repository epic before any write",
   async (operation) => {
@@ -224,6 +253,11 @@ test("a failed create --parent attachment names the issue parent retry and keeps
     parentQuery(37, null),
     epicNodeQuery("example", "project", 342, "epic-node-342"),
     { path: "/graphql", json: { errors: [{ message: "add refused" }] } },
+    graph({ repository: { issue: issue() } }),
+    graph({ node: issue() }),
+    parentQuery(37, null),
+    epicNodeQuery("example", "project", 342, "epic-node-342"),
+    subIssueMutation("addSubIssue", "epic-node-342", "node-1"),
   ]);
   const config = join(f.root, "vmethod.yaml");
   writeFileSync(config, readFileSync(config, "utf8").replace("enabled: true", "enabled: false"));
@@ -235,8 +269,11 @@ test("a failed create --parent attachment names the issue parent retry and keeps
       VMETHOD_ROLE: "orchestrator",
     })
   ).rejects.toThrow(
-    /parent attachment failed[\s\S]*add refused[\s\S]*retry with: vmethod issue parent 37 #342/
+    /parent attachment failed[\s\S]*add refused[\s\S]*retry with: vmethod issue parent 37 342/
   );
+  await expect(
+    gatewayVerb(gateway, "issue", ["parent", "37", "342"], { VMETHOD_ROLE: "orchestrator" })
+  ).resolves.toBe("Added sub-issue #37 to epic #342");
   expect(f.sleeps).toEqual([]);
   f.done();
 }, 15000);
@@ -251,6 +288,24 @@ test.each([{ epic: "example/other#7" }, { epic: "others/project#7" }])(
     f.done();
   }
 );
+
+test("create --parent names both pending repairs if the board follow-up fails first", async () => {
+  const f = fixtureServer([
+    {
+      path: "/repos/example/project/issues",
+      json: { number: 37, node_id: "issue-node-37" },
+    },
+    { path: "/graphql", json: { errors: [{ message: "board unavailable" }] } },
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "A body\n");
+  await expect(
+    f.transport.call("issueCreate", { title: "A title", file, parent: "342" })
+  ).rejects.toThrow(
+    /board follow-up failed[\s\S]*retry with: vmethod board add 37; then attach with: vmethod issue parent 37 342/
+  );
+  f.done();
+}, 15000);
 
 test("issue parent and create --parent reject bad argument shapes through the CLI", async () => {
   const f = fixtureServer([]);

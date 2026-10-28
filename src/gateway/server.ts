@@ -864,7 +864,7 @@ class GatewayServer {
           ...(status !== undefined ? ["--status", status] : []),
         ];
         throw new Error(
-          `Created issue #${String(created.number)}; board follow-up failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry board operations only; retry with: vmethod board add ${String(created.number)}${flags.length ? ` ${flags.join(" ")}` : ""}`,
+          `Created issue #${String(created.number)}; board follow-up failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry board operations only; retry with: vmethod board add ${String(created.number)}${flags.length ? ` ${flags.join(" ")}` : ""}${epicRef ? `; then attach with: vmethod issue parent ${String(created.number)} ${epicRef.number}` : ""}`,
           { cause: error }
         );
       }
@@ -883,7 +883,7 @@ class GatewayServer {
         );
       } catch (error) {
         throw new Error(
-          `Created issue #${String(created.number)}; parent attachment failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry the attachment only; retry with: vmethod issue parent ${String(created.number)} ${blockerLabel(epicRef, this.config)}`,
+          `Created issue #${String(created.number)}; parent attachment failed: ${error instanceof Error ? error.message : String(error)}. Do not recreate; inspect this issue and retry the attachment only; retry with: vmethod issue parent ${String(created.number)} ${epicRef.number}`,
           { cause: error }
         );
       }
@@ -1170,8 +1170,19 @@ class GatewayServer {
         { owner, name, number: childNumber }
       )
     );
-    const parent = object(object(object(result.repository).issue).parent);
-    return parent.id ? parent : null;
+    const issue = object(object(result.repository).issue);
+    if (!Object.hasOwn(issue, "parent")) {
+      throw new Error("Missing sub-issue parent read");
+    }
+    if (issue.parent === null) {
+      return null;
+    }
+    const parent = object(issue.parent);
+    if (typeof parent.id !== "string" || !parent.id) {
+      throw new Error("Incomplete sub-issue parent read");
+    }
+    this.parentLabel(parent);
+    return parent;
   }
 
   /** `#n` for a parent in the configured repository, otherwise `repo#n` (parents attached
@@ -1179,7 +1190,7 @@ class GatewayServer {
   private parentLabel(parent: ObjectData): string {
     const repo = String(object(parent.repository).nameWithOwner ?? "");
     const number = Number(parent.number);
-    if (!repo || !Number.isSafeInteger(number)) {
+    if (!repo || !Number.isSafeInteger(number) || number < 1) {
       throw new Error("Incomplete sub-issue parent read");
     }
     return repo.toLowerCase() === String(this.config.repo).toLowerCase()
