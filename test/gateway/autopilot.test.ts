@@ -124,7 +124,7 @@ function setup() {
   const root = validProject();
   const config = getConfig(root, {});
   const env = { GH_CONFIG_DIR: ghConfig("secret"), XDG_STATE_HOME: join(root, "state") };
-  const filter = new PeopleFilter(people, "example", new Digest(env, "autopilot", () => 0));
+  const filter = new PeopleFilter([...people], "example", new Digest(env, "autopilot", () => 0));
   return { root, config, env, filter };
 }
 
@@ -253,31 +253,38 @@ test.each([
   }
 );
 
-test.each(["owner", "worker", "orchestrator", "unknown", "forged id", "forged type"])(
-  "only a pinned owner grants autopilot (%s)",
-  (kind) => {
-    const f = setup();
-    try {
-      const actors: Record<string, ObjectData> = {
-        owner: actor(),
-        worker: actor(1),
-        orchestrator: actor(2),
-        unknown: { ...actor(), login: "outsider" },
-        "forged id": { ...actor(), databaseId: 999 },
-        "forged type": { ...actor(), __typename: "Bot" },
-      };
-      const state = autopilotStates(
-        [{ item: issue(), events: [event(true, { actor: actors[kind] })] }],
-        f.filter,
-        "example/project"
-      ).get("issue")!;
-      expect(state.active).toBe(kind === "owner");
-      expect(state.unauthorized).toBe(kind !== "owner");
-    } finally {
-      rmSync(f.root, { recursive: true, force: true });
-    }
+test.each([
+  "owner",
+  "second owner",
+  "worker",
+  "orchestrator",
+  "unknown",
+  "forged id",
+  "forged type",
+])("only a pinned owner grants autopilot (%s)", (kind) => {
+  const f = setup();
+  try {
+    f.filter.people.push({ ...people[0], login: "second-owner", id: 105 });
+    const actors: Record<string, ObjectData> = {
+      owner: actor(),
+      "second owner": { ...actor(), login: "second-owner", databaseId: 105 },
+      worker: actor(1),
+      orchestrator: actor(2),
+      unknown: { ...actor(), login: "outsider" },
+      "forged id": { ...actor(), databaseId: 999 },
+      "forged type": { ...actor(), __typename: "Bot" },
+    };
+    const state = autopilotStates(
+      [{ item: issue(), events: [event(true, { actor: actors[kind] })] }],
+      f.filter,
+      "example/project"
+    ).get("issue")!;
+    expect(state.active).toBe(["owner", "second owner"].includes(kind));
+    expect(state.unauthorized).toBe(!["owner", "second owner"].includes(kind));
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
   }
-);
+});
 
 test("removal on either side stops the task; exact inherited event is the only non-owner copy", () => {
   const f = setup();

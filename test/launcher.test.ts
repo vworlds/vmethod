@@ -284,6 +284,23 @@ test("check reports whether the vmethod on PATH is this launcher", () => {
   );
 }, 4000);
 
+test.each([undefined, "check", ""])(
+  "check skips the launcher report only in npm scripts (%s)",
+  (lifecycle) => {
+    const result = runChild(process.execPath, [resolve("dist/vmethod.mjs"), "check"], {
+      env: {
+        VMETHOD_ROOT: validProject(),
+        ...(lifecycle === undefined ? {} : { npm_lifecycle_event: lifecycle }),
+      },
+      encoding: "utf8",
+      timeout: 3000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.includes("launcher")).toBe(lifecycle === undefined);
+  },
+  5000
+);
+
 test("self-host detection parses the root package name rather than nested names", () => {
   const root = checkout("example/consumer");
   writeFileSync(

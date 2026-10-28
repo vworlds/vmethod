@@ -2,6 +2,43 @@ import { expect, test } from "vitest";
 import { taskFlowVerb } from "../src/cli/task-flow.js";
 import type { Transport } from "../src/gateway/transport.js";
 
+test("pr routes open and merge with strict positional arguments", async () => {
+  const calls: unknown[] = [];
+  const transport: Transport = {
+    call: async (operation, input, ctx) => {
+      calls.push({ operation, input, ctx });
+      return "ok" as never;
+    },
+  };
+  const env = { VMETHOD_ROLE: "orchestrator" };
+  await taskFlowVerb(
+    transport,
+    "pr",
+    ["open", "adoption", "chore: adopt", "body.md", "--draft"],
+    env
+  );
+  await taskFlowVerb(transport, "pr", ["merge", "27"], env);
+  expect(calls).toEqual([
+    {
+      operation: "prOpen",
+      input: { branch: "adoption", title: "chore: adopt", file: "body.md", draft: true },
+      ctx: { role: "orchestrator" },
+    },
+    { operation: "prMerge", input: { ref: "27" }, ctx: { role: "orchestrator" } },
+  ]);
+  calls.length = 0;
+  for (const args of [
+    ["merge"],
+    ["merge", "27", "--merge-commit"],
+    ["merge", "https://github.com/other/repo/pull/27"],
+    ["open", "adoption", "title"],
+    ["open", "adoption", "title", "body.md", "--unknown"],
+  ]) {
+    await expect(taskFlowVerb(transport, "pr", args, env)).rejects.toThrow("Usage: pr");
+  }
+  expect(calls).toEqual([]);
+});
+
 test("review routes owner agreement independently of the reply target and rejects malformed flags", async () => {
   const calls: unknown[] = [];
   const transport: Transport = {

@@ -5,6 +5,55 @@ import { Digest } from "../../src/gateway/digest.js";
 import { fixture } from "../helpers.js";
 import { actor, people, sha } from "./helpers.js";
 
+test("a second pinned owner can approve by board move or exact-head review", () => {
+  const second = { ...people[0], login: "second-owner", id: 105 };
+  const owner = { login: second.login, databaseId: second.id, __typename: second.type };
+  const filter = new PeopleFilter(
+    [...people, second],
+    "example",
+    new Digest({ XDG_STATE_HOME: fixture() }, "multi-owner", () => 0)
+  );
+  const event = {
+    __typename: "ProjectV2ItemStatusChangedEvent",
+    field: "Status",
+    status: "Executing",
+    previousStatus: "Spec review",
+    actor: owner,
+    project: { number: 1 },
+    createdAt: "2026-01-02T00:00:00Z",
+  };
+  expect(isIssueOwnerApproved([event], 1, filter)).toBe(true);
+  const pr = {
+    headRefOid: sha,
+    boardNumber: 1,
+    timeline: [],
+    comments: [
+      {
+        author: actor(2),
+        body: `[orchestrator] OWNER REVIEW\nHead: ${sha}`,
+        createdAt: "2026-01-01T00:00:00Z",
+      },
+    ],
+    reviews: [],
+  };
+  expect(
+    isOwnerApproved(
+      { ...pr, timeline: [{ ...event, status: "Approved", previousStatus: "Owner review" }] },
+      filter,
+      "example/project"
+    )
+  ).toBe(true);
+  const review = { author: owner, state: "APPROVED", commit: { oid: sha } };
+  expect(isOwnerApproved({ ...pr, reviews: [review] }, filter, "example/project")).toBe(true);
+  expect(
+    isOwnerApproved(
+      { ...pr, reviews: [{ ...review, author: { ...owner, databaseId: 999 } }] },
+      filter,
+      "example/project"
+    )
+  ).toBe(false);
+});
+
 test("issue approval follows latest configured-board event by verified owner id only", () => {
   const filter = new PeopleFilter(
     people,
