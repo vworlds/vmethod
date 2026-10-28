@@ -23,6 +23,7 @@ import {
 } from "../../src/gateway/events.js";
 import { object } from "../../src/gateway/people.js";
 import { WatchFake, proc, user } from "./watch-fake.js";
+import { WatchPacing } from "../../src/gateway/watch-pacing.js";
 import { sha } from "./helpers.js";
 import { writeState } from "../../src/board/readme.js";
 import { createGateway } from "../../src/gateway/server.js";
@@ -3179,6 +3180,62 @@ test("a cost change that flickers without holding reports nothing", async () => 
   await f.once(loop);
   expect(f.pollReports).toHaveLength(1);
   expect(f.reports).toEqual([]);
+});
+
+test.each([
+  {
+    name: "10, 9, 10, 10 flicker",
+    baseline: 10,
+    intervals: [10, 9, 10, 10],
+    reports: [1, 1, 1, 1],
+  },
+  {
+    name: "10, 20, 20, 20 hold",
+    baseline: 10,
+    intervals: [10, 20, 20, 20, 20],
+    reports: [1, 1, 1, 2, 2],
+  },
+  { name: "one-second equality", baseline: 10, intervals: [11, 11, 11], reports: [1, 1, 1] },
+  { name: "ten-percent equality", baseline: 20, intervals: [22, 22, 22], reports: [1, 1, 1] },
+  {
+    name: "interrupted hold",
+    baseline: 10,
+    intervals: [20, 20, 11, 20, 20, 20],
+    reports: [1, 1, 1, 1, 1, 2],
+  },
+  {
+    name: "changed candidate",
+    baseline: 10,
+    intervals: [20, 20, 30, 30, 30],
+    reports: [1, 1, 1, 1, 2],
+  },
+  { name: "falling hold", baseline: 20, intervals: [10, 10, 10, 10], reports: [1, 1, 2, 2] },
+])("interval reports debounce $name", async ({ baseline, intervals, reports }) => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog")];
+  let seconds = baseline;
+  // Script the controller output, not the report state. Each poll still runs
+  // both budget observations and a real fake-transport board read.
+  const observe = vi
+    .spyOn(WatchPacing.prototype, "observe")
+    .mockImplementation(() => seconds * 1000);
+  try {
+    const loop = f.loop();
+    await f.once(loop);
+    expect(f.pollReports).toHaveLength(1);
+    for (const [index, interval] of intervals.entries()) {
+      seconds = interval;
+      f.advance();
+      await f.once(loop);
+      expect(f.pollReports).toHaveLength(reports[index]);
+    }
+    expect(f.pollReports.at(-1)).toContain(
+      `interval=${reports.at(-1) === 2 ? seconds : baseline}s`
+    );
+    expect(f.reports).toEqual([]);
+  } finally {
+    observe.mockRestore();
+  }
 });
 
 test("an extra board page reports while it starts and when it stops", async () => {

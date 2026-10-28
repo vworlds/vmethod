@@ -419,6 +419,9 @@ export class EventLoop {
    * has held for three consecutive polls. */
   private pendingCost = 0;
   private costStreak = 0;
+  /** Interval changes must exceed the threshold and hold for three polls. */
+  private intervalStreak = 0;
+  private pendingInterval = 0;
   private observedRead = 0;
   private nextSignature = "";
   private nextAt = 0;
@@ -4246,11 +4249,13 @@ export class EventLoop {
     const sizes = this.boardReader.sizes;
     const cost = this.boardReader.cost;
     const shape = `${this.boardReader.pages}/${this.boardReader.overflow}`;
-    // A changed cost reports only after the new value has held for three
-    // consecutive polls; one read is one observation. A page or overflow
-    // boundary reports at once, and the interval rule stays as it is: at
-    // least 10% and one second.
+    // One read is one poll observation; both debounce rules count it once. A
+    // changed cost reports only after the new value has held for three
+    // consecutive polls, and an interval deviation strictly beyond the
+    // threshold (10% and one second) reports once the new value has held for
+    // three consecutive polls. A page or overflow boundary reports at once.
     let heldCost = false;
+    let heldInterval = false;
     if (this.observedRead !== this.boardReader.readId) {
       this.observedRead = this.boardReader.readId;
       if (cost === this.reportedCost) {
@@ -4260,13 +4265,17 @@ export class EventLoop {
         this.pendingCost = cost;
       }
       heldCost = this.costStreak >= 3;
+      if (
+        Math.abs(interval - this.reportedInterval) > Math.max(1000, this.reportedInterval * 0.1)
+      ) {
+        this.intervalStreak = interval === this.pendingInterval ? this.intervalStreak + 1 : 1;
+        this.pendingInterval = interval;
+      } else {
+        this.intervalStreak = 0;
+      }
+      heldInterval = this.intervalStreak >= 3;
     }
-    if (
-      cost > 0 &&
-      (shape !== this.reportedShape ||
-        heldCost ||
-        Math.abs(interval - this.reportedInterval) >= Math.max(1000, this.reportedInterval * 0.1))
-    ) {
+    if (cost > 0 && (shape !== this.reportedShape || heldCost || heldInterval)) {
       this.host.deps.report(
         `watcher: board pages items=${sizes.items} labels=${sizes.labels} blockers=${sizes.blockedBy} sub-issues=${sizes.subIssues} reviews=${sizes.reviews}; measured cost=${cost} points/poll; interval=${Math.ceil(interval / 1000)}s`
       );
@@ -4274,6 +4283,7 @@ export class EventLoop {
       this.reportedCost = cost;
       this.reportedInterval = interval;
       this.costStreak = 0;
+      this.intervalStreak = 0;
     }
     if (budget.secondaryUntil > now) {
       this.produceOnce(
