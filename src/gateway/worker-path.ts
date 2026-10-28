@@ -21,6 +21,16 @@ export function workerCheckout(root: string, config: Config): string {
   return checkout;
 }
 
+/** Whether the configured worker checkout resolves into the given checkout itself.
+ * A worker checkout's own copy of the repository config names the workers' clone
+ * relative to the orchestrator's checkout, so it resolves to itself there; a
+ * missing value never is.
+ */
+export function workerCheckoutIsSelf(root: string, config: Config): boolean {
+  const value = config.workerCheckout;
+  return typeof value === "string" && !!value.trim() && resolve(root, value) === resolve(root);
+}
+
 /** The worktree name a task branch gets in the worker checkout. */
 export function workerWorktreeName(config: Config, branch: string): string {
   return `${workerWorktreePrefix(config)}${branch.replaceAll("/", "-")}`;

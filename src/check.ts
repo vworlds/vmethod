@@ -8,7 +8,7 @@ import packageMetadata from "../package.json" with { type: "json" };
 import { gitIdentityVariables } from "./gateway/git.js";
 import { launcherMark } from "./registry.js";
 import type { Person } from "./gateway/people.js";
-import { workerCheckout } from "./gateway/worker-path.js";
+import { workerCheckout, workerCheckoutIsSelf } from "./gateway/worker-path.js";
 
 const mermaidPin = packageMetadata.peerDependencies.mermaid;
 const secretPattern =
@@ -71,7 +71,7 @@ export function check(
       if (kind === "vmethod") {
         vmethodValue = value as Config;
         if (env.VMETHOD_ROLE === "orchestrator") {
-          messages.push(...workerCheckoutFindings(root, vmethodValue));
+          messages.push(...workerCheckoutFindings(root, vmethodValue, env));
         }
         const secrets = secretPaths(value);
         for (const path of secrets) {
@@ -185,16 +185,40 @@ export function check(
 }
 
 /** The orchestrator launches workers in their own clone; it must exist apart from this one. */
-function workerCheckoutFindings(root: string, config: Config): string[] {
-  let checkout: string;
+function workerCheckoutFindings(root: string, config: Config, env: NodeJS.ProcessEnv): string[] {
   try {
-    checkout = workerCheckout(root, config);
+    const checkout = workerCheckout(root, config);
+    return existsSync(join(checkout, ".git"))
+      ? []
+      : [`workerCheckout ${checkout} is not a git clone; clone the repository there for workers`];
   } catch (error) {
+    // A worker checkout's own repository config resolves into this checkout, so
+    // an orchestrator environment run there is only wearing the wrong identity;
+    // the same-clone refusal stays for a checkout that is not the worker checkout.
+    if (
+      workerCheckoutIsSelf(root, config) &&
+      env.VMETHOD_ROLE === "orchestrator" &&
+      localSettingsRole(root) === "worker"
+    ) {
+      return [
+        "this is the worker checkout, but the environment is the orchestrator's (VMETHOD_ROLE=orchestrator); run check with this checkout's own .claude/settings.local.json env",
+      ];
+    }
     return [(error as Error).message];
   }
-  return existsSync(join(checkout, ".git"))
-    ? []
-    : [`workerCheckout ${checkout} is not a git clone; clone the repository there for workers`];
+}
+
+/** The role this checkout's own .claude/settings.local.json declares, if it does. */
+function localSettingsRole(root: string): string | undefined {
+  try {
+    const settings = JSON.parse(
+      readFileSync(join(root, ".claude/settings.local.json"), "utf8")
+    ) as { env?: { VMETHOD_ROLE?: unknown } };
+    const role = settings.env?.VMETHOD_ROLE;
+    return typeof role === "string" ? role : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** A root .gitignore line ignoring the whole .claude directory, without negations after it. */

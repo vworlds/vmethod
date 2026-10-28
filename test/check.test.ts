@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { expect, test } from "vitest";
 import { check } from "../src/check.js";
 import { fixture, peer, validProject as unpricedProject } from "./helpers.js";
@@ -195,6 +195,70 @@ test("orchestrator check reports each missing git identity up front, workers do 
   });
   mkdirSync(join(worker, ".git"));
   expect(check(root, { ...identity, VMETHOD_WORKER_CHECKOUT: worker }).code).toBe(0);
+});
+
+/** Point the fixture's workerCheckout at the fixture itself, like a worker clone's
+ * copy of the repository config does (`../vecs-worker` resolves to itself there). */
+function selfWorkerCheckout(root: string): void {
+  const vmethod = join(root, "vmethod.yaml");
+  const before = readFileSync(vmethod, "utf8");
+  writeFileSync(
+    vmethod,
+    before.replace("workerCheckout: ../example-worker", `workerCheckout: ../${basename(root)}`)
+  );
+}
+
+test("an orchestrator environment in the worker checkout gets the identity message, not the clone error", () => {
+  const root = validProject();
+  // The worker checkout's own .claude/settings.local.json declares the worker identity.
+  writeFileSync(
+    join(root, ".claude/settings.local.json"),
+    JSON.stringify({ env: { VMETHOD_ROLE: "worker" } })
+  );
+  selfWorkerCheckout(root);
+  const orchestrator = {
+    VMETHOD_ROLE: "orchestrator",
+    GIT_AUTHOR_NAME: "A",
+    GIT_AUTHOR_EMAIL: "a@b",
+    GIT_COMMITTER_NAME: "C",
+    GIT_COMMITTER_EMAIL: "c@b",
+  };
+  const result = check(root, orchestrator);
+  expect(result.code).toBe(1);
+  expect(result.messages).toEqual([
+    "this is the worker checkout, but the environment is the orchestrator's (VMETHOD_ROLE=orchestrator); run check with this checkout's own .claude/settings.local.json env",
+  ]);
+  // With this checkout's own identity the same checkout checks green.
+  expect(check(root, { ...orchestrator, VMETHOD_ROLE: "worker" })).toEqual({
+    code: 0,
+    messages: [],
+  });
+});
+
+test("workerCheckout pointing at the orchestrator checkout still gets the clone error", () => {
+  const root = validProject();
+  // The orchestrator checkout's own .claude/settings.local.json declares the orchestrator identity.
+  writeFileSync(
+    join(root, ".claude/settings.local.json"),
+    JSON.stringify({ env: { VMETHOD_ROLE: "orchestrator" } })
+  );
+  selfWorkerCheckout(root);
+  const env = {
+    VMETHOD_ROLE: "orchestrator",
+    GIT_AUTHOR_NAME: "A",
+    GIT_AUTHOR_EMAIL: "a@b",
+    GIT_COMMITTER_NAME: "C",
+    GIT_COMMITTER_EMAIL: "c@b",
+  };
+  expect(check(root, env)).toEqual({
+    code: 1,
+    messages: ["workerCheckout must be a separate clone, not the orchestrator's checkout"],
+  });
+  // Without a declared role in this checkout's settings the refusal also stays.
+  rmSync(join(root, ".claude/settings.local.json"));
+  expect(check(root, env).messages).toEqual([
+    "workerCheckout must be a separate clone, not the orchestrator's checkout",
+  ]);
 });
 
 test("check requires .claude/ to be gitignored, since it holds each checkout's identity", () => {
