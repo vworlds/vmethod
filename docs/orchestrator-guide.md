@@ -495,6 +495,9 @@ claim. See [watch attribution and scope selection](gateway.md#watching-and-mutin
    unless the checkout sits on `dev` (`baseBranch`) with its local head at the remote head,
    dispatches the `Publish` workflow on `dev`, waits for that run with a bound, and reports
    the published version, the npm `next` dist-tag, the git tag and the GitHub release URL.
+   npm evidence polls the registry with a bound because registry propagation can lag the
+   publish by minutes; when the bound expires while the tag and release exist, the verb
+   still succeeds with a `npm next not visible yet (registry propagation)` warning.
    A red run reports its failed step and the run URL; rerun the workflow to repair missing
    release metadata. The owner's go for a release remains a separate decision the verb does
    not replace: a stable release still moves `master` through the release process.

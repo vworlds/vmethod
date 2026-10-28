@@ -322,12 +322,19 @@ README's own drift, never a missing board membership. The typed operation is
 `baseBranch` with its local head equal to the remote branch head, then dispatches
 `publish.yml` on `baseBranch` and waits for that run with a bound. A green run reports
 the published version, the npm `next` dist-tag (verified against the run's commit),
-the git tag and the GitHub release URL. A red run reports its failed step names and
-the run URL; a run completing on a head that raced the dispatch is refused without
-release evidence. Missing tag or release after a green run asks for the retry-safe
-publish rerun that repairs missing release metadata. The typed operation is
-`releaseNext() → string`. The owner's go for a release remains a separate decision
-this verb does not replace; see [before a release](orchestrator-guide.md#before-a-release).
+the git tag and the GitHub release URL. Registry propagation can lag the publish by
+minutes, so npm evidence polls `registry.npmjs.org` for `next` naming the released
+commit (every 15 s, up to 10 minutes): a `next` gitHead naming a different head while
+the released version is already visible is an integrity error, and when the bound
+expires, the pushed tag and the GitHub release become the authoritative version
+evidence — success with `npm next not visible yet (registry propagation); check
+later with npm view <name> dist-tags` instead of a failure. A red run reports its
+failed step names and the run URL; a run completing on a head that raced the dispatch
+is refused without release evidence. Missing tag or release after a green run asks
+for the retry-safe publish rerun that repairs missing release metadata. The typed
+operation is `releaseNext() → string`. The owner's go for a release remains a
+separate decision this verb does not replace; see
+[before a release](orchestrator-guide.md#before-a-release).
 
 ## Worker commands
 

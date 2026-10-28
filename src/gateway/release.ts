@@ -54,34 +54,40 @@ export async function releaseNext(
     );
   }
   const name = packageName(root);
-  const data = object(JSON.parse(await registry(deps, name)));
-  const tags = object(data["dist-tags"]);
-  const version = typeof tags.next === "string" ? tags.next : "";
-  if (!/^\d+\.\d+\.\d+(?:-rc\.\d+)?$/.test(version)) {
-    throw new Error(`the registry has no stable or RC next dist-tag for ${name}; inspect npm`);
-  }
-  const gitHead = String(object(object(data.versions)[version]).gitHead ?? "");
-  if (gitHead !== remote) {
-    throw new Error(
-      `the npm next dist-tag publishes ${version} from ${gitHead ? gitHead.slice(0, 8) : "<unknown>"}, not ${remote.slice(0, 8)}; inspect the registry`
-    );
-  }
-  const tag = `v${version}`;
-  try {
-    const ref = object(
-      await github().rest(`/repos/${repo}/git/ref/tags/${encodeURIComponent(tag)}`)
-    );
-    if (String(ref.ref) !== `refs/tags/${tag}` || !object(ref.object).sha) {
-      throw new Error(`the git tag response does not name ${tag}; inspect the repository`);
-    }
-  } catch (error) {
-    if (error instanceof GitHubHttpError && error.status === 404) {
-      throw new Error(
-        `the publish run was green but the git tag ${tag} is missing; rerun the workflow to repair missing release metadata`,
-        { cause: error }
+  // Publish evidence is the green run plus the pushed tag and release; npm's
+  // `next` dist-tag must agree when it is visible, but registry propagation
+  // can lag the publish by minutes (rc.10 served `next: 1.0.0-rc.9` for about
+  // four minutes on 2026-10-27), so the tag that names the released head
+  // settles the version when npm does not.
+  const npmNext = await nextVersion(deps, name, remote);
+  let version: string;
+  let tag: string;
+  let warning: string;
+  if (npmNext === undefined) {
+    const pushed = await pushedTag(github(), repo, remote);
+    version = pushed.version;
+    tag = pushed.tag;
+    warning = `npm next not visible yet (registry propagation); check later with npm view ${name} dist-tags`;
+  } else {
+    version = npmNext;
+    tag = `v${version}`;
+    warning = `npm next: ${version}`;
+    try {
+      const ref = object(
+        await github().rest(`/repos/${repo}/git/ref/tags/${encodeURIComponent(tag)}`)
       );
+      if (String(ref.ref) !== `refs/tags/${tag}` || !object(ref.object).sha) {
+        throw new Error(`the git tag response does not name ${tag}; inspect the repository`);
+      }
+    } catch (error) {
+      if (error instanceof GitHubHttpError && error.status === 404) {
+        throw new Error(
+          `the publish run was green but the git tag ${tag} is missing; rerun the workflow to repair missing release metadata`,
+          { cause: error }
+        );
+      }
+      throw error;
     }
-    throw error;
   }
   let releaseUrl: string;
   try {
@@ -103,11 +109,113 @@ export async function releaseNext(
   }
   return [
     `Published ${name}@${version}`,
-    `npm next: ${version}`,
+    warning,
     `git tag: ${tag}`,
     `release: ${releaseUrl}`,
     `run: ${url}`,
   ].join("\n");
+}
+
+const propagationBound = 600000;
+const propagationInterval = 15000;
+const versionShape = /^\d+\.\d+\.\d+(?:-rc\.\d+)?$/;
+const tagName = /^v\d+\.\d+\.\d+(?:-rc\.\d+)?$/;
+
+/** The published version named by `next`, once the registry carries this release.
+ * Stale snapshots naming an older release are propagation, not evidence against
+ * this one, so any non-matching state polls on (rc.10's 2026-10-27 lag); a
+ * wrong gitHead is an integrity error only where the released version is
+ * already visible to contradict the lag. Availability poll: every 15 s, up to
+ * 10 minutes, before the tag and release become the authoritative version
+ * evidence (#310). */
+async function nextVersion(
+  deps: Dependencies,
+  name: string,
+  remote: string
+): Promise<string | undefined> {
+  const deadline = deps.now() + propagationBound;
+  for (;;) {
+    let data: ObjectData | undefined;
+    try {
+      data = object(JSON.parse(await registry(deps, name)));
+    } catch {
+      // An unreadable registry is an availability lag; poll on within the bound.
+    }
+    if (data !== undefined) {
+      const named = namedVersions(data, remote);
+      if (named.length > 1) {
+        throw new Error(
+          `the registry names multiple published versions for ${remote.slice(0, 8)}; inspect npm`
+        );
+      }
+      const version = named[0];
+      if (version !== undefined) {
+        const tags = object(data["dist-tags"]);
+        const next = typeof tags.next === "string" ? tags.next : "";
+        if (next === version) {
+          return version;
+        }
+        // The released version is visible, so lag cannot explain the dist-tag:
+        // report a head it does name, or its absence, as an integrity error.
+        if (versionShape.test(next)) {
+          const head = String(object(object(data.versions)[next]).gitHead ?? "");
+          const from = /^[a-f\d]{40}$/i.test(head) ? head.slice(0, 8) : "<unknown>";
+          throw new Error(
+            `the npm next dist-tag publishes ${next} from ${from}, not ${remote.slice(0, 8)}; inspect the registry`
+          );
+        }
+        throw new Error(`the npm next dist-tag does not name ${version}; inspect the registry`);
+      }
+    }
+    const remaining = deadline - deps.now();
+    if (remaining <= 0) {
+      return undefined;
+    }
+    await deps.sleep(Math.min(propagationInterval, remaining));
+  }
+}
+
+/** Stable and release-candidate version names whose manifest records this head. */
+function namedVersions(data: ObjectData, remote: string): string[] {
+  const versions = object(data.versions);
+  return Object.entries(versions)
+    .map(([name, value]) => ({ name, head: String(object(value).gitHead) }))
+    .filter(
+      (entry) =>
+        versionShape.test(entry.name) &&
+        /^[a-f\d]{40}$/i.test(entry.head) &&
+        entry.head.toLowerCase() === remote.toLowerCase()
+    )
+    .map((entry) => entry.name);
+}
+
+/** The single version tag the publish workflow pushed at the released commit
+ * (lightweight tags point at the commit); used when npm stays invisible. */
+async function pushedTag(
+  github: GitHubClient,
+  repo: string,
+  remote: string
+): Promise<{ tag: string; version: string }> {
+  const listed = await github.rest(`/repos/${repo}/git/matching-refs/tags/v`);
+  if (!Array.isArray(listed)) {
+    throw new Error("Invalid version tag list");
+  }
+  const pushed = listed
+    .map(object)
+    .filter(
+      (ref) =>
+        tagName.test(String(ref.ref).replace(/^refs\/tags\//, "")) &&
+        object(ref.object).type === "commit" &&
+        /^[a-f\d]{40}$/i.test(String(object(ref.object).sha)) &&
+        String(object(ref.object).sha).toLowerCase() === remote.toLowerCase()
+    )
+    .map((ref) => String(ref.ref).slice("refs/tags/".length));
+  if (pushed.length !== 1) {
+    throw new Error(
+      `the publish run was green but ${pushed.length > 1 ? "ambiguous version tags name" : `no version tag for ${remote.slice(0, 8)} names`} the release; rerun the workflow to repair missing release metadata`
+    );
+  }
+  return { tag: pushed[0], version: pushed[0].slice(1) };
 }
 
 async function dispatch(github: GitHubClient, repo: string, base: string): Promise<void> {
