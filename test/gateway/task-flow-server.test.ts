@@ -18,6 +18,52 @@ import type { ObjectData } from "../../src/gateway/people.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
 import { taskFlowVerb } from "../../src/cli/task-flow.js";
 
+test("pr open crosses the authenticated gateway with configured repository and base", async () => {
+  const f = fixtureServer([
+    {
+      path: "/repos/example/project/git/matching-refs/heads/adoption",
+      method: "GET",
+      json: [{ ref: "refs/heads/adoption", object: { sha } }],
+    },
+    {
+      path: "/repos/example/project/pulls",
+      body: {
+        head: "adoption",
+        base: "dev",
+        title: "chore: adopt",
+        body: "Adoption\n",
+        draft: false,
+      },
+      json: { number: 27, node_id: "pr" },
+    },
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "Adoption\n");
+  await expect(
+    taskFlowVerb(f.transport, "pr", ["open", "adoption", "chore: adopt", file], {
+      VMETHOD_ROLE: "orchestrator",
+    })
+  ).resolves.toBe("https://github.com/example/project/pull/27");
+  f.done();
+});
+
+test.each(["prOpen", "prMerge"] as const)(
+  "%s refuses worker clients before API access",
+  async (operation) => {
+    const f = fixtureServer([]);
+    await expect(
+      f.transport.call(
+        operation,
+        operation === "prOpen"
+          ? { branch: "adoption", title: "chore: adopt", file: "body.md" }
+          : { ref: "27" },
+        { role: "worker", taskPr: 27 }
+      )
+    ).rejects.toThrow("denied for client role");
+    f.done();
+  }
+);
+
 test.each(["issue", "pr"] as const)(
   "orchestrator can stop but not grant autopilot on an accepted %s",
   async (kind) => {
@@ -405,6 +451,8 @@ const approvedSpecScope = () => [
 ];
 
 const imposter = { login: "imposter", databaseId: 4242, __typename: "User" };
+const secondOwner = { ...people[0], login: "second-owner", id: 105 };
+const secondOwnerActor = { ...actor(), login: secondOwner.login, databaseId: secondOwner.id };
 
 /** A task card on the configured board with one optional field value. */
 const cardRead = (value?: ObjectData) =>
@@ -439,6 +487,13 @@ interface GateScenario {
 }
 
 const gateScenarios: GateScenario[] = [
+  {
+    case: "accepts APPROVE MODEL from the second pinned owner",
+    edited: "2026-01-06T00:00:00Z",
+    metas: [lineMeta(secondOwnerActor)],
+    bodies: [lineBody("2026-01-07T00:00:00Z", secondOwnerActor)],
+    authorized: true,
+  },
   {
     case: "refuses a line predating the issue body's last edit",
     edited: "2026-01-06T00:00:00Z",
@@ -555,7 +610,7 @@ test.each(gateScenarios)(
         ...(readsCard ? [cardRead(scenario.card)] : []),
       ],
       actor(2),
-      people,
+      [...people, secondOwner],
       (root) => {
         const file = join(root, "vmethod.yaml");
         writeFileSync(file, readFileSync(file, "utf8").replace("enabled: true", "enabled: false"));

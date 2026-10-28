@@ -637,6 +637,18 @@ Run as an orchestrator (`VMETHOD_ROLE=orchestrator`):
 - `vmethod mutes`
 
 The CLI only prints server-produced `nextEvents` records; it never polls GitHub.
+At each poll, the gateway checks the modification times of `people.yaml` and
+`vmethod.yaml`, including during a long poll. Valid people edits replace the shared
+identity list and refresh owner decisions without a restart. Success reports
+`people.yaml reloaded (owners: <logins>)` once per edit; an invalid edit reports
+`people.yaml reload failed: <reason>; keeping the previous list` once and leaves
+the last valid identities in force. A valid config edit rebuilds cached event loops
+while retaining each session's original state directory and markers, so acknowledged
+events do not replay. Success reports `vmethod.yaml reloaded` once per edit.
+An invalid config edit reports
+`vmethod.yaml reload failed: <reason>; keeping the previous config` once and keeps
+polling with the previous config and loops until a later valid edit applies.
+
 `nextEvents` takes `{ timeoutSeconds, ack?, pollOnce?, watchStart?, guideSeen?, replay?, track?, only?, skip? }` and returns
 `{ events: [{ id, kind, line, quiet? }], notice?, reminder? }`. A zero timeout applies acknowledgements
 without polling. The client acknowledges IDs **after stdout finishes writing**;
@@ -967,6 +979,33 @@ Dropped records live in
 `~/.local/state`. They contain only timestamps and GitHub links. The owner digest
 prints links and counts, never bodies, titles or author names. Repeated reads can
 produce repeated drops; the counts are observations, not unique contributions.
+
+## Non-task PR commands
+
+Use these orchestrator-only verbs for adoption, configuration and documentation
+changes authored outside the worker task lifecycle. Task branches use `open-task`
+and `merge-task` instead.
+
+- `vmethod pr open <branch> <title> <body-file> [--draft]` opens an already-pushed
+  branch in the configured repository against `baseBranch`. The title must use
+  `<type>: <subject>` without scope. The body receives the same Markdown and
+  closing-keyword checks as posts; task markers are refused. Configured task-pattern
+  and pack branches are refused. No worker or task issue relation is created.
+- `vmethod pr merge <n>` squash-merges a same-repository, non-task PR against
+  `baseBranch`. It requires Approved board position (when the board is enabled),
+  current-head owner approval through `review <n> owner <file>` and the owner's
+  Owner review → Approved move, or current autopilot delegation with your
+  exact-head autopilot review. There is no self-approved “unimportant PR” exception
+  and no historical approval carry. Identity and permission changes, including
+  `people.yaml`, `.claude/` and CODEOWNERS, require the owner even under autopilot.
+  The normal pinned-app green-head, current-base, mergeability and stopped-worker
+  gates apply. Head/base movement and revoked approval refuse the merge.
+
+Merge follow-up journals the PR's Done/turn update and fast-forwards the clean main
+checkout on `baseBranch`, reinstalling dependencies last when configured. It does
+not close associated issues, delete the author branch or clean up task worktrees.
+Retry `pr merge <n>` after an interrupted follow-up; an already-merged PR only
+reconciles follow-up, never performs another merge.
 
 ## Task-flow commands
 
