@@ -22,6 +22,13 @@ export async function gatewayVerb(
           ctx
         );
       }
+      if ((args[0] === "parent" || args[0] === "unparent") && args.length === 3) {
+        return transport.call(
+          args[0] === "parent" ? "issueParent" : "issueUnparent",
+          { ref: args[1], epic: args[2] },
+          ctx
+        );
+      }
       if (args[0] === "edit" && args.length === 3) {
         return transport.call("issueEdit", { ref: args[1], file: args[2] }, ctx);
       }
@@ -29,16 +36,17 @@ export async function gatewayVerb(
         const labels: string[] = [];
         let estimate: number | undefined;
         let status: string | undefined;
+        let parent: string | undefined;
         for (let i = 3; i < args.length; i += 2) {
           const flag = args[i],
             value = args[i + 1];
           if (
-            !["--label", "--estimate", "--status"].includes(flag) ||
+            !["--label", "--estimate", "--status", "--parent"].includes(flag) ||
             !value ||
             value.startsWith("--")
           ) {
             throw new Error(
-              "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name]"
+              "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic]"
             );
           }
           if (flag === "--label") {
@@ -49,6 +57,12 @@ export async function gatewayVerb(
               throw new Error("Usage: --status may appear only once");
             }
             status = value;
+          }
+          if (flag === "--parent") {
+            if (parent !== undefined) {
+              throw new Error("Usage: --parent may appear only once");
+            }
+            parent = value;
           }
           if (flag === "--estimate") {
             if (
@@ -69,6 +83,7 @@ export async function gatewayVerb(
             labels,
             ...(estimate === undefined ? {} : { estimate }),
             ...(status === undefined ? {} : { status }),
+            ...(parent === undefined ? {} : { parent }),
           },
           ctx
         );
@@ -88,7 +103,7 @@ export async function gatewayVerb(
         return transport.call("issueEstimate", { ref: args[1], points: Number(args[2]) }, ctx);
       }
       throw new Error(
-        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] | issue close <n> [--comment file] | issue edit <n> <body-file> | issue block <n> <blocker> | issue unblock <n> <blocker> | issue estimate <n> <points>"
+        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic] | issue close <n> [--comment file] | issue edit <n> <body-file> | issue block <n> <blocker> | issue unblock <n> <blocker> | issue parent <n> <epic> | issue unparent <n> <epic> | issue estimate <n> <points>"
       );
     }
     case "scope-review":
