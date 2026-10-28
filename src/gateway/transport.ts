@@ -21,8 +21,9 @@ export interface Operations {
     output: string;
   };
   issueClose: { input: { ref: string; comment?: string }; output: string };
-  /** Replace a previously read issue body, refusing stale read evidence. */
-  issueEdit: { input: { ref: string; file: string }; output: string };
+  /** Replace a previously read issue body, refusing stale read evidence; the optional
+   * summary file pairs the edit with a scope review of the new body (#359). */
+  issueEdit: { input: { ref: string; file: string; scopeReview?: string }; output: string };
   /** File an issue on the central repository for a bound consumer orchestrator (#333). */
   upstreamIssue: { input: { title: string; file: string }; output: string };
   /** Comment on an existing central-repository issue under the same gate and checks. */
@@ -94,6 +95,13 @@ export interface Operations {
     };
     /** A nonempty real delivery may carry the one-line chat-rule reminder, at most once every 2h. */
     output: { events: WatchEvent[]; notice?: string; reminder?: string };
+  };
+  /** Stop this checkout's running watcher for the resolved session (#340):
+   * verify the lock holder, signal SIGTERM and wait for the lock to clear.
+   * Refusals keep the lock and signal nothing. */
+  watchStop: {
+    input: SessionInput & { force?: boolean };
+    output: Verdict;
   };
   watchMute: { input: { ref: string }; output: string };
   watchUnmute: { input: { ref: string }; output: string };

@@ -14,7 +14,9 @@ Develop an idea on an issue; build and check one delivery on a task PR.
 4. The owner's Scoping → Spec review move agrees with the discussion's conclusions.
    Rewrite the body and revise Estimate, then request [scope review](orchestrator-guide.md#scope-review).
    The owner reads that body and moves Spec review → Executing to give go. Approval is bound to
-   the body hash recorded in SCOPE REVIEW; changing the body voids it.
+   the body hash recorded in SCOPE REVIEW; changing the body voids it, so a plain
+   `issue edit` reports the stale approval and names the recovery step
+   (or pairs the re-review through `issue edit --scope-review <file>`).
 5. `open-task` (vmethod 1.0, #8) creates a draft task PR whose description is the
    complete worker prompt. Record its issue relation through the wrapper, not
    closing phrases in agent-authored prose. Both cards are Executing.

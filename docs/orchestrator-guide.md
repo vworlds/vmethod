@@ -198,7 +198,14 @@ vmethod scope-review 42 .tmp/scope-changes.md
 ```
 
 The edit refuses a body changed since your read; re-read and reconcile rather
-than overwriting it. The summary file contains a short list of changes from the
+than overwriting it. On an issue whose scope is already approved, or that already
+has an open task PR, a plain `issue edit` also prints `scope approval for #<n>
+is now stale; run scope-review <n> <summary-file> before merging` (#359): the
+body-bound approval is void until the next review. Pass the summary to the edit
+itself, `issue edit 42 .tmp/scope.md --scope-review .tmp/scope-changes.md`, to
+pair the write with the review in one journaled operation and skip `scope-review`
+as a second verb.
+The summary file contains a short list of changes from the
 original and the new Estimate with the reason for its revision (or why it is unchanged),
 without a protocol tag or hash. `scope-review` generates SCOPE REVIEW
 with the live Estimate and `body sha256: …`, keeps Spec review, assigns the owner and
@@ -501,9 +508,12 @@ it as a monitored background shell with a 30-minute timeout (`background: true`,
 plugin), so each line reaches you as it prints and the timeout is the expiry.
 The plugin stops forwarding after 100 lines while the command keeps running and
 acknowledging; treat its `[monitor stopped …]` line as an expiry: stop that
-watch and re-arm. A `quiet since the last wake-up:` digest
-always rides on a wake event. A digest without its wake line means a lost event:
-replay it with `watch --replay previous`.
+watch and re-arm. Stop it with `watch --stop` instead of a pattern kill: the
+verb verifies the lock holder before it signals, so it cannot match an
+unrelated command line, and it leaves the state directory ready to re-arm; see
+[stopping the watcher](gateway.md#watching-and-muting). A `quiet since the
+last wake-up:` digest always rides on a wake event. A digest without its wake
+line means a lost event: replay it with `watch --replay previous`.
 
 On every re-arm, run `watch --replay previous` first, then list the cards on your
 orchestrator turn and act on any you have not yet handled. Replay uses the previous
