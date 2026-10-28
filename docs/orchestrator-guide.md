@@ -296,7 +296,7 @@ incidental run. Local audit recipes and cadence stay with the project.
 
 ## Merge and release
 
-Only `merge-task` (vmethod 1.0, #8) merges. Apply the [owner approval policy](roles.md)
+Use `merge-task` (vmethod 1.0, #8) for task deliveries. Apply the [owner approval policy](roles.md)
 and repository protections. Require the PR in Approved after the owner's
 Owner review → Approved move, and merge Approved PRs top-down: the top card is
 merge first. Stop the worker first. Require green checks for the
@@ -306,6 +306,17 @@ a new run; re-running the old event still tests its old base. Conflicts go back 
 the worker. Record base-only changes after owner approval rather than implying a
 different head was reviewed. Emergency overrides must be explicit and logged and
 never replace review.
+
+For your own adoption, configuration or documentation changes outside the task
+lifecycle, push a non-task branch and run
+`vmethod pr open <branch> "<type>: <subject>" <body-file> [--draft]`.
+Hand over with `review <n> owner <file>`, then use `vmethod pr merge <n>` after the
+owner's Owner review → Approved move, or your exact-head review under a current
+autopilot delegation. Owner approval is always required: “unimportant” is not a
+self-approval path. Identity and permission files always need the owner, even
+under autopilot. The same green-head/current-base gates apply; the command
+squash-merges and fast-forwards the main checkout. See
+[non-task PR commands](gateway.md#non-task-pr-commands) for gates and recovery.
 
 Abandoning a delivery — an answered spike, a superseded approach — is the
 orchestrator's `close-task <pr> [--comment file]` (vmethod 1.0, #288), never raw
