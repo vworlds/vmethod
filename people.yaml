@@ -20,6 +20,11 @@
   type: User
   role: orchestrator
   repos: [vworlds/vecs]
+- login: Norman-NN
+  id: 349333416
+  type: User
+  role: orchestrator
+  repos: [Alfie-Labs/NNext]
 - login: alfredjpr79
   id: 280649849
   type: User
