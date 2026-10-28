@@ -1336,7 +1336,7 @@ or board transitions; only genuine conflicts beyond the limits are escalated.
    the card's Model: the cheaper family is temporary session state only.
 3. Otherwise a generic fixer starts in the PR's guarded linked worktree on the
    cheapest ungated, priced family without changing the card's Model. Its fixed prompt limits edits to conflicted
-   hunks, requires any installed merge-scope verify hook and CI, forbids merging, and requires
+   hunks (except lockfile-only regeneration below), requires any installed merge-scope verify hook and CI, forbids merging, and requires
    `[worker] BLOCKED` with conflicting files when it cannot comply.
 
 A step-2 or step-3 dispatch turns the card over to the fixer: Progress shows 💥
@@ -1369,6 +1369,21 @@ carry require the exact resolved head to
 be present in a clean worktree; the executable project verify hook runs with
 `--scope merge` for generic fixers and approval carry, without gateway credentials.
 Current-base CI must also be green. An unapproved clean update needs no worktree or hook.
+
+When **every conflicted file** is `package-lock.json`, `npm-shrinkwrap.json`,
+`yarn.lock` or `pnpm-lock.yaml` (at any path), regenerate instead of hand-merging:
+keep the `package.json` manifests as merged by git, run
+`npm install --package-lock-only` or the configured equivalent in `postMerge.install`,
+and commit the regeneration as the merge resolution. The gateway still requires
+the exact two merge parents, but replaces the conflicted-hunk rule with a check
+that every remerge-diff path is a lockfile, including newly changed lockfiles.
+It independently calls `assertLockfileInSync` (`npm ci --dry-run`, without scripts)
+in each affected lockfile directory and requires green current-base CI and any
+installed merge-scope verify hook, including for an existing step-2 session.
+An unsupported non-npm sync check fails closed; regeneration alone is not proof.
+Failure names the lockfile-only merge proof, lockfile sync check, CI, or verify hook
+condition. Mixed lockfile/source conflicts retain the ordinary conflicted-hunk rule.
+
 In this conflict-resolution path only, an absent hook is explicitly skipped, with
 one notice per persisted resolution (including retries), and CI remains mandatory.
 An installed failing hook blocks. This does not weaken the
@@ -1392,6 +1407,8 @@ Only approval verified on the pre-conflict head can be carried automatically.
 With every guard green, the gateway pins the resolved head and invokes
 `merge-task --carry-approval` with the certification
 "conflict-only resolution; remerge diff limited to conflicted hunks; verify and CI green".
+For lockfile-only regeneration the certification instead reads
+"lockfile-only resolution; remerge diff limited to lockfiles; lockfile sync, verify and CI green".
 Normal merge approval, scope, session, CI and head/base-race gates still apply.
 If automatic merging is refused, the resolution record is retained and the watcher
 emits `RESOLVED #n: auto-merge refused (<reason>); merge manually when ready` once

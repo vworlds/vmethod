@@ -1,5 +1,17 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+
+/** Empty and mixed conflict lists must retain the ordinary conflicted-hunk proof. */
+export function lockfilesOnly(files: string[]): boolean {
+  return files.length > 0 && files.every(isLockfile);
+}
+
+/** Recognize supported dependency lockfiles at any repository depth. */
+function isLockfile(file: string): boolean {
+  return ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml"].includes(
+    basename(file)
+  );
+}
 
 /** Minimal exec surface for the sync check; shared by gateway and worker-verb subprocess dependencies. */
 export interface LockfileExec {
