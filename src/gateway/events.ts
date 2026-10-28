@@ -4238,7 +4238,7 @@ export class EventLoop {
           ? this.lastBoardAt + interval
           : 0;
     const sizes = this.boardReader.sizes;
-    const signature = `${Object.values(sizes).join("/")}:${this.boardReader.cost}`;
+    const signature = `${this.boardReader.pages}/${this.boardReader.overflow}:${this.boardReader.cost}`;
     if (
       this.boardReader.cost > 0 &&
       (signature !== this.pacingReport ||

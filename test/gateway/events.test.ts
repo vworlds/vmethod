@@ -3109,7 +3109,7 @@ test("number-scoped watchers observe shared merge completion without consuming i
   expect(existsSync(join(`${f.dir}-only-24`, "open-24"))).toBe(false);
 });
 
-test("watch reports changed page sizes, measured cost and interval once per change", async () => {
+test("a one-card size change with the same cost and interval reports nothing", async () => {
   const f = setup();
   f.cards = [f.card(6, "Backlog")];
   const loop = f.loop();
@@ -3117,17 +3117,54 @@ test("watch reports changed page sizes, measured cost and interval once per chan
   expect(f.pollReports).toEqual([
     "watcher: board pages items=11 labels=10 blockers=10 sub-issues=10 reviews=10; measured cost=1 points/poll; interval=10s",
   ]);
-  f.advance();
-  await f.once(loop);
-  expect(f.pollReports).toHaveLength(1);
   f.cards.push(f.card(7, "Backlog"));
   f.advance();
   await f.once(loop);
-  expect(f.pollReports).toHaveLength(2);
-  expect(f.pollReports[1]).toContain("items=12");
+  expect(f.pollReports).toHaveLength(1);
+  f.cards.pop();
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  expect(f.reports).toEqual([]);
+});
+
+test("a measured cost change reports once", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog")];
+  const loop = f.loop();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.boardCost = 2;
   f.advance();
   await f.once(loop);
   expect(f.pollReports).toHaveLength(2);
+  expect(f.pollReports[1]).toContain("measured cost=2 points/poll");
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(2);
+  expect(f.reports).toEqual([]);
+});
+
+test("an extra board page reports while it starts and when it stops", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog")];
+  const loop = f.loop();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.cards = Array.from({ length: 12 }, (_, index) => f.card(index + 1, "Backlog"));
+  // List the twelve issues so track coverage answers without REST card reads.
+  f.issues = f.cards.map((card) => ({ number: object(card.content).number, labels: [] }));
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(2);
+  expect(f.pollReports[1]).toContain("measured cost=2 points/poll");
+  f.advance();
+  await f.once(loop);
+  // Retraining above the count ends the extra page; the report names it once.
+  expect(f.pollReports).toHaveLength(3);
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(3);
   expect(f.reports).toEqual([]);
 });
 
