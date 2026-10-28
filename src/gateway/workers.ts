@@ -99,6 +99,8 @@ interface Session {
   pendingWake?: string[];
   conflictModel?: Model;
   pendingConflict?: { model: Model; base: string };
+  /** Actual conflict prompt send boundary; cleared after the queued wake drain. */
+  conflictSentAt?: string;
   metricEvents?: MetricEvent[];
   metricEventsComplete?: boolean;
 }
@@ -425,6 +427,7 @@ export class WorkerService {
       const pending = record.pendingConflict;
       await this.switchModel(record, pending.model, "conflict-only resolution", status);
       await this.prompt(record, this.conflictLine(pending.base), "queue");
+      record.conflictSentAt = new Date(this.deps.now()).toISOString();
       delete record.pendingConflict;
       this.save(record);
       return { ...status, reason: "running", active: true };
@@ -438,6 +441,7 @@ export class WorkerService {
       const queued = await this.filterStaleWakes(record);
       if (!queued.length) {
         delete record.pendingWake;
+        delete record.conflictSentAt;
         this.save(record);
         return status;
       }
@@ -448,6 +452,7 @@ export class WorkerService {
       await this.resumeModel(record, status);
       await this.prompt(record, queued.join("\n"), "queue");
       delete record.pendingWake;
+      delete record.conflictSentAt;
       this.save(record);
       return { ...status, reason: "running", active: true };
     }
@@ -464,44 +469,16 @@ export class WorkerService {
       return [];
     }
     const firstLine = (body: string): string => body.split(/\r?\n/)[0];
-    const dispatchNote = /^\[orchestrator\] NOTE: resolving a conflict with /;
-    const turnComment =
-      /^\[orchestrator\] (?:REVIEW|OWNER REVIEW|OWNER QUESTION|ANSWER|AMENDMENT|GO|APPROVED)\b/;
-    const notes = meta.comments
-      .filter(
-        (comment) => comment.role === "orchestrator" && dispatchNote.test(firstLine(comment.body))
-      )
-      .map((comment) => comment.date)
-      .sort();
-    // Replies the dispatched conflict fixer posted for its resolution (between its
-    // dispatch NOTE and the next orchestrator turn comment) belong to the
-    // resolution, never to the task, and must not make queued wakes stale.
-    const fixerReplied = (date: string): boolean => {
-      const anchor = notes.filter((at) => at < date).at(-1);
-      if (!anchor) {
-        return false;
-      }
-      return !meta.comments.some(
-        (comment) =>
-          comment.role === "orchestrator" &&
-          turnComment.test(firstLine(comment.body)) &&
-          anchor < comment.date &&
-          comment.date < date
-      );
-    };
-    const reply = meta.comments
+    const replies = meta.comments
       .filter(
         (comment) =>
           comment.role === "worker" &&
-          /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(firstLine(comment.body)) &&
-          !fixerReplied(comment.date)
+          /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(firstLine(comment.body))
       )
-      .map((comment) => comment.date)
-      .sort()
-      .at(-1);
+      .sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
     const kept = queued.filter((text) => {
       const heading = /^\[orchestrator\] (.+) is on your PR;/.exec(text)?.[1];
-      if (!heading || !reply) {
+      if (!heading) {
         return true;
       }
       const triggered = meta.comments
@@ -513,10 +490,24 @@ export class WorkerService {
         .map((comment) => comment.date)
         .sort()
         .at(-1);
-      if (!triggered || Date.parse(triggered) >= Date.parse(reply)) {
+      if (!triggered) {
         return true;
       }
-      this.deps.report(`stale wake dropped for #${record.pr}`);
+      // A conflict-only reply cannot answer an earlier queued task wake, even
+      // when its orchestrator comment landed after the dispatch NOTE.
+      const conflictSentAt = Date.parse(record.conflictSentAt ?? "");
+      const reply = replies
+        .filter(
+          (comment) =>
+            !(Date.parse(triggered) < conflictSentAt && Date.parse(comment.date) >= conflictSentAt)
+        )
+        .at(-1);
+      if (!reply || Date.parse(triggered) >= Date.parse(reply.date)) {
+        return true;
+      }
+      this.deps.report(
+        `stale wake dropped for #${record.pr}: ${heading} (${triggered}) superseded by ${firstLine(reply.body)} at ${reply.date}`
+      );
       return false;
     });
     return kept.length === queued.length ? queued : kept;
@@ -1174,6 +1165,8 @@ export class WorkerService {
         this.save(record);
         await this.switchModel(record, model, "conflict-only resolution", status!);
         await this.prompt(record, line, "queue");
+        record.conflictSentAt = new Date(this.deps.now()).toISOString();
+        this.save(record);
       });
       await this.conflictNote(pr, base, 2, model.family);
       return 2;

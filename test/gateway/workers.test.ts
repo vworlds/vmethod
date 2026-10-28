@@ -1067,6 +1067,69 @@ test.each(["idle drain", "stop"])(
 );
 
 const staleTimes = ["2026-01-01T00:01:00Z", "2026-01-01T00:02:00Z", "2026-01-01T00:03:00Z"];
+test.each(["queued", "direct"])(
+  "%s conflict send preserves REVIEW round 2 across the fixer's READY",
+  async (mode) => {
+    const reviewWake =
+      "[orchestrator] REVIEW round 2 is on your PR; read it with vmethod read pr 31 --new and act.";
+    const conflictLine =
+      "CONFLICT: merge origin/dev, resolve keeping both sides' behaviour, push, wait-checks, READY";
+    const busy = measuredStatus().map((request) =>
+      request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+    );
+    const conflictPrompt: Request = {
+      path: "/api/session/ses_fake/prompt",
+      method: "POST",
+      body: { text: conflictLine, delivery: "queue" },
+    };
+    const f = fixture(
+      [
+        ...start,
+        ...(mode === "queued" ? busy : [...measuredStatus(), conflictPrompt]),
+        ...busy,
+        ...(mode === "queued" ? [...measuredStatus(), conflictPrompt] : []),
+        ...measuredStatus(),
+        {
+          path: "/api/session/ses_fake/prompt",
+          method: "POST",
+          body: { text: reviewWake, delivery: "queue" },
+        },
+      ],
+      true
+    );
+    const sentAt = "2026-01-01T00:03:00.000Z";
+    f.deps.now = () => Date.parse(sentAt);
+    f.hooks.modelComment = vi.fn(async (_pr, body) => {
+      f.meta.comments.push({ body, role: "orchestrator", date: staleTimes[0] });
+    });
+    await f.service.command(["start", "31"]);
+    await f.service.resolveConflict(31, "dev", ["conflict.txt"]);
+    f.meta.comments.push({
+      body: "[orchestrator] REVIEW round 2\n\nRequested task changes",
+      role: "orchestrator",
+      date: staleTimes[1],
+    });
+    await f.service.resume(31, reviewWake);
+    if (mode === "queued") {
+      expect(f.record().conflictSentAt).toBeUndefined();
+      await f.service.watchStatus(31);
+    }
+    expect(f.prompts.at(-1)).toBe(conflictLine);
+    expect(f.record().conflictSentAt).toBe(sentAt);
+    f.meta.comments.push({
+      body: "[worker] READY FOR REVIEW (round 3)",
+      role: "worker",
+      date: "2026-01-01T00:04:00Z",
+    });
+    await f.service.watchStatus(31);
+    expect(f.prompts.slice(-2)).toEqual([conflictLine, reviewWake]);
+    expect(f.record().pendingWake).toBeUndefined();
+    expect(f.record().conflictSentAt).toBeUndefined();
+    expect(f.deps.report).not.toHaveBeenCalled();
+    f.done();
+  }
+);
+
 function staleComments(): TaskMetadata["comments"] {
   return [
     { body: "[orchestrator] ANSWER\n\nthe answer text", role: "orchestrator", date: staleTimes[0] },
@@ -1078,6 +1141,60 @@ function staleComments(): TaskMetadata["comments"] {
     },
   ];
 }
+
+test.each([
+  { trigger: "00:01:00Z", reply: "00:02:00Z", kept: false },
+  { trigger: "00:01:00Z", reply: "00:03:00Z", kept: true },
+  { trigger: "00:03:00Z", reply: "00:04:00Z", kept: false },
+  { trigger: "00:04:00Z", reply: "00:05:00Z", kept: false },
+])(
+  "conflict send boundary: $trigger → $reply keeps wake: $kept",
+  async ({ trigger, reply, kept }) => {
+    const wake =
+      "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 --new and act.";
+    const f = fixture([
+      ...start,
+      ...measuredStatus().map((request) =>
+        request.path === "/api/session/active" ? { ...request, data: { ses_fake: {} } } : request
+      ),
+      ...measuredStatus(),
+      ...(kept
+        ? [
+            {
+              path: "/api/session/ses_fake/prompt",
+              method: "POST",
+              body: { text: wake, delivery: "queue" },
+            },
+          ]
+        : []),
+    ]);
+    await f.service.command(["start", "31"]);
+    await f.service.resume(31, wake);
+    // Simulate a restarted gateway loading the persisted actual-send boundary.
+    writeFileSync(
+      join(f.root, "state/vmethod/example-state/workers/31.json"),
+      JSON.stringify({ ...f.record(), conflictSentAt: "2026-01-01T00:03:00.000Z" })
+    );
+    const triggeredAt = `2026-01-01T${trigger}`;
+    const repliedAt = `2026-01-01T${reply}`;
+    f.meta.comments = [
+      { body: "[orchestrator] ANSWER", role: "orchestrator", date: triggeredAt },
+      { body: "[worker] BLOCKED", role: "worker", date: repliedAt },
+    ];
+    await f.service.watchStatus(31);
+    expect(f.prompts.includes(wake)).toBe(kept);
+    expect(f.record().pendingWake).toBeUndefined();
+    expect(f.record().conflictSentAt).toBeUndefined();
+    if (kept) {
+      expect(f.deps.report).not.toHaveBeenCalled();
+    } else {
+      expect(f.deps.report).toHaveBeenCalledWith(
+        `stale wake dropped for #31: ANSWER (${triggeredAt}) superseded by [worker] BLOCKED at ${repliedAt}`
+      );
+    }
+    f.done();
+  }
+);
 
 test("an idle drain drops wakes older than the latest reply, while a conflict wake is delivered", async () => {
   const answerWake =
@@ -1122,6 +1239,7 @@ test("an idle drain drops wakes older than the latest reply, while a conflict wa
   );
   f.meta.model = "sol";
   f.meta.comments = staleComments();
+  f.deps.now = () => Date.parse("2026-01-01T00:04:00Z");
   await f.service.command(["start", "31", "--owner-approved"]);
   expect(await f.service.resume(31, answerWake)).toBe("queued for #31");
   expect(await f.service.resume(31, reviewWake)).toBe("queued for #31");
@@ -1140,7 +1258,9 @@ test("an idle drain drops wakes older than the latest reply, while a conflict wa
   expect(f.prompts).not.toContain(answerWake);
   expect(f.record().pendingWake).toBeUndefined();
   expect(f.record().model.family).toBe("sol");
-  expect(f.deps.report).toHaveBeenCalledWith("stale wake dropped for #31");
+  expect(f.deps.report).toHaveBeenCalledWith(
+    `stale wake dropped for #31: ANSWER (${staleTimes[0]}) superseded by [worker] READY FOR REVIEW (round 1) at ${staleTimes[1]}`
+  );
   f.done();
 });
 
@@ -1225,6 +1345,7 @@ test("fixer replies do not make queued wakes stale: the queued ANSWER is deliver
   f.meta.comments = [
     { body: "[orchestrator] ANSWER\n\nthe answer text", role: "orchestrator", date: times[0] },
   ];
+  f.deps.now = () => Date.parse("2026-01-01T00:01:30Z");
   // Gateway notes land on the thread when posted, so the fake mirrors them into metadata.
   let posted = 0;
   f.hooks.modelComment = vi.fn(async (_pr: number, body: string) => {
@@ -1271,7 +1392,9 @@ test("fixer replies do not make queued wakes stale: the queued ANSWER is deliver
   await f.service.watchStatus(31);
   expect(f.prompts.at(-1)).toBe(answerWake);
   expect(f.record().pendingWake).toBeUndefined();
-  expect(f.deps.report).toHaveBeenCalledWith("stale wake dropped for #31");
+  expect(f.deps.report).toHaveBeenCalledWith(
+    `stale wake dropped for #31: REVIEW round 2 (${times[3]}) superseded by [worker] READY FOR REVIEW (round 2) at ${times[4]}`
+  );
   f.done();
 });
 
