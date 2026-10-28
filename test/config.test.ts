@@ -5,6 +5,35 @@ import { configValue, getConfig, loadYaml } from "../src/config.js";
 import { validProject } from "./helpers.js";
 import { check } from "../src/check.js";
 
+test("quota configuration defaults, overrides and validation", () => {
+  const root = validProject();
+  expect(getConfig(root, {}).limits).toEqual({ enabled: true, atRisk: 15, pollSeconds: 300 });
+  expect(
+    getConfig(root, {
+      VMETHOD_LIMITS_ENABLED: "false",
+      VMETHOD_LIMITS_AT_RISK: "20",
+      VMETHOD_LIMITS_POLL_SECONDS: "60",
+    }).limits
+  ).toEqual({ enabled: false, atRisk: 20, pollSeconds: 60 });
+  for (const [key, value] of [
+    ["AT_RISK", "-1"],
+    ["AT_RISK", "101"],
+    ["POLL_SECONDS", "0"],
+    ["POLL_SECONDS", "1.5"],
+    ["ENABLED", "yes"],
+  ]) {
+    expect(() => getConfig(root, { [`VMETHOD_LIMITS_${key}`]: value })).toThrow("vmethod.yaml:");
+  }
+  const file = join(root, "models.yaml");
+  writeFileSync(
+    file,
+    "- family: sol\n  kind: opencode\n  model: custom/model\n  provider: codexbal\n  gate: none\n  tier: standard\n"
+  );
+  expect(loadYaml(root, "models")).toMatchObject([{ provider: "codexbal" }]);
+  writeFileSync(file, readFileSync(file, "utf8").replace("codexbal", "invalid/provider"));
+  expect(() => loadYaml(root, "models")).toThrow("models.yaml:");
+});
+
 test.each([undefined, "auto-", ""])(
   "worker worktree prefix accepts %j and defaults to auto-",
   (prefix) => {

@@ -501,6 +501,7 @@ worker model <pr> <family> [--owner-approved] [--reason category] [--why details
 worker models
 worker health
 suggest-model <issue>
+limits
 grade <delivery-pr> [points]
 ```
 
@@ -661,14 +662,71 @@ with `worktree gone; prompt not sent`, and usage capture plus grading fall back
 to the record's stored usage. `worker start` restarts a worktree-gone record
 like a lost session, and `worker stop` clears `pendingConflict` but skips the
 interrupt, returning `#<pr> already stopped (worktree gone)`. Quota/provider failures
-print `QUOTA <family>` plus that family's ordered `fallback` list from `models.yaml`.
-They never trigger an automatic switch. The shared `OpencodeClient.status`
+print the responsible family and its ordered `fallback` list from `models.yaml`.
+Structured quota failures also trigger [automatic recovery](#subscription-headroom-and-quota-recovery).
+The shared `OpencodeClient.status`
 preserves the watcher's directory-only permission/failure contract; its explicit
 session-id overload returns the detailed worker-control reasons. `worker status`
 without a PR never aborts on one failing record: each record is read and
 rendered on its own, a failed record prints `#<pr> error: <reason>` and the loop
 continues to the later records, and the command exits non-zero when any record
 failed.
+
+### Subscription headroom and quota recovery
+
+Run `vmethod limits` as the orchestrator to inspect each family's provider, windows,
+remaining percentages, at-risk flag and slack. `OpencodeClient.limits()` calls
+`POST /api/rpc/oc-limits/limits` with `{"input":{}}` using the existing OpenCode
+credentials, reads `output`, and caches success or unavailability for 60 seconds.
+The [oc-limits plugin is optional](adoption.md). A missing route, `RpcError`,
+unsupported/stale/rate-limited provider or unusable reading means **unknown**, not
+zero quota. Unknown is never at risk and carries no positive headroom preference.
+Provider mapping defaults to the `model:` prefix in `models.yaml`; set `provider:`
+on a family only when its quota adapter uses another provider id.
+
+Configure `limits: { enabled: true, atRisk: 15, pollSeconds: 300 }` in
+`vmethod.yaml` (these are the defaults). A provider is at risk when its shortest
+usable reported window has strictly less than `atRisk` percent left. When
+durations are absent, the adapter's shortest-first ordering is retained.
+Model-specific windows retain their model qualifier in the summary. Slack is remaining
+percentage minus the elapsed percentage of the window; positive slack is shown
+as `expiring unused`. Missing duration/reset timing leaves slack unknown rather
+than inventing a window start. Expired windows are not usable readings.
+`suggest-model`, the `open-task` advisory and `worker models` append headroom;
+`open-task` and `worker start` warn about an at-risk selection but never refuse it.
+Owner gates remain unchanged.
+
+While workers run, the watcher checks headroom every `limits.pollSeconds` without
+GitHub requests. It emits one event at each observed crossing:
+
+```text
+QUOTA ollama-cloud session 0% left (resets 2026-10-29T00:00:00.000Z); at risk: #378 (glm)
+QUOTA ollama-cloud recovered (session 80%)
+```
+
+When an idle turn's structured error type is `provider.quota` or
+`provider.free-limit`, the gateway tries the failed family's `fallback:` list in
+order. It skips at-risk families, families that quota-failed since their
+provider's last known reset, and owner-gated families without verified approval.
+Unknown reset timing keeps a quota failure excluded until a reset can be proved.
+It switches the existing session and re-sends queued wakes, or the interrupted
+user prompt when no wakes remain. It records the `quota` switch reason and emits:
+
+```text
+QUOTA #378: glm quota-stopped; switched to sol and resumed
+QUOTA #378: glm quota-stopped; no eligible fallback
+```
+
+No eligible fallback changes nothing. Other provider errors do not automatically
+switch. Recovery respects closed/merged tasks, holds, blockers and owner summons;
+setting `limits.enabled: false` disables quota polling and automatic recovery.
+A manual `worker model` switch away from a quota-stopped session also resumes its
+prompt. Status attributes a lingering failed-turn diagnostic to the previous
+model instead of blaming the newly selected family. Conflict-only dispatch skips
+at-risk and quota-failed families too, falling back to the task's own model; queued
+conflict turns re-check headroom before switching.
+
+### Permission waits
 
 For permission waits, `worker status` and the `WORKER … waits for a permission`
 event show each request's type and path or command pattern from

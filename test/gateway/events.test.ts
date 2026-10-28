@@ -38,6 +38,8 @@ import { WriteJournal } from "../../src/gateway/write-journal.js";
 import ownerReviews from "../fixtures/github/owner-reviews.json" with { type: "json" };
 import orchestratorReviews from "../fixtures/github/orchestrator-reviews.json" with { type: "json" };
 import { ConflictService, type ConflictHooks } from "../../src/gateway/conflicts.js";
+import { decodeLimits } from "../../src/gateway/limits.js";
+import quotaRecording from "../fixtures/limits/2026-10-28.json" with { type: "json" };
 
 // Issue.blockedBy connection shape verified live by the orchestrator on PR 280.
 function blockers(
@@ -3835,6 +3837,65 @@ test("STALE after my review and SILENT after inactivity are distinct, once per a
     await f.ack(loop, events);
   }
   expect(wakes.map((e) => e.kind)).toEqual(["silent"]);
+});
+
+test("watcher polls quota only while running, respects its clock, emits crossings and recovery without GitHub I/O", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  f.workerStatus = async () => ({
+    reason: "running",
+    active: true,
+    family: "glm",
+    provider: "ollama-cloud",
+  });
+  let readings = decodeLimits(quotaRecording, Date.parse(quotaRecording.checkedAt));
+  const limits = vi.fn(async () => readings);
+  f.workerLimits = limits;
+  const loop = f.loop();
+  expect((await f.once(loop)).map((e) => e.line)).toEqual([
+    expect.stringContaining("QUOTA ollama-cloud session 0% left"),
+  ]);
+  expect(limits).toHaveBeenCalledTimes(1);
+  f.advance(299000);
+  expect(await f.once(loop)).toEqual([]);
+  expect(limits).toHaveBeenCalledTimes(1);
+  f.advance(1000);
+  expect(await f.once(loop)).toEqual([]);
+  expect(limits).toHaveBeenCalledTimes(2);
+  readings = readings.map((r) =>
+    r.provider === "ollama-cloud"
+      ? { ...r, atRisk: false, windows: [{ ...r.windows[0], remainingPercent: 80 }] }
+      : r
+  );
+  f.advance(300000);
+  expect((await f.once(loop)).map((e) => e.line)).toEqual([
+    "QUOTA ollama-cloud recovered (session 80%)",
+  ]);
+  f.workerStatus = async () => ({ reason: "permission-wait", active: false });
+  for (let i = 0; i < 6; i++) {
+    await f.once(loop);
+  }
+  const calls = limits.mock.calls.length;
+  f.advance(300000);
+  await f.once(loop);
+  expect(limits).toHaveBeenCalledTimes(calls);
+});
+
+test("watcher delivers automatic quota recovery as an event without a failed-turn event", async () => {
+  const f = setup();
+  f.task();
+  f.worktree();
+  f.workerStatus = async () => ({
+    reason: "running",
+    active: true,
+    family: "sol",
+    provider: "codexbal",
+    quotaEvent: "QUOTA #24: glm quota-stopped; switched to sol and resumed",
+  });
+  expect((await f.once(f.loop())).map((e) => e.line)).toEqual([
+    "QUOTA #24: glm quota-stopped; switched to sol and resumed",
+  ]);
 });
 
 test("recorded-worker poll failures are once per status and do not block a healthy task", async () => {

@@ -1,0 +1,104 @@
+{
+  "checkedAt": "2026-10-28T22:32:53.092Z",
+  "providers": [
+    {
+      "providerID": "opencode",
+      "providerName": "OpenCode",
+      "status": "unsupported",
+      "message": "No quota adapter implemented for this provider."
+    },
+    {
+      "providerID": "ollama-cloud",
+      "providerName": "Ollama Cloud",
+      "status": "ok",
+      "credentialSource": "opencode",
+      "observedAt": "2026-10-28T22:32:53.092Z",
+      "windows": [
+        {
+          "id": "session",
+          "scope": "account",
+          "usedPercent": 100,
+          "remainingPercent": 0,
+          "resetsAt": "2026-10-29T00:00:00.000Z",
+          "windowSeconds": null
+        },
+        {
+          "id": "weekly",
+          "scope": "account",
+          "usedPercent": 82.18,
+          "remainingPercent": 17.82,
+          "resetsAt": "2026-11-02T00:00:00.000Z",
+          "windowSeconds": null
+        }
+      ],
+      "cached": false
+    },
+    {
+      "providerID": "claude-code",
+      "providerName": "Claude Code",
+      "status": "ok",
+      "credentialSource": "claude-code",
+      "observedAt": "2026-10-28T22:32:52.813Z",
+      "windows": [
+        {
+          "id": "five_hour",
+          "scope": "account",
+          "usedPercent": 8,
+          "remainingPercent": 92,
+          "resetsAt": "2026-10-29T02:10:00.708Z",
+          "windowSeconds": 18000
+        },
+        {
+          "id": "seven_day",
+          "scope": "account",
+          "usedPercent": 42,
+          "remainingPercent": 58,
+          "resetsAt": "2026-11-01T11:00:00.708Z",
+          "windowSeconds": 604800
+        },
+        {
+          "id": "seven_day",
+          "scope": "model",
+          "usedPercent": 34,
+          "remainingPercent": 66,
+          "resetsAt": "2026-11-01T10:59:59.708Z",
+          "windowSeconds": 604800,
+          "model": "Fable"
+        }
+      ],
+      "cached": false
+    },
+    {
+      "providerID": "codexbal",
+      "providerName": "codexbal",
+      "status": "ok",
+      "observedAt": "2026-10-28T22:32:27.000Z",
+      "windows": [
+        {
+          "id": "five_hour",
+          "scope": "pool",
+          "remainingPercent": 78,
+          "usedPercent": 22,
+          "windowSeconds": 18000,
+          "resetsAt": null
+        },
+        {
+          "id": "seven_day",
+          "scope": "pool",
+          "remainingPercent": 85.3333,
+          "usedPercent": 14.6667,
+          "windowSeconds": 604800,
+          "resetsAt": null
+        }
+      ],
+      "nextReplenishmentAt": "2026-10-28T23:40:26.000Z",
+      "cached": false
+    },
+    {
+      "providerID": "thinkbox",
+      "providerName": "ThinkBox (local)",
+      "status": "unsupported",
+      "message": "No quota adapter implemented for this provider."
+    }
+  ]
+}

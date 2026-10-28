@@ -1,5 +1,6 @@
 import { lockHolder } from "./lock-holder.js";
 import { renderPermissions } from "./permission-detail.js";
+import { QuotaCrossings, limitsConfig, type ProviderLimits } from "./limits.js";
 import {
   appendFileSync,
   closeSync,
@@ -121,6 +122,7 @@ export interface LoopHost {
   filter: PeopleFilter;
   github: GitHubClient;
   workerStatus: (pr: number) => Promise<WorkerSessionStatus>;
+  workerLimits?: () => Promise<ProviderLimits[]>;
   /** Registered worktrees of the worker checkout by branch; a PR without one has no worker. */
   workerTrees?: () => Promise<{ path: string; branch: string }[]>;
   workerSend?: (pr: number, text: string) => Promise<string | void>;
@@ -426,6 +428,12 @@ export class EventLoop {
   private nextSignature = "";
   private nextAt = 0;
   private opencode?: OpencodeClient;
+  private quotaCrossings?: QuotaCrossings;
+  private readonly quotaWorkers = new Map<
+    number,
+    { pr: number; family: string; provider: string }
+  >();
+  private quotaPolledAt = -Infinity;
   private opencodeError = "";
   private launchedIssues = new Set<number>();
   private workerPollErrors = new Map<number, Set<string>>();
@@ -1393,6 +1401,7 @@ export class EventLoop {
       remove(join(this.dir, "unestimated.json"));
     }
     const workersOk = await this.step("worker sessions", () => this.pollWorkers());
+    await this.step("worker quotas", () => this.pollQuotas());
     await this.step("budget", () => this.checkBudget());
     ok = ok && pullsOk && commentsOk && itemsOk && assignedOk && boardOk && workersOk;
     if (commentsOk && itemsOk && (!this.firstRun || ok)) {
@@ -3924,6 +3933,18 @@ export class EventLoop {
       return cached;
     }
     const status = await this.host.workerStatus(number);
+    if (status.active && status.family && status.provider) {
+      this.quotaWorkers.set(number, {
+        pr: number,
+        family: status.family,
+        provider: status.provider,
+      });
+    } else {
+      this.quotaWorkers.delete(number);
+    }
+    if (status.quotaEvent) {
+      this.emit(`quota-${number}-${this.host.deps.now()}`, "worker", status.quotaEvent);
+    }
     this.cycleWorkers.set(number, status);
     return status;
   }
@@ -4057,6 +4078,34 @@ export class EventLoop {
       );
       return null;
     }
+  }
+
+  private async pollQuotas(): Promise<void> {
+    const config = limitsConfig(this.host.config);
+    const active = [...this.quotaWorkers.values()].filter((w) =>
+      this.inprogress.some((pr) => pr.number === w.pr)
+    );
+    if (
+      !config.enabled ||
+      !active.length ||
+      !this.host.workerLimits ||
+      this.host.deps.now() - this.quotaPolledAt < config.pollSeconds * 1000
+    ) {
+      return;
+    }
+    this.quotaPolledAt = this.host.deps.now();
+    if (!this.quotaCrossings) {
+      const raw = this.readMarker("quota-risk");
+      const previous: unknown = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(previous) || previous.some((p) => typeof p !== "string")) {
+        throw new Error("Invalid quota crossing state");
+      }
+      this.quotaCrossings = new QuotaCrossings(previous);
+    }
+    for (const line of this.quotaCrossings.update(await this.host.workerLimits(), active)) {
+      this.emit(`quota-${key(line)}-${this.host.deps.now()}`, "worker", line);
+    }
+    this.writeMarker("quota-risk", JSON.stringify(this.quotaCrossings.snapshot()));
   }
 
   private async pollWorkers(): Promise<void> {

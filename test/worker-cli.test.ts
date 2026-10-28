@@ -16,6 +16,7 @@ import { actor, people } from "./gateway/helpers.js";
 import { parse, stringify } from "yaml";
 import recorded from "./fixtures/github/learnings-recorded.json" with { type: "json" };
 import { stub } from "../src/registry.js";
+import quotaRecording from "./fixtures/limits/2026-10-28.json" with { type: "json" };
 
 const require = createRequire(import.meta.url);
 let bundle: string;
@@ -57,6 +58,51 @@ test("board migrate failures print a JSON error and exit nonzero", () => {
   expect(result.status).toBe(1);
   expect(JSON.parse(result.stderr)).toEqual({ error: expect.any(String) });
 });
+
+test.each(["orchestrator", "worker"])(
+  "limits runs through the real CLI and enforces %s authority",
+  (role) => {
+    const f = cliFixture();
+    writeFileSync(join(f.root, "people.yaml"), stringify(people));
+    writeFileSync(
+      join(f.root, "models.yaml"),
+      stringify([
+        {
+          family: "sol",
+          model: "custom/model",
+          provider: "codexbal",
+          kind: "opencode",
+          gate: "none",
+          tier: "standard",
+        },
+      ])
+    );
+    const preload = join(f.root, "limits-rpc.mjs");
+    writeFileSync(
+      preload,
+      `globalThis.fetch = async (url, init) => {
+    if (String(url) === 'https://api.github.com/graphql' && JSON.parse(init.body).query.includes('GatewayIdentity')) return Response.json({data:{viewer:${JSON.stringify(actor(role === "orchestrator" ? 2 : 1))}}});
+    if (${JSON.stringify(role)} === 'orchestrator' && String(url) === 'https://opencode.invalid/api/rpc/oc-limits/limits' && init.method === 'POST' && init.body === '{"input":{}}') return Response.json({output:${JSON.stringify(quotaRecording)}});
+    throw new Error('Unexpected URL: '+url);
+  };`
+    );
+    const result = f.run(["limits"], ["--import", preload], {
+      VMETHOD_ROLE: role,
+      GH_CONFIG_DIR: ghConfig("fake-token"),
+      OPENCODE_BASE_URL: "https://opencode.invalid",
+      OPENCODE_SERVER_USERNAME: "user",
+      OPENCODE_SERVER_PASSWORD: "password",
+    });
+    if (role === "orchestrator") {
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("sol: codexbal five_hour 78%");
+      expect(result.stdout).toContain("seven_day 85.3333%");
+    } else {
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("denied");
+    }
+  }
+);
 
 test("annotation batch failures reach the real CLI with a summary and non-zero exit", () => {
   const f = cliFixture(10000);
