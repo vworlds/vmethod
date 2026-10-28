@@ -32,6 +32,8 @@ export class WatchBoard {
   /** Board page and overflow queries the last read needed; boundary changes report. */
   pages = 0;
   overflow = 0;
+  /** Monotonic read-attempt id; pacing report consumers count each read once. */
+  readId = 0;
 
   constructor(private readonly github: Pick<GitHubClient, "graphql">) {}
 
@@ -41,6 +43,7 @@ export class WatchBoard {
     number: number,
     activity: { issue: string; pr: string }
   ): Promise<{ readme: string; nodes: ObjectData[] }> {
+    this.readId++;
     this.cost = 0;
     this.pages = 0;
     this.overflow = 0;

@@ -3128,20 +3128,56 @@ test("a one-card size change with the same cost and interval reports nothing", a
   expect(f.reports).toEqual([]);
 });
 
-test("a measured cost change reports once", async () => {
+test("a cost change reports once after holding for three consecutive polls", async () => {
   const f = setup();
   f.cards = [f.card(6, "Backlog")];
   const loop = f.loop();
   await f.once(loop);
   expect(f.pollReports).toHaveLength(1);
+  // Baseline cost=1; costs 2, 3, 3, 3 report once, at the third 3.
   f.boardCost = 2;
   f.advance();
   await f.once(loop);
-  expect(f.pollReports).toHaveLength(2);
-  expect(f.pollReports[1]).toContain("measured cost=2 points/poll");
+  expect(f.pollReports).toHaveLength(1);
+  f.boardCost = 3;
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
   f.advance();
   await f.once(loop);
   expect(f.pollReports).toHaveLength(2);
+  expect(f.pollReports[1]).toContain("measured cost=3 points/poll");
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(2);
+  expect(f.reports).toEqual([]);
+});
+
+test("a cost change that flickers without holding reports nothing", async () => {
+  const f = setup();
+  f.cards = [f.card(6, "Backlog")];
+  const loop = f.loop();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  // Baseline cost=1; costs 2, 1, 2, 2 report nothing.
+  f.boardCost = 2;
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.boardCost = 1;
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.boardCost = 2;
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
+  f.advance();
+  await f.once(loop);
+  expect(f.pollReports).toHaveLength(1);
   expect(f.reports).toEqual([]);
 });
 
