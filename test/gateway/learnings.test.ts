@@ -1154,6 +1154,62 @@ test("report reads local JSONL or the bundled records and fails for missing scan
   expect(JSON.parse(await service.command({ action: "report", json: true })).deliveries).toBe(2);
 }, 15000);
 
+test.each(["shared", "pending"] as const)(
+  "submission refuses conflicting %s copies while report excludes them",
+  async (source) => {
+    const first = record({ usd: 1 });
+    const second = record({ usd: 2 });
+    const chunk = "learnings/models/vworlds-vecs/308-308-abcdef012345.jsonl";
+    const f = setup(
+      source === "shared"
+        ? { shared: JSON.stringify(first), chunks: { [chunk]: JSON.stringify(second) } }
+        : { legacyPending: true }
+    );
+    if (source === "pending") {
+      f.files.clear();
+      f.files.set(chunk, JSON.stringify(first));
+      f.files.set(chunk.replace("abcdef012345", "abcdef012346"), JSON.stringify(second));
+    }
+    await expect(f.service.command({ action: "submit" })).rejects.toThrow(
+      "Conflicting shared delivery vworlds/vecs#308 (usd)"
+    );
+    expect(f.reports).toEqual([]);
+    expect(f.writes).toEqual([]);
+    expect(f.unexpected).toEqual([]);
+    mkdirSync(join(f.root, "learnings/models"), { recursive: true });
+    writeFileSync(join(f.root, "learnings/models/first.jsonl"), JSON.stringify(first));
+    writeFileSync(join(f.root, "learnings/models/second.jsonl"), JSON.stringify(second));
+    const report = JSON.parse(await f.service.command({ action: "report", json: true }));
+    expect(report.deliveries).toBe(0);
+    expect(f.reports).toEqual([
+      "learnings: conflicting records for vworlds/vecs#308 (usd); excluded",
+    ]);
+  }
+);
+
+test.each(["shared", "pending"] as const)(
+  "submission still accepts fill-ins in %s copies",
+  async (source) => {
+    const chunk = "learnings/models/vworlds-vecs/308-308-abcdef012345.jsonl";
+    const first = record({ usd: null });
+    const second = record({ usd: 1.03 });
+    const f = setup(
+      source === "shared"
+        ? { shared: JSON.stringify(first), chunks: { [chunk]: JSON.stringify(second) } }
+        : { legacyPending: true }
+    );
+    if (source === "pending") {
+      f.files.clear();
+      f.files.set(chunk, JSON.stringify(first));
+      f.files.set(chunk.replace("abcdef012345", "abcdef012346"), JSON.stringify(second));
+    }
+    expect(await f.service.command({ action: "submit" })).toContain("No new learnings to submit");
+    expect(f.reports).toEqual([]);
+    expect(f.writes).toEqual([]);
+    expect(f.unexpected).toEqual([]);
+  }
+);
+
 test.each([false, true])(
   "delivery union fills null and absent costs in either order (reverse=%s)",
   async (reverse) => {

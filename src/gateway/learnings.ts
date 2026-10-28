@@ -219,7 +219,7 @@ export class LearningsService {
     if (!texts.length) {
       throw new Error("No model-log inputs available");
     }
-    return unionRecords(texts, (message) => this.deps.report(message));
+    return unionRecords(texts, "read", (message) => this.deps.report(message));
   }
 
   /** #339: one family's graded-task aggregate for open-task's advisory lines; undefined without
@@ -263,7 +263,7 @@ export class LearningsService {
       throw new Error("No model-log inputs available for report");
     }
     const report = learningReport(
-      unionRecords(texts, (message) => this.deps.report(message)),
+      unionRecords(texts, "read", (message) => this.deps.report(message)),
       input.family,
       input.kind
     );
@@ -828,7 +828,7 @@ export class LearningsService {
         throw new Error("Open learning PR pagination limit reached");
       }
     }
-    const records = unionRecords(texts, (message) => this.deps.report(message));
+    const records = unionRecords(texts, "write", (message) => this.deps.report(message));
     if (records.some((record) => record.repo.toLowerCase() !== repo)) {
       throw new Error("Pending model log contains a foreign repository");
     }
@@ -840,7 +840,7 @@ export class LearningsService {
     for (const path of paths.filter((path) => path.endsWith(".jsonl") && !isAnnotationPath(path))) {
       texts.push(await this.requiredContent(repo, path, ref));
     }
-    const records = unionRecords(texts, (message) => this.deps.report(message));
+    const records = unionRecords(texts, "write", (message) => this.deps.report(message));
     if (source !== undefined && records.some((record) => record.repo.toLowerCase() !== source)) {
       throw new Error("Shared model log contains a foreign repository");
     }
@@ -882,9 +882,9 @@ export class LearningsService {
     if (existsSync(staging)) {
       deliveryTexts.push(readFileSync(staging, "utf8"));
     }
-    const records = unionRecords(deliveryTexts, (message) => this.deps.report(message)).filter(
-      (record) => !family || record.segments.some((segment) => segment.family === family)
-    );
+    const records = unionRecords(deliveryTexts, "read", (message) =>
+      this.deps.report(message)
+    ).filter((record) => !family || record.segments.some((segment) => segment.family === family));
     return [
       ...(records.length
         ? [
@@ -930,7 +930,12 @@ export class LearningsService {
   }
 }
 
-function unionRecords(texts: string[], warn: (message: string) => void): ModelRecord[] {
+/** Readers retain usable evidence; writers must not silently omit a conflicting delivery. */
+function unionRecords(
+  texts: string[],
+  mode: "read" | "write",
+  warn: (message: string) => void
+): ModelRecord[] {
   const records = new Map<string, ModelRecord>();
   const conflicts = new Set<string>();
   for (const text of texts) {
@@ -949,9 +954,13 @@ function unionRecords(texts: string[], warn: (message: string) => void): ModelRe
           merged[field] = fillUnknown(left, right, field, fields);
         }
         if (fields.length) {
+          const delivery = `${key} (${fields.sort().join(", ")})`;
+          if (mode === "write") {
+            throw new Error(`Conflicting shared delivery ${delivery}`);
+          }
           records.delete(key);
           conflicts.add(key);
-          warn(`learnings: conflicting records for ${key} (${fields.sort().join(", ")}); excluded`);
+          warn(`learnings: conflicting records for ${delivery}; excluded`);
           continue;
         }
         records.set(key, merged as unknown as ModelRecord);

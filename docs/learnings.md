@@ -110,6 +110,9 @@ are filled from another copy, including segment costs. Different non-null values
 exclude only that delivery, with one `learnings: conflicting records for <repo>#<pr>
 (<fields>); excluded` diagnostic per read. Other deliveries still contribute. This
 does not edit shared files; backfills reach them through the normal submission pipeline.
+Submission write paths still merge fill-ins, but refuse real conflicts with
+`Conflicting shared delivery <repo>#<pr> (<fields>)` instead of publishing an
+incomplete set of deliveries.
 
 Plain-text reports use readable grouped lists and two-decimal ratios; `--json`
 retains full numeric precision. Reports sum delivery rounds and final points. Rounds per point is `null`/`n/a` when
