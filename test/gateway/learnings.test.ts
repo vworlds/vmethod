@@ -1154,6 +1154,143 @@ test("report reads local JSONL or the bundled records and fails for missing scan
   expect(JSON.parse(await service.command({ action: "report", json: true })).deliveries).toBe(2);
 }, 15000);
 
+test.each(["shared", "pending"] as const)(
+  "submission refuses conflicting %s copies while report excludes them",
+  async (source) => {
+    const first = record({ usd: 1 });
+    const second = record({ usd: 2 });
+    const chunk = "learnings/models/vworlds-vecs/308-308-abcdef012345.jsonl";
+    const f = setup(
+      source === "shared"
+        ? { shared: JSON.stringify(first), chunks: { [chunk]: JSON.stringify(second) } }
+        : { legacyPending: true }
+    );
+    if (source === "pending") {
+      f.files.clear();
+      f.files.set(chunk, JSON.stringify(first));
+      f.files.set(chunk.replace("abcdef012345", "abcdef012346"), JSON.stringify(second));
+    }
+    await expect(f.service.command({ action: "submit" })).rejects.toThrow(
+      "Conflicting shared delivery vworlds/vecs#308 (usd)"
+    );
+    expect(f.reports).toEqual([]);
+    expect(f.writes).toEqual([]);
+    expect(f.unexpected).toEqual([]);
+    mkdirSync(join(f.root, "learnings/models"), { recursive: true });
+    writeFileSync(join(f.root, "learnings/models/first.jsonl"), JSON.stringify(first));
+    writeFileSync(join(f.root, "learnings/models/second.jsonl"), JSON.stringify(second));
+    const report = JSON.parse(await f.service.command({ action: "report", json: true }));
+    expect(report.deliveries).toBe(0);
+    expect(f.reports).toEqual([
+      "learnings: conflicting records for vworlds/vecs#308 (usd); excluded",
+    ]);
+  }
+);
+
+test.each(["shared", "pending"] as const)(
+  "submission still accepts fill-ins in %s copies",
+  async (source) => {
+    const chunk = "learnings/models/vworlds-vecs/308-308-abcdef012345.jsonl";
+    const first = record({ usd: null });
+    const second = record({ usd: 1.03 });
+    const f = setup(
+      source === "shared"
+        ? { shared: JSON.stringify(first), chunks: { [chunk]: JSON.stringify(second) } }
+        : { legacyPending: true }
+    );
+    if (source === "pending") {
+      f.files.clear();
+      f.files.set(chunk, JSON.stringify(first));
+      f.files.set(chunk.replace("abcdef012345", "abcdef012346"), JSON.stringify(second));
+    }
+    expect(await f.service.command({ action: "submit" })).toContain("No new learnings to submit");
+    expect(f.reports).toEqual([]);
+    expect(f.writes).toEqual([]);
+    expect(f.unexpected).toEqual([]);
+  }
+);
+
+test.each([false, true])(
+  "delivery union fills null and absent costs in either order (reverse=%s)",
+  async (reverse) => {
+    const unknown = record({
+      usd: null,
+      segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd: null }],
+    });
+    const filled = record({
+      usd: 1.03,
+      costBasis: "api-list",
+      costCoverage: "complete",
+      costSource: "backfill",
+      segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd: 1.03 }],
+    });
+    const f = unionFixture(reverse ? filled : unknown, reverse ? unknown : filled);
+    expect(f.service.records()).toEqual([filled]);
+    expect(f.warnings).toEqual([]);
+    const report = JSON.parse(await f.service.command({ action: "report", json: true }));
+    expect(report.usd).toBe(1.03);
+    expect(report.byFamily.sol.usdPerPoint).toBe(0.515);
+    expect(f.service.familyEvidence("sol")).toEqual({ usdPerPoint: 0.515, deliveries: 1 });
+    const shown = await f.service.show("sol");
+    expect(shown).toContain(JSON.stringify(filled));
+    expect(f.warnings).toEqual([]);
+  }
+);
+
+test("conflicting deliveries are excluded once per read without losing other evidence or resurrecting", async () => {
+  const first = record({ usd: 1 });
+  const other = record({
+    pr: 309,
+    usd: 2,
+    segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd: 2 }],
+  });
+  const f = unionFixture(first, record({ usd: 3, points_final: 5 }), [other]);
+  // A third copy must not reintroduce the rejected delivery.
+  writeFileSync(join(f.root, "learnings/models/third.jsonl"), JSON.stringify(first));
+  const warning =
+    "learnings: conflicting records for vworlds/vecs#308 (points_final, usd); excluded";
+  expect(f.service.records()).toEqual([other]);
+  expect(f.warnings.splice(0)).toEqual([warning]);
+  const report = JSON.parse(await f.service.command({ action: "report", json: true }));
+  expect(report.deliveries).toBe(1);
+  expect(report.usd).toBe(2);
+  expect(f.warnings.splice(0)).toEqual([warning]);
+  expect(f.service.familyEvidence("sol")).toEqual({ usdPerPoint: 1, deliveries: 1 });
+  expect(f.warnings.splice(0)).toEqual([warning]);
+  const shown = await f.service.show("sol");
+  expect(shown).toContain(JSON.stringify(other));
+  expect(shown).not.toContain('"pr":308');
+  expect(f.warnings).toEqual([warning]);
+});
+
+test("nested non-null cost conflicts exclude the only delivery and leave no family evidence", async () => {
+  const withCost = (usd: number) =>
+    record({
+      segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start", usd }],
+    });
+  const f = unionFixture(withCost(1), withCost(2));
+  expect(f.service.records()).toEqual([]);
+  expect(f.warnings.splice(0)).toEqual([
+    "learnings: conflicting records for vworlds/vecs#308 (segments[0].usd); excluded",
+  ]);
+  expect(f.service.familyEvidence("sol")).toBeUndefined();
+  expect(f.warnings.splice(0)).toHaveLength(1);
+  expect(JSON.parse(await f.service.command({ action: "report", json: true })).deliveries).toBe(0);
+  expect(f.warnings.splice(0)).toHaveLength(1);
+  expect(await f.service.show("sol")).not.toContain('"pr":308');
+  expect(f.warnings).toHaveLength(1);
+});
+
+function unionFixture(shared: ModelRecord, staged: ModelRecord, rest: ModelRecord[] = []) {
+  const text = [shared, ...rest].map((value) => JSON.stringify(value)).join("\n");
+  const f = setup({ shared: text });
+  const root = f.root;
+  mkdirSync(join(root, "learnings/models"), { recursive: true });
+  writeFileSync(join(root, "learnings/models/shared.jsonl"), text);
+  writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(staged));
+  return { root, warnings: f.reports, service: f.service };
+}
+
 test("familyEvidence returns one family's graded aggregate and undefined without data", () => {
   const root = fixture();
   const deps: Dependencies = {
