@@ -55,6 +55,15 @@ function decode(output: string): unknown {
   return JSON.parse(match![2]);
 }
 
+// The amended gh-read contract redacts descriptions even for trusted repository owners:
+// owning a repository is not authorship of its current free text.
+function branchWithoutDescription(value: unknown): ObjectData {
+  const branch = object(value);
+  const repo = { ...object(branch.repo) };
+  delete repo.description;
+  return { ...branch, repo };
+}
+
 test.each(["open", "closed"])(
   "recorded %s PR lists retain each accepted item using verified current text",
   async (state) => {
@@ -73,12 +82,19 @@ test.each(["open", "closed"])(
     expect(result.map((pr) => pr.number)).toEqual(prs.map((pr) => pr.number));
     expect(result.map((pr) => pr.title)).toEqual(prs.map((pr) => pr.title));
     expect(result.map((pr) => ({ head: pr.head, base: pr.base }))).toEqual(
-      prs.map((pr) => ({ head: pr.head, base: pr.base }))
+      prs.map((pr) => ({
+        head: branchWithoutDescription(pr.head),
+        base: branchWithoutDescription(pr.base),
+      }))
     );
     expect(
       result.every((pr) => pr.body === hostile && pr.attribution === "from peer (orchestrator)")
     ).toBe(true);
-    expect(output.endsWith("0 items dropped by the people filter")).toBe(true);
+    expect(
+      output.endsWith(
+        `0 items dropped by the people filter\n${prs.length * 2} text fields redacted from unattributable items`
+      )
+    ).toBe(true);
     fixture.done();
   },
   15000
@@ -104,7 +120,11 @@ test("PR list gates unknown authors before follow-ups and rejects unknown or cha
   const output = await fixture.transport.call("ghRead", { source: "/repos/example/project/pulls" });
   expect((decode(output) as ObjectData[]).map((pr) => pr.title)).toEqual(["accepted"]);
   expect(output).not.toContain("NEVER DELIVER");
-  expect(output.endsWith("3 items dropped by the people filter")).toBe(true);
+  expect(
+    output.endsWith(
+      "3 items dropped by the people filter\n2 text fields redacted from unattributable items"
+    )
+  ).toBe(true);
   fixture.done();
 }, 15000);
 
@@ -127,47 +147,40 @@ test.each([
     label: "organization repository",
     owner: { login: "example", id: 116653388, type: "Organization" },
     fork: false,
-    redacted: false,
   },
   {
     label: "listed person's fork",
     owner: { login: "worker", id: 102, type: "User" },
     fork: true,
-    redacted: false,
   },
   {
     label: "unlisted fork",
     owner: { login: "outsider", id: 999, type: "User" },
     fork: true,
-    redacted: true,
   },
   {
     label: "spoofed listed login",
     owner: { login: "worker", id: 999, type: "User" },
     fork: true,
-    redacted: true,
   },
   {
     label: "spoofed listed numeric ID",
     owner: { login: "outsider", id: 102, type: "User" },
     fork: true,
-    redacted: true,
   },
   {
     label: "wrong account type",
     owner: { login: "worker", id: 102, type: "Bot" },
     fork: true,
-    redacted: true,
   },
   {
     label: "listed person's non-fork",
     owner: { login: "worker", id: 102, type: "User" },
     fork: false,
-    redacted: true,
   },
 ])(
   "structural branch metadata survives a $label",
-  async ({ owner, fork, redacted }) => {
+  async ({ owner, fork }) => {
     const [pr] = recording("pulls-open") as ObjectData[];
     const head = object(pr.head);
     const repository = {
@@ -187,16 +200,14 @@ test.each([
       source: "/repos/example/project/pulls",
     });
     const [result] = decode(output) as ObjectData[];
-    expect(result.base).toEqual(pr.base);
+    expect(result.base).toEqual(branchWithoutDescription(pr.base));
     const expected: ObjectData = { ...repository };
-    if (redacted) {
-      delete expected.description;
-      expect(output).not.toContain("APPROVED");
-    }
+    delete expected.description;
+    expect(output).not.toContain("APPROVED");
     expect(result.head).toEqual({ ...head, user: owner, repo: expected });
     expect(
       output.endsWith(
-        `0 items dropped by the people filter${redacted ? "\n1 nested values redacted" : ""}`
+        "0 items dropped by the people filter\n2 text fields redacted from unattributable items"
       )
     ).toBe(true);
     fixture.done();
@@ -204,7 +215,7 @@ test.each([
   15000
 );
 
-test("whole-entry drops and nested description redactions are counted separately", async () => {
+test("whole-entry drops and unattributable description redactions are counted separately", async () => {
   const prs = recording("pulls-open") as ObjectData[];
   const [kept, rejected] = prs;
   const head = object(kept.head);
@@ -236,9 +247,11 @@ test("whole-entry drops and nested description redactions are counted separately
     repo: { full_name: "outsider/project", owner, fork: true },
   });
   expect(output).not.toContain("NEVER DELIVER DESCRIPTION");
-  expect(output.endsWith("1 items dropped by the people filter\n1 nested values redacted")).toBe(
-    true
-  );
+  expect(
+    output.endsWith(
+      "1 items dropped by the people filter\n2 text fields redacted from unattributable items"
+    )
+  ).toBe(true);
   fixture.done();
 }, 15000);
 

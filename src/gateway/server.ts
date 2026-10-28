@@ -2363,7 +2363,7 @@ class GatewayServer {
   };
 
   ghRead: Handlers["ghRead"] = async ({ source }) => {
-    const counts = { dropped: 0, redacted: 0 };
+    const counts = { dropped: 0, redacted: 0, textRedacted: 0 };
     if (source.endsWith(".graphql")) {
       const query = readQuery(readFileSync(source, "utf8"));
       const data = await this.github.graphql(query);
@@ -2374,13 +2374,14 @@ class GatewayServer {
             this.filter,
             String(this.config.repo),
             `https://github.com/${String(this.config.repo)}`,
-            counts
+            counts,
+            query
           ),
           null,
           2
         ) ?? "null"
       );
-      return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}`;
+      return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}${counts.textRedacted ? `\n${counts.textRedacted} text fields redacted from unattributable items` : ""}`;
     }
     // Only scoped repository endpoints. No URLs, alternate methods, redirects or encoded paths.
     const match =
@@ -2422,7 +2423,7 @@ class GatewayServer {
         2
       ) ?? "null"
     );
-    return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}`;
+    return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}${counts.textRedacted ? `\n${counts.textRedacted} text fields redacted from unattributable items` : ""}`;
   };
 
   private async diagnosticThread(
