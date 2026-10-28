@@ -8,6 +8,13 @@ your checkout's `.claude/settings.local.json` sets the role and the other identi
 variables, and commands resolve the checkout from `VMETHOD_ROOT` or git discovery.
 `vmethod check` verifies the environment.
 
+You may work with several owners listed in `people.yaml`. `ask`, `review … owner|ask`
+and `scope-review` assign one owner using the [board assignment rule](board.md#status-and-assignee):
+the owner who last interacted with that issue or PR, otherwise the first-listed owner.
+Any pinned owner may supply approval evidence, `APPROVE MODEL`, an autopilot label
+grant, an agreed quotation or a button-merge; it need not be the assigned owner.
+Login, numeric id and account type must still match the registry.
+
 ## Autopilot
 
 An owner-applied `autopilot` label delegates the task's ordinary owner decisions to
