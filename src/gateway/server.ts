@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
 import { ownerAgreement } from "./owner-agreement.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
@@ -86,7 +86,10 @@ import { verifyConflictHead } from "./verify-hook.js";
 import { isModelApproved } from "./model-gate.js";
 
 class GatewayServer {
-  private readonly config: Config;
+  private config: Config;
+  private readonly watchStateConfig: Config;
+  private peopleMtime: number;
+  private configMtime: number;
   private readonly filter: PeopleFilter;
   private readonly digest: Digest;
   // Lazy: offline CLI verbs never create or authenticate a gateway client.
@@ -611,24 +614,46 @@ class GatewayServer {
     };
   }
   private readonly loops = new Map<string, EventLoop>();
+  private readonly eventReaders = new Set<string>();
 
   nextEvents: Handlers["nextEvents"] = async (input) => {
-    const name = resolveSession(this.config, input).stateName;
+    const name = resolveSession(this.watchStateConfig, input).stateName;
+    // The guard belongs to the session, not a loop that a config edit can replace.
+    if (this.eventReaders.has(name)) {
+      throw new Error("watch: another reader is already waiting for this session");
+    }
+    this.eventReaders.add(name);
+    try {
+      return await this.eventLoop(input).nextEvents(input);
+    } finally {
+      this.eventReaders.delete(name);
+    }
+  };
+
+  private eventLoop(input: Parameters<Handlers["nextEvents"]>[0]): EventLoop {
+    const session = resolveSession(this.watchStateConfig, input);
+    const name = session.stateName;
     let loop = this.loops.get(name);
     if (!loop) {
       const methodology = String(object(this.config.vmethod).repo ?? "vworlds/vmethod");
+      const filter = new PeopleFilter(
+        this.filter.people,
+        String(this.config.org),
+        this.digest,
+        methodology === "off" ? [] : [methodology]
+      );
       loop = new EventLoop(
         {
           root: this.root,
           config: this.config,
           env: this.env,
           deps: eventDeps(this.deps),
-          filter: new PeopleFilter(
-            this.filter.people,
-            this.filter.org,
-            this.digest,
-            methodology === "off" ? [] : [methodology]
-          ),
+          filter,
+          refresh: () => {
+            this.reloadWatchFiles();
+            filter.reload(this.filter.people);
+            return this.eventLoop(input);
+          },
           github: this.github,
           workerStatus: (pr) => this.workers.watchStatus(pr),
           // Without a configured worker checkout no task can have a worker worktree.
@@ -645,12 +670,63 @@ class GatewayServer {
           },
           digest: this.digest,
         },
-        input
+        input,
+        session
       );
       this.loops.set(name, loop);
     }
-    return loop.nextEvents(input);
-  };
+    return loop;
+  }
+
+  private reloadWatchFiles(): void {
+    // Remember attempted versions too: a bad edit is reported once, not every poll.
+    const peopleMtime = this.watchMtime("people");
+    if (peopleMtime !== this.peopleMtime) {
+      this.peopleMtime = peopleMtime;
+      try {
+        this.filter.reload(loadYaml(this.root, "people") as Person[]);
+        const owners = this.filter.people.filter((p) => p.role === "owner").map((p) => p.login);
+        this.deps.report(`people.yaml reloaded (owners: ${owners.join(", ")})`);
+      } catch (error) {
+        this.deps.report(
+          `people.yaml reload failed: ${(error as Error).message}; keeping the previous list`
+        );
+      }
+    }
+    const configMtime = this.watchMtime("vmethod");
+    if (configMtime !== this.configMtime) {
+      this.configMtime = configMtime;
+      let config: Config;
+      try {
+        config = getConfig(this.root, this.env);
+      } catch (error) {
+        this.deps.report(
+          `vmethod.yaml reload failed: ${(error as Error).message}; keeping the previous config`
+        );
+        return;
+      }
+      for (const loop of this.loops.values()) {
+        loop.close();
+      }
+      this.loops.clear();
+      this.config = config;
+      this.client = undefined;
+      this.boardClient = undefined;
+      this.workersClient = undefined;
+      this.deps.report("vmethod.yaml reloaded");
+    }
+  }
+
+  private watchMtime(kind: string): number {
+    try {
+      return statSync(resolve(this.root, `${kind}.yaml`)).mtimeMs;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return -1;
+      }
+      throw error;
+    }
+  }
   watchMute: Handlers["watchMute"] = async ({ ref }) => muteThread(this.config, this.env, ref);
   watchUnmute: Handlers["watchUnmute"] = async ({ ref }) =>
     unmuteThread(this.config, this.env, ref);
@@ -1509,6 +1585,9 @@ class GatewayServer {
     private deps: Dependencies
   ) {
     this.config = getConfig(root, env);
+    this.watchStateConfig = this.config;
+    this.peopleMtime = this.watchMtime("people");
+    this.configMtime = this.watchMtime("vmethod");
     this.digest = new Digest(
       env,
       String(this.config.stateName ?? String(this.config.repo).replace("/", "-")),

@@ -622,6 +622,18 @@ Run as an orchestrator (`VMETHOD_ROLE=orchestrator`):
 - `vmethod mutes`
 
 The CLI only prints server-produced `nextEvents` records; it never polls GitHub.
+At each poll, the gateway checks the modification times of `people.yaml` and
+`vmethod.yaml`, including during a long poll. Valid people edits replace the shared
+identity list and refresh owner decisions without a restart. Success reports
+`people.yaml reloaded (owners: <logins>)` once per edit; an invalid edit reports
+`people.yaml reload failed: <reason>; keeping the previous list` once and leaves
+the last valid identities in force. A valid config edit rebuilds cached event loops
+while retaining each session's original state directory and markers, so acknowledged
+events do not replay. Success reports `vmethod.yaml reloaded` once per edit.
+An invalid config edit reports
+`vmethod.yaml reload failed: <reason>; keeping the previous config` once and keeps
+polling with the previous config and loops until a later valid edit applies.
+
 `nextEvents` takes `{ timeoutSeconds, ack?, pollOnce?, watchStart?, guideSeen?, replay?, track?, only?, skip? }` and returns
 `{ events: [{ id, kind, line, quiet? }], notice?, reminder? }`. A zero timeout applies acknowledgements
 without polling. The client acknowledges IDs **after stdout finishes writing**;
