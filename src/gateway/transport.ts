@@ -96,6 +96,13 @@ export interface Operations {
     /** A nonempty real delivery may carry the one-line chat-rule reminder, at most once every 2h. */
     output: { events: WatchEvent[]; notice?: string; reminder?: string };
   };
+  /** Stop this checkout's running watcher for the resolved session (#340):
+   * verify the lock holder, signal SIGTERM and wait for the lock to clear.
+   * Refusals keep the lock and signal nothing. */
+  watchStop: {
+    input: SessionInput & { force?: boolean };
+    output: Verdict;
+  };
   watchMute: { input: { ref: string }; output: string };
   watchUnmute: { input: { ref: string }; output: string };
   watchMutes: { input: Record<string, never>; output: string };
