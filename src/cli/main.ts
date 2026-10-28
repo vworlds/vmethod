@@ -61,6 +61,7 @@ try {
     case "gh-read":
     case "board":
     case "issue":
+    case "upstream":
     case "scope-review":
     case "autopilot":
     case "dropped":

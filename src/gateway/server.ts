@@ -76,9 +76,10 @@ import {
 import { ChecksService } from "./checks.js";
 import { VerificationService } from "./verify.js";
 import { blockerLabel, blockerReference, reference, type ThreadRef } from "./refs.js";
-import { LearningsService } from "./learnings.js";
+import { LearningsService, central } from "./learnings.js";
 import { LearningAnnotations, type LearningBundle } from "./learning-annotations.js";
 import { checkLearningPr } from "./learning-check.js";
+import { upstreamCaller, upstreamFooter } from "./upstream.js";
 import { mergeLearningPr } from "./learning-merge.js";
 import { releaseNext } from "./release.js";
 import { ConflictService } from "./conflicts.js";
@@ -852,6 +853,62 @@ class GatewayServer {
       }
     }
     return `Created issue #${String(created.number)}`;
+  };
+
+  /** Orchestrator-only upstream filing on the central repository (#333): the caller
+   * must be a centrally bound orchestrator — the same check as `learnings submit`,
+   * run before any write — and the body passes the shared post checks. The footer
+   * names the consumer repository and its pinned vmethod version for the vmethod
+   * owner's triage; no labels, assignees or board writes happen. */
+  upstreamIssue: Handlers["upstreamIssue"] = async ({ title, file }) => {
+    if (typeof title !== "string" || !title.trim() || /[\r\n]/.test(title)) {
+      throw new Error("Invalid upstream issue title");
+    }
+    const raw = readFileSync(file, "utf8");
+    if (!raw.trim()) {
+      throw new Error("Post must contain nonempty Markdown");
+    }
+    const body = `${raw.trimEnd()}\n\n${upstreamFooter(String(this.config.repo))}`;
+    await checkMarkdown(this.root, `${title}\n\n${body}`);
+    guardClosingKeywords(`${title}\n\n${body}`);
+    await upstreamCaller(this.github, String(this.config.repo));
+    const created = object(
+      await this.github.rest(`/repos/${central}/issues`, "POST", { title, body }, false)
+    );
+    if (!Number.isSafeInteger(created.number) || Number(created.number) < 1) {
+      throw new Error("Missing created issue number; inspect repository before retrying");
+    }
+    return `https://github.com/${central}/issues/${String(created.number)}`;
+  };
+
+  /** The comment sibling (#333): the same central gate and body checks, posted to an
+   * existing central-repository issue — a pull request or a missing number is
+   * refused by the GraphQL issue lookup before any write. */
+  upstreamComment: Handlers["upstreamComment"] = async ({ ref, file }) => {
+    if (typeof ref !== "string" || !/^[1-9]\d*$/.test(ref) || !Number.isSafeInteger(Number(ref))) {
+      throw new Error("Invalid upstream issue reference");
+    }
+    const number = Number(ref);
+    const body = readFileSync(file, "utf8");
+    await checkMarkdown(this.root, body);
+    guardClosingKeywords(body);
+    await upstreamCaller(this.github, String(this.config.repo));
+    const found = object(
+      await this.github.graphql(
+        `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { id } } }`,
+        { owner: central.split("/")[0], name: central.split("/")[1], number }
+      )
+    );
+    if (!object(object(found.repository).issue).id) {
+      throw new Error(`Upstream issue not found: ${central}#${number}`);
+    }
+    const posted = object(
+      await this.github.rest(`/repos/${central}/issues/${number}/comments`, "POST", { body }, false)
+    );
+    if (!Number.isSafeInteger(posted.id) || !posted.node_id) {
+      throw new Error("Missing comment id; inspect the upstream issue before retrying");
+    }
+    return `Commented on https://github.com/${central}/issues/${number}`;
   };
 
   /** Orchestrator-only retry of issue create's board follow-up (#287): membership
@@ -2496,6 +2553,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     learnings: server.learnings,
     learningCheck: server.learningCheck,
     issueCreate: server.issueCreate,
+    upstreamIssue: server.upstreamIssue,
+    upstreamComment: server.upstreamComment,
     issueEdit: server.issueEdit,
     issueBlock: server.issueBlock,
     issueUnblock: server.issueUnblock,
@@ -2545,6 +2604,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     learnings: ["worker", "orchestrator"],
     learningCheck: ["worker", "orchestrator"],
     issueCreate: ["orchestrator"],
+    upstreamIssue: ["orchestrator"],
+    upstreamComment: ["orchestrator"],
     issueEdit: ["orchestrator"],
     issueBlock: ["orchestrator"],
     issueUnblock: ["orchestrator"],

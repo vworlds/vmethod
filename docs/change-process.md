@@ -4,8 +4,13 @@ Change shared rules through owner-approved releases; share advice faster as lear
 
 ## Propose, agree, release, adopt
 
-1. A consumer records a need in a `change-request` issue, including generic context,
-   constraints and affected interfaces. Use `propose` (planned) when available.
+1. As the consumer orchestrator, record a need with
+   `vmethod upstream issue <title> <body-file>` from your consumer checkout,
+   including generic context, constraints and affected interfaces. Add another
+   occurrence with `vmethod upstream comment <n> <body-file>`. These file on
+   vworlds/vmethod without labels or board changes; its owner triages the issue.
+   See [upstream commands](gateway.md#upstream-needs) for central authorization
+   and content checks. Do not include private project details without clearance.
 2. The methodology orchestrator elaborates it. Other orchestrators review effects
    on their consumers; resolve concerns or record the owner's explicit overrule.
 3. The owner approves the agreed scope. A worker delivers the task PR; review and
