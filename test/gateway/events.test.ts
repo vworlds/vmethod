@@ -2556,6 +2556,32 @@ test("a dispatched fixer keeps the conflict card against its own activity and pr
   f.done();
 });
 
+test.each([true, false])(
+  "a changed head revives worker progress only without an orchestrator push journal (journal=%s)",
+  async (journaled) => {
+    const f = setup();
+    f.task();
+    object(f.cards[0].progress).text = "⏳";
+    const loop = f.loop();
+    await f.ack(loop, await f.tick(loop));
+    f.writes.length = 0;
+    const head = "c".repeat(40);
+    if (journaled) {
+      new WriteJournal(f.config, f.env, () => f.clock).recordPush("example/project", 24, head);
+    }
+    f.advance(3 * 60_000);
+    object(f.pulls[0].head).sha = head;
+    const events = await f.tick(loop);
+    await f.ack(loop, events);
+    expect(f.marker("head-24")).toBe(head);
+    expect(f.writes.some((write) => write.field === "Progress" && write.value === "🤖🔨")).toBe(
+      !journaled
+    );
+    expect(events.some((event) => event.kind === "worker-prompt")).toBe(false);
+    f.done();
+  }
+);
+
 test("worker activity outside a dispatched fixer still revives the conflict card", async () => {
   const f = setup();
   f.task();

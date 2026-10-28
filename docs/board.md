@@ -29,6 +29,12 @@ columns. An explicit issue summons may retain its own owner turn. See
 explicit housekeeping with validated Progress, not as a substitute for the
 [tracked owner-question commands](orchestrator-guide.md).
 
+Several `role: owner` entries are supported in `people.yaml`. An owner turn still
+assigns exactly one person: the pinned owner with the most recent comment, review,
+board status move or label event on that issue or PR; without owner interaction,
+the first-listed owner is assigned. The watcher uses the same rule for turn upkeep.
+Assignment does not restrict authority: any pinned owner can approve or answer.
+
 `board set <issue|pr> Assignees owner|orchestrator|--clear` is that explicit
 housekeeping for the management assignee itself: it repairs a stale turn without a
 turn verb — for example clearing an owner left assigned to a linked issue or epic

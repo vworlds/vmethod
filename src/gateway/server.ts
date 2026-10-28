@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
 import { ownerAgreement } from "./owner-agreement.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
@@ -17,6 +17,7 @@ import {
 } from "./people.js";
 import {
   actorFields,
+  filterData,
   filterDiagnostic,
   identityFields,
   readQuery,
@@ -54,7 +55,7 @@ import {
 } from "./thread.js";
 import { AutopilotReader, inheritAutopilot, type AutopilotState } from "./autopilot.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
-import { setTurn, turnAssignees } from "./turn.js";
+import { ownerForTurn, setTurn, turnAssignees } from "./turn.js";
 import { renderProgress } from "../board/progress.js";
 import { workflowColumns } from "../board/runner.js";
 import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
@@ -92,7 +93,10 @@ import { verifyConflictHead } from "./verify-hook.js";
 import { isModelApproved } from "./model-gate.js";
 
 class GatewayServer {
-  private readonly config: Config;
+  private config: Config;
+  private readonly watchStateConfig: Config;
+  private peopleMtime: number;
+  private configMtime: number;
   private readonly filter: PeopleFilter;
   private readonly digest: Digest;
   // Lazy: offline CLI verbs never create or authenticate a gateway client.
@@ -617,24 +621,46 @@ class GatewayServer {
     };
   }
   private readonly loops = new Map<string, EventLoop>();
+  private readonly eventReaders = new Set<string>();
 
   nextEvents: Handlers["nextEvents"] = async (input) => {
-    const name = resolveSession(this.config, input).stateName;
+    const name = resolveSession(this.watchStateConfig, input).stateName;
+    // The guard belongs to the session, not a loop that a config edit can replace.
+    if (this.eventReaders.has(name)) {
+      throw new Error("watch: another reader is already waiting for this session");
+    }
+    this.eventReaders.add(name);
+    try {
+      return await this.eventLoop(input).nextEvents(input);
+    } finally {
+      this.eventReaders.delete(name);
+    }
+  };
+
+  private eventLoop(input: Parameters<Handlers["nextEvents"]>[0]): EventLoop {
+    const session = resolveSession(this.watchStateConfig, input);
+    const name = session.stateName;
     let loop = this.loops.get(name);
     if (!loop) {
       const methodology = String(object(this.config.vmethod).repo ?? "vworlds/vmethod");
+      const filter = new PeopleFilter(
+        this.filter.people,
+        String(this.config.org),
+        this.digest,
+        methodology === "off" ? [] : [methodology]
+      );
       loop = new EventLoop(
         {
           root: this.root,
           config: this.config,
           env: this.env,
           deps: eventDeps(this.deps),
-          filter: new PeopleFilter(
-            this.filter.people,
-            this.filter.org,
-            this.digest,
-            methodology === "off" ? [] : [methodology]
-          ),
+          filter,
+          refresh: () => {
+            this.reloadWatchFiles();
+            filter.reload(this.filter.people);
+            return this.eventLoop(input);
+          },
           github: this.github,
           workerStatus: (pr) => this.workers.watchStatus(pr),
           // Without a configured worker checkout no task can have a worker worktree.
@@ -651,12 +677,63 @@ class GatewayServer {
           },
           digest: this.digest,
         },
-        input
+        input,
+        session
       );
       this.loops.set(name, loop);
     }
-    return loop.nextEvents(input);
-  };
+    return loop;
+  }
+
+  private reloadWatchFiles(): void {
+    // Remember attempted versions too: a bad edit is reported once, not every poll.
+    const peopleMtime = this.watchMtime("people");
+    if (peopleMtime !== this.peopleMtime) {
+      this.peopleMtime = peopleMtime;
+      try {
+        this.filter.reload(loadYaml(this.root, "people") as Person[]);
+        const owners = this.filter.people.filter((p) => p.role === "owner").map((p) => p.login);
+        this.deps.report(`people.yaml reloaded (owners: ${owners.join(", ")})`);
+      } catch (error) {
+        this.deps.report(
+          `people.yaml reload failed: ${(error as Error).message}; keeping the previous list`
+        );
+      }
+    }
+    const configMtime = this.watchMtime("vmethod");
+    if (configMtime !== this.configMtime) {
+      this.configMtime = configMtime;
+      let config: Config;
+      try {
+        config = getConfig(this.root, this.env);
+      } catch (error) {
+        this.deps.report(
+          `vmethod.yaml reload failed: ${(error as Error).message}; keeping the previous config`
+        );
+        return;
+      }
+      for (const loop of this.loops.values()) {
+        loop.close();
+      }
+      this.loops.clear();
+      this.config = config;
+      this.client = undefined;
+      this.boardClient = undefined;
+      this.workersClient = undefined;
+      this.deps.report("vmethod.yaml reloaded");
+    }
+  }
+
+  private watchMtime(kind: string): number {
+    try {
+      return statSync(resolve(this.root, `${kind}.yaml`)).mtimeMs;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return -1;
+      }
+      throw error;
+    }
+  }
   watchMute: Handlers["watchMute"] = async ({ ref }) => muteThread(this.config, this.env, ref);
   watchUnmute: Handlers["watchUnmute"] = async ({ ref }) =>
     unmuteThread(this.config, this.env, ref);
@@ -1008,10 +1085,11 @@ class GatewayServer {
       String(item.login)
     );
     const next = turnAssignees(
-      loadYaml(this.root, "people") as Person[],
+      this.filter.people,
       String(this.config.repo),
       current,
-      "owner"
+      "owner",
+      await ownerForTurn(this.github, this.filter.people, String(this.config.repo), number)
     );
     // One operation for the assignment, summary comment and board handoff writes (#199).
     this.github.writes.beginOperation("scope-review", [{ repo: String(this.config.repo), number }]);
@@ -1454,6 +1532,8 @@ class GatewayServer {
   };
 
   openTask: Handlers["openTask"] = async (input) => this.flow.open(input);
+  prOpen: Handlers["prOpen"] = async (input) => this.flow.openPr(input);
+  prMerge: Handlers["prMerge"] = async (input) => this.flow.mergePr(input.ref);
   reviewTask: Handlers["reviewTask"] = async (input) => this.flow.review(input);
   askIssue: Handlers["askIssue"] = async (input) => this.flow.ask(input.ref, input.file);
   mergeTask: Handlers["mergeTask"] = async (input) =>
@@ -1686,6 +1766,9 @@ class GatewayServer {
     private deps: Dependencies
   ) {
     this.config = getConfig(root, env);
+    this.watchStateConfig = this.config;
+    this.peopleMtime = this.watchMtime("people");
+    this.configMtime = this.watchMtime("vmethod");
     this.digest = new Digest(
       env,
       String(this.config.stateName ?? String(this.config.repo).replace("/", "-")),
@@ -2336,9 +2419,38 @@ class GatewayServer {
   };
 
   task: Handlers["task"] = async ({ ref, fetch }) => {
-    const { item, person } = await this.thread(ref, "pr");
+    const { branch, base } = await this.checkedTask(ref);
+    if (fetch) {
+      if (
+        !(await new GitTransport(this.config, this.env, this.deps, this.root).transferOk("fetch", [
+          `+refs/heads/${base}:refs/remotes/origin/${base}`,
+          `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+        ]))
+      ) {
+        throw new Error("error: fetch failed");
+      }
+    }
+    return { branch, base };
+  };
+
+  private async checkedTask(ref: string, requirePrompt = false) {
+    const { item: meta, person } = await this.thread(ref, "pr");
     if (!person) {
       throw new Error("No accepted task PR");
+    }
+    const item = requirePrompt
+      ? await this.node(
+          String(meta.id),
+          "body state headRefOid headRefName baseRefName headRepository { nameWithOwner }",
+          "PullRequest"
+        )
+      : meta;
+    if (
+      requirePrompt &&
+      (!this.filter.accept(item, repoOf(item).owner, reference(ref, this.config).link) ||
+        !isTaskPrompt(String(item.body ?? "")))
+    ) {
+      throw new Error("Push requires an open task PR");
     }
     const branch = String(item.headRefName ?? "");
     const base = String(item.baseRefName ?? "");
@@ -2353,31 +2465,44 @@ class GatewayServer {
     if (item.state !== "OPEN") {
       throw new Error("Task PR is not open");
     }
-    if (fetch) {
-      if (
-        !(await new GitTransport(this.config, this.env, this.deps, this.root).transferOk("fetch", [
-          `+refs/heads/${base}:refs/remotes/origin/${base}`,
-          `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
-        ]))
-      ) {
-        throw new Error("error: fetch failed");
-      }
-    }
-    return { branch, base };
-  };
+    return { branch, base, item };
+  }
 
-  push: Handlers["push"] = async ({ worktree, branch, commit: selected }, ctx) => {
+  push: Handlers["push"] = async ({ worktree, branch, commit: selected, task: target }, ctx) => {
+    if (target !== undefined && selected !== undefined) {
+      throw new Error("An explicit task push must use the worktree HEAD");
+    }
+    if (
+      target !== undefined &&
+      (ctx.role !== "orchestrator" || !Number.isSafeInteger(target) || target < 1)
+    ) {
+      throw new Error(
+        "Only orchestrators may push an explicit task PR (positive integer required)"
+      );
+    }
     if (
       selected !== undefined &&
       (ctx.role !== "orchestrator" || !/^[a-f\d]{40}$/i.test(selected))
     ) {
       throw new Error("Only orchestrators may push a frozen commit");
     }
-    taskBranch(branch, this.config);
-    if (!Number.isSafeInteger(ctx.taskPr) || Number(ctx.taskPr) < 1) {
+    if (branch !== undefined) {
+      taskBranch(branch, this.config);
+    }
+    const taskPr = target ?? ctx.taskPr;
+    if (!Number.isSafeInteger(taskPr) || Number(taskPr) < 1) {
       throw new Error("Push requires its own taskPr");
     }
-    const task = await this.task({ ref: String(ctx.taskPr) }, ctx);
+    const task = await this.checkedTask(String(taskPr), target !== undefined);
+    if (target !== undefined) {
+      branch ??= task.branch;
+      if (branch !== task.branch) {
+        throw new Error("Push branch must match its task PR branch");
+      }
+    }
+    if (branch === undefined) {
+      throw new Error("Push requires a branch");
+    }
     if (selected && task.branch !== branch) {
       throw new Error("Frozen push must match its task PR branch");
     }
@@ -2386,7 +2511,7 @@ class GatewayServer {
         throw new Error("Worker may push only its own task branch");
       }
     }
-    if (realpathSync(worktree) !== realpathSync(this.root)) {
+    if (target === undefined && realpathSync(worktree) !== realpathSync(this.root)) {
       throw new Error("Push worktree must be the gateway checkout");
     }
     const git = new GitTransport(this.config, this.env, this.deps, resolve(worktree));
@@ -2394,11 +2519,38 @@ class GatewayServer {
       await git.run(
         "rev-parse",
         "--verify",
-        selected ? `${selected}^{commit}` : `refs/heads/${branch}^{commit}`
+        selected
+          ? `${selected}^{commit}`
+          : target !== undefined
+            ? "HEAD^{commit}"
+            : `refs/heads/${branch}^{commit}`
       )
     ).trim();
     if (!/^[a-f\d]{40}$/i.test(commit)) {
       throw new Error("Invalid local commit");
+    }
+    if (target !== undefined) {
+      const head = String(task.item.headRefOid ?? "");
+      if (!/^[a-f\d]{40}$/i.test(head)) {
+        throw new Error("Invalid task PR head");
+      }
+      const fetched = await git.transfer("fetch", [
+        `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+      ]);
+      if (!fetched.ok) {
+        throw new Error(pushFailureMessage(fetched, String(this.config.repo)));
+      }
+      const remote = (
+        await git.run("rev-parse", "--verify", `refs/remotes/origin/${branch}^{commit}`)
+      ).trim();
+      if (
+        remote !== head ||
+        (await git.run("rev-list", "--count", `${commit}..${head}`)).trim() !== "0"
+      ) {
+        throw new Error(
+          pushFailureMessage({ ok: false, outcome: "moved", detail: "" }, String(this.config.repo))
+        );
+      }
     }
     const base = task.base;
     // Validate config refs before allowing them into fetch refspecs.
@@ -2455,29 +2607,27 @@ class GatewayServer {
     if (!result.ok) {
       throw new Error(pushFailureMessage(result, String(this.config.repo)));
     }
+    if (ctx.role === "orchestrator") {
+      this.github.writes.recordPush(String(this.config.repo), Number(taskPr), commit);
+    }
     await git.run("update-ref", `refs/remotes/origin/${branch}`, commit);
     return `pushed ${branch} at ${commit.slice(0, 7)}`;
   };
 
   ghRead: Handlers["ghRead"] = async ({ source }) => {
-    const counts = { dropped: 0, redacted: 0 };
+    const counts = { dropped: 0, redacted: 0, textRedacted: 0 };
     if (source.endsWith(".graphql")) {
       const query = readQuery(readFileSync(source, "utf8"));
       const data = await this.github.graphql(query);
+      const repo = String(this.config.repo);
       const output = untrusted(
         JSON.stringify(
-          filterDiagnostic(
-            data,
-            this.filter,
-            String(this.config.repo),
-            `https://github.com/${String(this.config.repo)}`,
-            counts
-          ),
+          filterData(data, this.filter, repo, `https://github.com/${repo}`, counts, query),
           null,
           2
         ) ?? "null"
       );
-      return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}`;
+      return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}${counts.textRedacted ? `\n${counts.textRedacted} text fields redacted from unattributable items` : ""}`;
     }
     // Only scoped repository endpoints. No URLs, alternate methods, redirects or encoded paths.
     const match =
@@ -2519,7 +2669,7 @@ class GatewayServer {
         2
       ) ?? "null"
     );
-    return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}`;
+    return `${output}\n${counts.dropped} items dropped by the people filter${counts.redacted ? `\n${counts.redacted} nested values redacted` : ""}${counts.textRedacted ? `\n${counts.textRedacted} text fields redacted from unattributable items` : ""}`;
   };
 
   private async diagnosticThread(
@@ -2692,6 +2842,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     grade: server.grade,
     suggestModel: server.suggestModel,
     openTask: server.openTask,
+    prOpen: server.prOpen,
+    prMerge: server.prMerge,
     reviewTask: server.reviewTask,
     askIssue: server.askIssue,
     mergeTask: server.mergeTask,
@@ -2743,6 +2895,8 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     grade: ["orchestrator"],
     suggestModel: ["orchestrator"],
     openTask: ["orchestrator"],
+    prOpen: ["orchestrator"],
+    prMerge: ["orchestrator"],
     reviewTask: ["orchestrator"],
     askIssue: ["orchestrator"],
     mergeTask: ["orchestrator"],
