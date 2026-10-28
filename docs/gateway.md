@@ -629,7 +629,10 @@ identity list and refresh owner decisions without a restart. Success reports
 `people.yaml reload failed: <reason>; keeping the previous list` once and leaves
 the last valid identities in force. A valid config edit rebuilds cached event loops
 while retaining each session's original state directory and markers, so acknowledged
-events do not replay. Invalid config edits fail the poll until corrected.
+events do not replay. Success reports `vmethod.yaml reloaded` once per edit.
+An invalid config edit reports
+`vmethod.yaml reload failed: <reason>; keeping the previous config` once and keeps
+polling with the previous config and loops until a later valid edit applies.
 
 `nextEvents` takes `{ timeoutSeconds, ack?, pollOnce?, watchStart?, guideSeen?, replay?, track?, only?, skip? }` and returns
 `{ events: [{ id, kind, line, quiet? }], notice?, reminder? }`. A zero timeout applies acknowledgements

@@ -695,8 +695,16 @@ class GatewayServer {
     }
     const configMtime = this.watchMtime("vmethod");
     if (configMtime !== this.configMtime) {
-      const config = getConfig(this.root, this.env);
       this.configMtime = configMtime;
+      let config: Config;
+      try {
+        config = getConfig(this.root, this.env);
+      } catch (error) {
+        this.deps.report(
+          `vmethod.yaml reload failed: ${(error as Error).message}; keeping the previous config`
+        );
+        return;
+      }
       for (const loop of this.loops.values()) {
         loop.close();
       }
@@ -705,6 +713,7 @@ class GatewayServer {
       this.client = undefined;
       this.boardClient = undefined;
       this.workersClient = undefined;
+      this.deps.report("vmethod.yaml reloaded");
     }
   }
 

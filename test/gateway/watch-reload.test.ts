@@ -120,7 +120,7 @@ test("edits during an active long poll apply before its next GitHub poll", async
     expect(batch.events.filter((e) => e.kind === "comment").map((e) => e.line)).toEqual([
       expect.stringContaining("Worker preview"),
     ]);
-    expect(f.reports).toEqual(["people.yaml reloaded (owners: )"]);
+    expect(f.reports).toEqual(["people.yaml reloaded (owners: )", "vmethod.yaml reloaded"]);
   } finally {
     f.done();
   }
@@ -184,6 +184,54 @@ test.each([
   }
 );
 
+test.each(["invalid: [", stringify({ repo: 123 })])(
+  "invalid config edits during a long poll keep the previous config until a valid edit: %s",
+  async (invalid) => {
+    const { f, edit, gateway, poll, ctx } = setup();
+    const sleep = f.deps.sleep;
+    let edited = false;
+    f.deps.sleep = async (ms) => {
+      await sleep(ms);
+      if (!edited) {
+        edited = true;
+        edit("vmethod", invalid);
+        f.comment("Previous config still active", 0);
+      }
+    };
+    try {
+      await poll();
+      const batch = await gateway.call("nextEvents", { timeoutSeconds: 120 }, ctx);
+      expect(edited).toBe(true);
+      expect(batch.events.filter((e) => e.kind === "comment")).toHaveLength(1);
+      expect(batch.events[0].line).not.toContain("Previous config still active");
+      await gateway.call(
+        "nextEvents",
+        { timeoutSeconds: 0, ack: batch.events.map((e) => e.id) },
+        ctx
+      );
+      f.advance();
+      f.comment("Polling continues", 0);
+      expect((await poll()).filter((e) => e.kind === "comment")).toHaveLength(1);
+      expect(f.reports).toEqual([
+        expect.stringMatching(/^vmethod.yaml reload failed: .*; keeping the previous config$/s),
+      ]);
+      f.advance();
+      edit("vmethod", stringify({ ...f.config, watch: { preview: true } }));
+      f.comment("Valid edit applied", 0);
+      expect((await poll()).map((e) => e.line)).toContainEqual(
+        expect.stringContaining("Valid edit applied")
+      );
+      expect(f.reports).toHaveLength(2);
+      expect(f.reports[1]).toBe("vmethod.yaml reloaded");
+      f.advance();
+      expect(await poll()).toEqual([]);
+      expect(f.reports).toHaveLength(2);
+    } finally {
+      f.done();
+    }
+  }
+);
+
 test("config edits rebuild loop behavior while preserving state directory and acknowledged events", async () => {
   const { f, edit, poll } = setup();
   try {
@@ -203,7 +251,7 @@ test("config edits rebuild loop behavior while preserving state directory and ac
     expect(after.filter((e) => e.kind === "comment")).toHaveLength(1);
     expect(after[0].line).toContain("New preview");
     expect(after.map((e) => e.id)).not.toContain(before[0].id);
-    expect(f.reports).toEqual([]);
+    expect(f.reports).toEqual(["vmethod.yaml reloaded"]);
   } finally {
     f.done();
   }
