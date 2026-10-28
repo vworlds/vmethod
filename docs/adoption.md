@@ -32,15 +32,34 @@ and `gh-read` additionally requires its caller to be pinned in `people.yaml`.
    `npm exec --no -- vmethod init --launcher`. The launcher cannot be installed
    before the package is installed. Until then, use `npm exec --no -- vmethod`;
    never use `npx`.
-2. Run `npm exec --no -- vmethod init` to create the absent local configuration.
+2. Run `vmethod init` to create the absent local configuration.
 3. Create a minimal `people.yaml` containing the owner and orchestrator's verified
    identities and the orchestrator's `repos: [<owner>/<repo>]` binding. Every verb
    needs valid `vmethod.yaml`; discovery via `gh-read` also authenticates a pinned
    caller.
-4. Discover the board number using `vmethod gh-read` (for example, query the
-   organization's projects with the endpoint/GraphQL query documented in
-   [Gateway commands](gateway.md#commands)). Do not run `board status` before the
-   project config and caller pin are ready.
+4. Save this query as `projects.graphql`:
+
+   ```graphql
+   query {
+     viewer {
+       login
+     }
+     organization(login: "<org>") {
+       projectsV2(first: 20) {
+         nodes {
+           number
+           url
+         }
+       }
+     }
+   }
+   ```
+
+   Run `vmethod gh-read projects.graphql`. Each project's `number` and `url` come
+   back; titles are redacted because projects carry no author. Pick the board by
+   its URL. Do not run `board status` before the project config and caller pin are
+   ready.
+
 5. Complete `vmethod.yaml`, `people.yaml` and `models.yaml`, then run
    `board init` (vmethod 1.0, #325) on an empty project; see
    [board initialization](board.md#migrations-what-adopters-see).
