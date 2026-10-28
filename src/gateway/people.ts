@@ -19,17 +19,23 @@ export function object(value: unknown): ObjectData {
 
 export class PeopleFilter {
   constructor(
-    readonly people: Person[],
+    public people: Person[],
     readonly org: string,
     private digest: Digest,
     private readonly trustedRepos: readonly string[] = []
   ) {
+    this.reload(people);
+  }
+
+  /** Atomically replace validated people; duplicate pins leave the previous list intact. */
+  reload(people: Person[]): void {
     if (
       new Set(people.map((p) => p.id)).size !== people.length ||
       new Set(people.map((p) => p.login.toLowerCase())).size !== people.length
     ) {
       throw new Error("people.yaml: duplicate id or login");
     }
+    this.people = people;
   }
 
   /** The orchestrator role is per repository (#186): the owner-approved `repos`
@@ -46,23 +52,7 @@ export class PeopleFilter {
   }
 
   identity(value: unknown, normalizeBotLogin = true): Person | undefined {
-    const actor = object(value);
-    if (
-      !["User", "Bot"].includes(String(actor.__typename)) ||
-      !Number.isSafeInteger(actor.databaseId) ||
-      Number(actor.databaseId) < 1
-    ) {
-      return undefined;
-    }
-    return this.people.find(
-      (person) =>
-        person.id === actor.databaseId &&
-        person.type === actor.__typename &&
-        typeof actor.login === "string" &&
-        (normalizeBotLogin
-          ? identityLogin(person.login, person.type) === identityLogin(actor.login, person.type)
-          : person.login.toLowerCase() === actor.login.toLowerCase())
-    );
+    return pinnedIdentity(this.people, value, normalizeBotLogin);
   }
 
   accept(item: ObjectData, owner: string, link: string, kind = "comment"): Person | undefined {
@@ -101,6 +91,31 @@ export class PeopleFilter {
     }
     return person;
   }
+}
+
+/** Match a registry identity by numeric id, account type and pinned login. */
+export function pinnedIdentity(
+  people: Person[],
+  value: unknown,
+  normalizeBotLogin = true
+): Person | undefined {
+  const actor = object(value);
+  if (
+    !["User", "Bot"].includes(String(actor.__typename)) ||
+    !Number.isSafeInteger(actor.databaseId) ||
+    Number(actor.databaseId) < 1
+  ) {
+    return undefined;
+  }
+  return people.find(
+    (person) =>
+      person.id === actor.databaseId &&
+      person.type === actor.__typename &&
+      typeof actor.login === "string" &&
+      (normalizeBotLogin
+        ? identityLogin(person.login, person.type) === identityLogin(actor.login, person.type)
+        : person.login.toLowerCase() === actor.login.toLowerCase())
+  );
 }
 
 /** GraphQL omits REST's trailing [bot] suffix; only Bot accounts share these spellings. */

@@ -199,7 +199,12 @@ file content, with **no footer**. Posts on unaccepted threads are refused.
 method switches. GraphQL files are parsed in full: exactly one query is allowed;
 mutations, subscriptions and additional operations are refused before networking.
 The server augments known author-bearing selections with identity, editor and
-repository metadata, including aliases and fragments. Reserved `__vm_` aliases
+repository metadata inside schema-compatible content-type fragments, including
+when you use aliases or named fragments. Concrete issue/PR/comment/review fields
+get only their applicable type; search results and project item content get Issue
+and PullRequest fragments, while root `node`/`nodes` reads can use all five content
+types. Unknown parent types receive no identity injection: selecting `title` or
+`body*` alone never establishes a content type. Reserved `__vm_` aliases
 cannot be supplied by callers. Known author-bearing REST output is filtered too;
 unverifiable REST edits are dropped rather than guessed. Check/status/workflow
 diagnostics yield allowlisted structured fields, never system free text. All
@@ -214,10 +219,16 @@ REST commit accounts use the usual identity pins; git-only commit metadata passe
 with `attribution: "git signature (unverified)"`. Git signatures never establish a
 verified person or protocol authority. Nested lists are filtered item by item.
 PR branch owners and repository objects are structural metadata, not content
-authors: keep `head`/`base` refs, SHAs, repository names and owner identities even
-for foreign repositories. Repository descriptions pass for the configured org or
-forks owned by a fully pinned listed identity; only the description is redacted for
-other repositories.
+authors: keep `head`/`base` refs, SHAs, repository identifiers and owner identities
+even for foreign repositories. Without an attributable author, diagnostic objects keep
+structural metadata but lose free-text fields: `title`, `body*`, `shortDescription`,
+`readme` and `description` (including GraphQL aliases). Repository descriptions are
+removed because repository ownership does not establish text authorship. Names
+remain structural identifiers: label names, ProjectV2 field and option names,
+repository `name` and git-signature names are retained, without granting protocol
+authority. For example, a ProjectV2 query
+selecting `number title url` returns each project's number and URL, not its title.
+Items carrying an unpinned author or editor are still dropped whole.
 
 Each diagnostic response includes `N items dropped by the people filter`, including
 zero. It counts removed entries of a top-level response list and rejected top-level
@@ -229,8 +240,12 @@ an unpinned or unverifiable account is dropped and counted. Injected identity ke
 never appear in the output. If fields or nested list entries
 are removed inside retained data, a separate trailing `M nested values redacted`
 note reports them without inflating the item count. A REST `user` or `author`
-value acts as an identity only with its REST fields (`id`, `type`); without them
-the value stays unverified and author-bearing content is still refused.
+value acts as an identity only with its REST fields (`id` or `type`); without them
+the value stays unverified and the unattributable-text rules above apply.
+Removed free-text fields on otherwise retained unattributable objects instead
+produce `N text fields redacted from unattributable items`. These counters are
+separate: one object can retain several structural fields while losing several
+text fields without counting as a dropped item.
 
 The diagnostic verb is not a generic write transport. New writes belong in named,
 policy-enforcing server operations. Future operations can extend the typed map
@@ -629,6 +644,18 @@ Run as an orchestrator (`VMETHOD_ROLE=orchestrator`):
 - `vmethod mutes`
 
 The CLI only prints server-produced `nextEvents` records; it never polls GitHub.
+At each poll, the gateway checks the modification times of `people.yaml` and
+`vmethod.yaml`, including during a long poll. Valid people edits replace the shared
+identity list and refresh owner decisions without a restart. Success reports
+`people.yaml reloaded (owners: <logins>)` once per edit; an invalid edit reports
+`people.yaml reload failed: <reason>; keeping the previous list` once and leaves
+the last valid identities in force. A valid config edit rebuilds cached event loops
+while retaining each session's original state directory and markers, so acknowledged
+events do not replay. Success reports `vmethod.yaml reloaded` once per edit.
+An invalid config edit reports
+`vmethod.yaml reload failed: <reason>; keeping the previous config` once and keeps
+polling with the previous config and loops until a later valid edit applies.
+
 `nextEvents` takes `{ timeoutSeconds, ack?, pollOnce?, watchStart?, guideSeen?, replay?, track?, only?, skip? }` and returns
 `{ events: [{ id, kind, line, quiet? }], notice?, reminder? }`. A zero timeout applies acknowledgements
 without polling. The client acknowledges IDs **after stdout finishes writing**;
@@ -959,6 +986,33 @@ Dropped records live in
 `~/.local/state`. They contain only timestamps and GitHub links. The owner digest
 prints links and counts, never bodies, titles or author names. Repeated reads can
 produce repeated drops; the counts are observations, not unique contributions.
+
+## Non-task PR commands
+
+Use these orchestrator-only verbs for adoption, configuration and documentation
+changes authored outside the worker task lifecycle. Task branches use `open-task`
+and `merge-task` instead.
+
+- `vmethod pr open <branch> <title> <body-file> [--draft]` opens an already-pushed
+  branch in the configured repository against `baseBranch`. The title must use
+  `<type>: <subject>` without scope. The body receives the same Markdown and
+  closing-keyword checks as posts; task markers are refused. Configured task-pattern
+  and pack branches are refused. No worker or task issue relation is created.
+- `vmethod pr merge <n>` squash-merges a same-repository, non-task PR against
+  `baseBranch`. It requires Approved board position (when the board is enabled),
+  current-head owner approval through `review <n> owner <file>` and the owner's
+  Owner review → Approved move, or current autopilot delegation with your
+  exact-head autopilot review. There is no self-approved “unimportant PR” exception
+  and no historical approval carry. Identity and permission changes, including
+  `people.yaml`, `.claude/` and CODEOWNERS, require the owner even under autopilot.
+  The normal pinned-app green-head, current-base, mergeability and stopped-worker
+  gates apply. Head/base movement and revoked approval refuse the merge.
+
+Merge follow-up journals the PR's Done/turn update and fast-forwards the clean main
+checkout on `baseBranch`, reinstalling dependencies last when configured. It does
+not close associated issues, delete the author branch or clean up task worktrees.
+Retry `pr merge <n>` after an interrupted follow-up; an already-merged PR only
+reconciles follow-up, never performs another merge.
 
 ## Task-flow commands
 

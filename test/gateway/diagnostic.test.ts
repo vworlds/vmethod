@@ -231,6 +231,62 @@ test.each([null, "102"])(
   15000
 );
 
+test.each(["user", "anyone"])(
+  "accepted account %s still filters nested authors and text aliases",
+  async (field) => {
+    const fixture = fixtureServer([
+      {
+        path: "/graphql",
+        json: {
+          data: {
+            [field]: {
+              login: "worker",
+              __vm_actor: "User",
+              __vm_login: "worker",
+              __vm_databaseId: 102,
+              issues: {
+                nodes: [
+                  {
+                    body: hostile,
+                    __vm_author: { ...actor(1), databaseId: 999 },
+                    __vm_repository: item().repository,
+                  },
+                ],
+              },
+              projectsV2: { nodes: [{ number: 7, caption: hostile }] },
+            },
+          },
+        },
+      },
+    ]);
+    const file = join(fixture.root, "query.graphql");
+    writeFileSync(
+      file,
+      `query { ${field === "user" ? "" : `${field}: `}user(login:"worker") {
+    login issues(first:1) { nodes { body } }
+    projectsV2(first:1) { nodes { number caption: title } }
+  } }`
+    );
+    const output = await fixture.transport.call("ghRead", { source: file });
+    expect(decode(output)).toEqual({
+      [field]: {
+        login: "worker",
+        attribution: "from worker (worker)",
+        issues: { nodes: [] },
+        projectsV2: { nodes: [{ number: 7 }] },
+      },
+    });
+    expect(
+      output.endsWith(
+        "0 items dropped by the people filter\n1 nested values redacted\n1 text fields redacted from unattributable items"
+      )
+    ).toBe(true);
+    expect(output).not.toContain("__vm_");
+    fixture.done();
+  },
+  15000
+);
+
 test("a GraphQL user lookup inside a repository no longer poses as a REST item author", async () => {
   const fixture = fixtureServer([
     {
@@ -311,7 +367,11 @@ test("REST diagnostics filter known author fields and unverifiable edits and nev
   });
   expect(output).toContain("from worker (worker)");
   expect(output).not.toContain("NEVER DELIVER");
-  expect(output.endsWith("4 items dropped by the people filter")).toBe(true);
+  expect(
+    output.endsWith(
+      "3 items dropped by the people filter\n1 text fields redacted from unattributable items"
+    )
+  ).toBe(true);
   fixture.done();
 }, 15000);
 

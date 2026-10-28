@@ -44,7 +44,13 @@ import {
   taskGroupNumbers,
   type AutopilotState,
 } from "./autopilot.js";
-import { sameAssignees, setTurn, turnAssignees } from "./turn.js";
+import {
+  ownerActivityFields,
+  ownerForTurn,
+  sameAssignees,
+  setTurn,
+  turnAssignees,
+} from "./turn.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 
@@ -121,6 +127,8 @@ export interface LoopHost {
   conflictFixing?: (pr: number) => boolean;
   board: Pick<BoardService, "set" | "moveToTop">;
   digest: Digest;
+  /** Refresh registry/config before each poll, optionally replacing this loop. */
+  refresh?: () => EventLoop | undefined;
 }
 
 interface PendingEvent {
@@ -150,6 +158,7 @@ interface PrInfo {
 }
 
 interface CardInfo {
+  ownerActivity?: ObjectData;
   autopilotLabel?: boolean;
   autopilotStopped?: boolean;
   contentId: string;
@@ -351,6 +360,8 @@ export function listMutes(config: Config, env: NodeJS.ProcessEnv): string {
  * gateway client, filters every author through people.yaml, and hands the client
  * metadata-only wake-up lines. Events are acknowledged only after the client
  * printed them, so a kill between fetch and print loses nothing.
+ * Registry/config refresh runs before each poll; a supplied session preserves the
+ * existing state directory across configuration rebuilds.
  * Scoped board closures reconcile Done/Progress/management turns silently.
  * Own task PRs include submitted inline review comments, deduplicated by database ID;
  * initially resolved threads are baselined without reporting their existing comments.
@@ -368,7 +379,6 @@ export class EventLoop {
   private readonly reserve: number;
   private readonly preview: boolean;
   private readonly boardEnabled: boolean;
-  private readonly owners: Set<string>;
   private readonly writes: WriteJournal;
   private readonly subjectPreviews = new Map<
     string,
@@ -424,10 +434,11 @@ export class EventLoop {
 
   constructor(
     private readonly host: LoopHost,
-    input: SessionInput
+    input: SessionInput,
+    session?: ResolvedSession
   ) {
     const config = host.config;
-    this.session = resolveSession(config, input);
+    this.session = session ?? resolveSession(config, input);
     this.dir = stateRoot(host.env, this.session.stateName);
     this.writes = new WriteJournal(config, host.env, host.deps.now, this.session.stateName);
     this.own = String(config.repo);
@@ -447,11 +458,6 @@ export class EventLoop {
     this.reserve = typeof reserve === "number" ? reserve : 100;
     this.preview = object(config.watch).preview === true;
     this.boardEnabled = object(config.board).enabled !== false;
-    this.owners = new Set(
-      host.filter.people
-        .filter((person) => person.role === "owner")
-        .map((person) => person.login.toLowerCase())
-    );
   }
 
   async nextEvents(input: WatchInput): Promise<{
@@ -1307,7 +1313,20 @@ export class EventLoop {
   }
 
   private async pollOnce(): Promise<void> {
+    const replacement = this.host.refresh?.();
+    if (replacement && replacement !== this) {
+      await replacement.pollOnce();
+      return;
+    }
     await this.host.github.polling(() => this.runPoll(), this.dir);
+  }
+
+  private get owners(): Set<string> {
+    return new Set(
+      this.host.filter.people
+        .filter((person) => person.role === "owner")
+        .map((person) => person.login.toLowerCase())
+    );
   }
 
   private async runPoll(): Promise<void> {
@@ -2666,7 +2685,19 @@ export class EventLoop {
         card.autopilotStopped &&
         ["Spec review", "Owner review", "Approved"].includes(card.column)
       ) {
-        const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, "owner");
+        const next = turnAssignees(
+          this.host.filter.people,
+          card.repo,
+          card.assignees,
+          "owner",
+          await ownerForTurn(
+            this.host.github,
+            this.host.filter.people,
+            card.repo,
+            card.number,
+            card.ownerActivity
+          )
+        );
         await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
         await this.host.board.set({ itemId: card.id, field: "Progress", value: "👤🔍" });
         card.assignees = next;
@@ -3050,7 +3081,7 @@ export class EventLoop {
       for (;;) {
         const data = object(
           await this.host.github.graphql(
-            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state stateReason closedAt blockedBy(first: 100) { totalCount nodes { number state repository { nameWithOwner } } } subIssues(first: 100) { nodes { id } pageInfo { hasNextPage } } closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
+            `query WatchBoard($owner: String!, $number: Int!, $cursor: String) { organization(login: $owner) { projectV2(number: $number) { id readme items(first: 100, after: $cursor) { nodes { id status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } } progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } } content { __typename ... on Issue { ${this.owners.size > 1 ? ownerActivityFields(false) : ""} id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state stateReason closedAt blockedBy(first: 100) { totalCount nodes { number state repository { nameWithOwner } } } subIssues(first: 100) { nodes { id } pageInfo { hasNextPage } } closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } } title author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } ... on PullRequest { ${this.owners.size > 1 ? ownerActivityFields(true) : ""} id number labels(first: 100) { nodes { name } pageInfo { hasNextPage } } state closedAt closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } } } } title headRefOid reviews(last: 100) { nodes { id state commit { oid } author { ${actorFields} } } } author { __typename login ... on User { databaseId } ... on Bot { databaseId } } repository { nameWithOwner owner { login } } assignees(first: 10) { nodes { login } } } } } pageInfo { hasNextPage endCursor } } } } }`,
             { owner, number, cursor }
           )
         );
@@ -3118,6 +3149,7 @@ export class EventLoop {
         .filter(Boolean)
         .at(-1),
       id: str(node.id),
+      ownerActivity: this.owners.size > 1 ? object(content.ownerActivity) : undefined,
       contentId: str(content.id),
       repo: scope.repo,
       number,
@@ -3668,7 +3700,21 @@ export class EventLoop {
     const next =
       role === undefined
         ? undefined
-        : turnAssignees(this.host.filter.people, card.repo, card.assignees, role);
+        : turnAssignees(
+            this.host.filter.people,
+            card.repo,
+            card.assignees,
+            role,
+            role === "owner"
+              ? await ownerForTurn(
+                  this.host.github,
+                  this.host.filter.people,
+                  card.repo,
+                  card.number,
+                  card.ownerActivity
+                )
+              : undefined
+          );
     const mismatch = next && [...next].sort().join(",") !== [...card.assignees].sort().join(",");
     if (
       report &&
