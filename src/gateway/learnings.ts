@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
+import { DirLock } from "../journal/locks.js";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   renameSync,
-  rmdirSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -312,9 +312,9 @@ export class LearningsService {
     }
     const directory = stateRoot(this.env, String(this.config.stateName ?? repo.replace("/", "-")));
     mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const lock = join(directory, "learnings.lock");
+    const lock = new DirLock(join(directory, "learnings.lock"));
     try {
-      mkdirSync(lock);
+      lock.acquire();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
         throw new Error(
@@ -327,7 +327,7 @@ export class LearningsService {
     try {
       return await this.submitLocked(input, records, repo, directory, included);
     } finally {
-      rmdirSync(lock);
+      lock.release();
     }
   }
 

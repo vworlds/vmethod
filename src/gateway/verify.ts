@@ -1,11 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  rmdirSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Config } from "../config.js";
 import type { Dependencies } from "./client.js";
@@ -15,6 +8,7 @@ import { runVerifyHook } from "./verify-hook.js";
 import type { Operations, Verdict } from "./transport.js";
 import { liveBaseHead } from "./base-head.js";
 import { reference } from "./refs.js";
+import { DirLock } from "../journal/locks.js";
 
 /** Orchestrator integration work; project recipes receive no gateway credentials. */
 export class VerificationService {
@@ -37,16 +31,16 @@ export class VerificationService {
       branches?.worktreeRoot ?? ".worktrees"
     );
     mkdirSync(parent, { recursive: true });
-    const lock = join(parent, ".vmethod-review-lock");
+    const lock = new DirLock(join(parent, ".vmethod-review-lock"));
     try {
-      mkdirSync(lock);
+      lock.acquire();
     } catch {
       throw new Error("verify: review worktree is locked; another verify may be running");
     }
     try {
       return await this.runVerify(input);
     } finally {
-      rmdirSync(lock);
+      lock.release();
     }
   }
 

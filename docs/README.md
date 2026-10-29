@@ -9,6 +9,7 @@ Read the guide for your role, then follow the linked rules for the work at hand.
 - [Worker guide](worker-guide.md)
 - [Orchestrator guide](orchestrator-guide.md)
 - [Tooling incident rules](tooling-rules.md)
+- [Lock policies](locks.md)
 - [Security and permission boundary](security.md)
 - [Changing the methodology and sharing learnings](change-process.md)
 - [Shared learning commands and privacy](learnings.md)

@@ -1,21 +1,9 @@
 import { LoopState, Marker } from "../watch/state.js";
-import { lockHolder } from "./lock-holder.js";
+import { OwnedLock } from "../journal/locks.js";
 import { renderPermissions } from "./permission-detail.js";
 import { QuotaCrossings, limitsConfig, type ProviderLimits } from "./limits.js";
-import {
-  closeSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { procStart } from "./process-identity.js";
 import { dirname, join, resolve } from "node:path";
 import manifest from "../../package.json" with { type: "json" };
 import { WatchDelivery } from "./watch-delivery.js";
@@ -900,73 +888,8 @@ export class EventLoop {
   }
 
   private acquireLock(): void {
-    const path = this.state.lock.path;
-    const start = procStart(this.host.deps.readProc(this.host.deps.pid));
-    if (start === null) {
-      throw new Error("watcher lock requires /proc/<pid>/stat (Linux)");
-    }
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const fd = openSync(path, "wx", 0o600);
-        writeFileSync(
-          fd,
-          `${JSON.stringify(lockHolder("watch", this.host.deps.pid, this.host.deps.now(), start))}\n`,
-          { mode: 0o600 }
-        );
-        closeSync(fd);
-        break;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-          throw error;
-        }
-        let holderText: string;
-        try {
-          holderText = readFileSync(path, "utf8");
-        } catch (readError) {
-          if ((readError as NodeJS.ErrnoException).code === "ENOENT" && attempt < 2) {
-            continue;
-          }
-          throw readError;
-        }
-        const holder = object(safeJson(holderText));
-        if (count(holder.pid) === null && this.host.deps.now() - statSync(path).mtimeMs < 60_000) {
-          throw new Error("watch: another watcher is initializing the lock; retry shortly", {
-            cause: error,
-          });
-        }
-        const holderPid = count(holder.pid);
-        const holderStart = procStart(
-          holderPid === null ? null : this.host.deps.readProc(holderPid)
-        );
-        // The same PID with a different start time is a reused PID: stale, not alive.
-        if (holderPid !== null && holderStart !== null && holderStart === holder.start) {
-          throw new Error(`watch: another watcher (pid ${holderPid}) holds ${this.dir}`, {
-            cause: error,
-          });
-        }
-        if (attempt >= 2) {
-          throw new Error(`watch: cannot clear the stale watcher lock in ${this.dir}`, {
-            cause: error,
-          });
-        }
-        // Another contender may already have replaced this stale file.
-        if (readFileSync(path, "utf8") !== holderText) {
-          continue;
-        }
-        unlinkSync(path);
-      }
-    }
     // A graceful exit clears our own lock; a crash leaves it to the staleness check.
-    this.releaseLock = () => {
-      try {
-        const holder = object(safeJson(readFileSync(path, "utf8")));
-        if (count(holder.pid) === this.host.deps.pid && holder.start === start) {
-          unlinkSync(path);
-        }
-      } catch {
-        /* an exit handler must never throw */
-      }
-    };
+    this.releaseLock = new OwnedLock(this.state.lock.path, this.host.deps).watch(this.dir);
     process.once("exit", this.releaseLock);
   }
 
