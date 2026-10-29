@@ -15,7 +15,7 @@ import {
 } from "../../src/core/progress.js";
 import { workflowColumns } from "../../src/board/runner.js";
 import { writeState } from "../../src/board/readme.js";
-import { EventLoop } from "../../src/gateway/events.js";
+import { BoardPoller } from "../../src/watch/board.js";
 import { BoardService } from "../../src/gateway/board.js";
 import { TaskFlow } from "../../src/gateway/task-flow.js";
 import { people } from "../gateway/helpers.js";
@@ -55,16 +55,17 @@ function watcher() {
     expect(body.assignees.every((login) => ["owner", "peer", "worker"].includes(login))).toBe(true);
     return {};
   });
-  const loop = Object.assign(Object.create(EventLoop.prototype), {
+  const loop = Object.assign(Object.create(BoardPoller.prototype), {
     host: {
       filter: { people },
       github: { rest },
       board: { moveToTop: vi.fn() },
       deps: { report: vi.fn() },
     },
-    taskIssues: new Map(),
-    pendingMergedIssues: new Set(),
-    isOwn: () => true,
+    deps: {
+      current: () => ({ taskIssues: new Map(), pendingMergedIssues: new Set() }),
+      isOwn: () => true,
+    },
   }) as {
     reconcileTurn(card: Record<string, unknown>, report: boolean): Promise<void>;
     applyProgress(card: Record<string, unknown>): Promise<void>;
