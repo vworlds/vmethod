@@ -95,10 +95,20 @@ export function decodeLimits(value: unknown, now: number, atRisk = 15): Provider
     windows.sort((a, b) =>
       a.windowSeconds && b.windowSeconds ? a.windowSeconds - b.windowSeconds : 0
     );
-    return windows.length
-      ? [{ provider: provider.providerID, windows, atRisk: windows[0].remainingPercent < atRisk }]
+    const binding = bindingWindow(windows);
+    return binding
+      ? [{ provider: provider.providerID, windows, atRisk: binding.remainingPercent < atRisk }]
       : [];
   });
+}
+
+/** Lowest-remaining window; array order breaks ties toward the shorter window. */
+function bindingWindow(windows: readonly LimitWindow[]): LimitWindow | undefined {
+  return windows.reduce<LimitWindow | undefined>(
+    (binding, window) =>
+      !binding || window.remainingPercent < binding.remainingPercent ? window : binding,
+    undefined
+  );
 }
 
 /** Informational family summary shared by CLI, launch advice and worker models. */
@@ -124,7 +134,10 @@ export class QuotaCrossings {
       if (!affected.length && !this.risky.has(reading.provider)) {
         continue;
       }
-      const window = reading.windows[0];
+      const window = bindingWindow(reading.windows);
+      if (!window) {
+        continue;
+      }
       if (reading.atRisk && !this.risky.has(reading.provider) && affected.length) {
         this.risky.add(reading.provider);
         lines.push(
