@@ -1,6 +1,6 @@
 import { type Config } from "../config.js";
 import { type Dependencies, type GitHubClient } from "../gateway/client.js";
-import { type BoardService } from "../gateway/board.js";
+import { type BoardOperation, type BoardService } from "../gateway/board.js";
 import { object, type ObjectData, type Person } from "../gateway/people.js";
 import { checkMarkdown, guardClosingKeywords } from "../gateway/markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "../gateway/git.js";
@@ -147,14 +147,15 @@ export class TaskCommon {
       return;
     }
     const board = this.host.board();
-    const id = await board.ensure(String(item.id));
+    const operation: BoardOperation = {};
+    const id = await board.ensure(String(item.id), operation);
     if (status) {
-      await board.set({ itemId: id, field: "Status", value: status, progress });
+      await board.set({ itemId: id, field: "Status", value: status, progress }, operation);
     } else {
-      await board.set({ itemId: id, field: "Progress", value: progress });
+      await board.set({ itemId: id, field: "Progress", value: progress }, operation);
     }
     if (model) {
-      await board.set({ itemId: id, field: "Model", value: model });
+      await board.set({ itemId: id, field: "Model", value: model }, operation);
     }
   }
 
