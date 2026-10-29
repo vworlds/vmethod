@@ -88,7 +88,8 @@ export class ConflictService {
     const start = this.lockStart();
     const busy = await this.acquire(pr, lock, start, waitMs);
     if (busy !== undefined) {
-      return busy;
+      // The machine owns the busy transition too; no record read while another holds it.
+      return step(undefined, { ...this.observation(pr, "resolve", retry), busy }).line;
     }
     try {
       return (await this.run(pr, "resolve", retry)).line;
@@ -120,7 +121,7 @@ export class ConflictService {
     const start = this.lockStart();
     const busy = await this.acquire(pr, lock, start, conflictLockWaitMs);
     if (busy !== undefined) {
-      return true;
+      return step(undefined, { ...this.observation(pr, "recover", false), busy }).active!;
     }
     try {
       return (await this.run(pr, "recover", false)).active!;
@@ -145,17 +146,25 @@ export class ConflictService {
     );
   }
 
+  private observation(
+    pr: number,
+    operation: Observation["operation"],
+    retry: boolean
+  ): Observation {
+    return {
+      pr,
+      operation,
+      retry,
+      at: "start",
+      root: this.root,
+      escalatePaths: this.config.conflicts?.escalatePaths ?? [],
+    };
+  }
+
   private async run(pr: number, operation: Observation["operation"], retry: boolean) {
     const run: Run = {
       record: this.read(pr),
-      observation: {
-        pr,
-        operation,
-        retry,
-        at: "start",
-        root: this.root,
-        escalatePaths: this.config.conflicts?.escalatePaths ?? [],
-      },
+      observation: this.observation(pr, operation, retry),
       git: new GitTransport(this.config, this.env, this.deps, this.root),
     };
     for (;;) {

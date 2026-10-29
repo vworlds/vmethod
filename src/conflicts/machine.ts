@@ -110,7 +110,9 @@ export interface Observation {
   /** A failed pre-dispatch observation must delete the not-yet-dispatched record
    * before propagating the original failure (including non-Error throws). */
   readError?: { error: unknown };
-  /** Lock acquisition stays in the runner; a held lock supplies no other reads. */
+  /** Lock acquisition stays in the runner, which reports a held lock here and
+   * supplies no other reads: resolve answers the holder's PENDING line, recover
+   * reports the resolution as active. */
   busy?: string;
 }
 
