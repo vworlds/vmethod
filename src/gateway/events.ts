@@ -51,8 +51,7 @@ import { repoOf, restActor } from "../github/diagnostic.js";
 import { pages, restPages } from "../github/pages.js";
 import { actorFields } from "../github/selections.js";
 import { WriteJournal } from "./write-journal.js";
-import { taskIssueNumbers } from "./task-flow-types.js";
-import { taskHeld } from "./task-hold.js";
+import { taskHeld, taskIssueNumbers } from "../tasks/markers.js";
 import { ScopeReader, legacyScopeCutoff } from "../evidence/scope.js";
 import {
   AutopilotReader,

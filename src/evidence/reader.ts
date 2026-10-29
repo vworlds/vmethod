@@ -4,7 +4,7 @@ import type { BoardService } from "../gateway/board.js";
 import type { GitHubClient } from "../gateway/client.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "../gateway/people.js";
 import { reference } from "../gateway/refs.js";
-import { taskIssueNumbers } from "../gateway/task-flow-types.js";
+import { taskIssueNumbers } from "../tasks/markers.js";
 import { repoOf } from "../github/diagnostic.js";
 import { pages } from "../github/pages.js";
 import { actorFields, identityFields } from "../github/selections.js";

@@ -1,6 +1,6 @@
 import { heading, parseFirstLine, wakeHeading } from "../core/protocol.js";
 import type { WorkerSessionStatus } from "../gateway/client.js";
-import { taskHeld } from "../gateway/task-hold.js";
+import { taskHeld } from "../tasks/markers.js";
 import { modelGateError } from "../evidence/model-gate.js";
 import { modelProvider, type ProviderLimits } from "../gateway/limits.js";
 import type { Model, Session, TaskMetadata } from "../gateway/workers.js";

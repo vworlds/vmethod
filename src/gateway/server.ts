@@ -54,12 +54,16 @@ import {
   type ThreadItem,
 } from "./thread.js";
 import { inheritAutopilot, workflowLabels } from "../evidence/autopilot.js";
-import { taskIssueNumbers } from "./task-flow-types.js";
+import {
+  isTaskPrompt,
+  legacyIssueHeaders,
+  taskHeader,
+  taskIssueNumbers,
+} from "../tasks/markers.js";
 import { ownerForTurn, setTurn, turnAssignees } from "./turn.js";
 import { renderProgress, ownerReplyProgress } from "../core/progress.js";
 import { workflowColumns } from "../board/runner.js";
-import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
-import { isTaskPrompt } from "./task-flow-types.js";
+import { TaskFlow } from "./task-flow.js";
 import { GitTransport, pushFailureMessage, taskBranch, validateBranch } from "./git.js";
 import { realpathSync } from "node:fs";
 import { matchesGlob, resolve } from "node:path";
@@ -524,9 +528,10 @@ class GatewayServer {
     }
     // Draft task prompts deliberately avoid closing keywords, so also accept the explicit task issue header.
     const body = String(item.body ?? "");
-    const header = /^# Task:.*?\((?:part of )?issue #([1-9]\d*)\)/m.exec(body);
+    // The metadata reader's historical acceptance: any line, a lazy title, no line-end bound.
+    const header = taskHeader(body, { anchor: "any line", title: "any text", end: "anywhere" });
     if (header) {
-      numbers.add(Number(header[1]));
+      numbers.add(header.issue);
     }
     if (!numbers.size) {
       for (const issue of legacyIssueHeaders(body)) {
