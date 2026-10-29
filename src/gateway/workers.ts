@@ -1,6 +1,6 @@
 import { heading, parseFirstLine, workerHeading } from "../core/protocol.js";
 import { estimateScale } from "../board/estimate.js";
-import { parseProgress } from "../board/progress.js";
+import { parseProgress } from "../core/progress.js";
 import { taskHeld } from "./task-hold.js";
 import { taskModelOverride } from "./task-flow-types.js";
 import {

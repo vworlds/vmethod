@@ -4,7 +4,7 @@ import type { Config } from "../config.js";
 import { compatibility, readState } from "../board/readme.js";
 import { MigrationRunner } from "../board/runner.js";
 import { loadMigrations } from "../board/migrations.js";
-import { progressStates, parseProgress } from "../board/progress.js";
+import { progressStates, parseProgress, expectedTurn } from "../core/progress.js";
 import type {
   BoardIO,
   Card,
@@ -836,16 +836,10 @@ export class BoardService implements BoardIO {
       throw new Error("Refusing assignee housekeeping on an archived board item");
     }
     const { people } = this.filter;
-    const state = parseProgress(card.values.Progress).state ?? "";
-    const expected = ["owner-review", "owner-question"].includes(state)
-      ? "owner"
-      : ["ready", "question", "blocked", "verifying", "design", "handoff"].includes(state)
-        ? "orchestrator"
-        : state === "working"
-          ? null
-          : ["Spec review", "Owner review"].includes(String(card.values.Status ?? ""))
-            ? "owner"
-            : null;
+    const expected = expectedTurn(
+      parseProgress(card.values.Progress).state,
+      String(card.values.Status ?? "")
+    );
     const owner =
       expected === "owner" ? await ownerForTurn(this.github, people, repo, number) : undefined;
     const describe = (role: "owner" | "orchestrator" | null): string =>

@@ -31,7 +31,14 @@ import { WatchBoard } from "./watch-board.js";
 import { WatchPacing } from "./watch-pacing.js";
 import type { Config } from "../config.js";
 import { boardCost } from "../cost.js";
-import { parseProgress, renderProgress, revivedProgressStates } from "../board/progress.js";
+import {
+  parseProgress,
+  renderProgress,
+  progressGuards,
+  mayReplace,
+  reconciledTurn,
+  hasOrchestratorProgress,
+} from "../core/progress.js";
 import { readState } from "../board/readme.js";
 import type { BoardService } from "./board.js";
 import {
@@ -1525,7 +1532,7 @@ export class EventLoop {
     if (oldHead !== pr.sha) {
       if (oldHead && !this.writes.pushed(this.own, pr.number, pr.sha)) {
         if (!this.host.conflictFixing?.(pr.number)) {
-          this.queueProgress(pr.number, { state: "working", if: revivedProgressStates });
+          this.queueProgress(pr.number, { state: "working", if: progressGuards.revive });
         }
         this.touchActivity(pr.number, new Date(this.host.deps.now()).toISOString());
       }
@@ -1593,7 +1600,7 @@ export class EventLoop {
       }
     } else if (pr.mergeable === "MERGEABLE" && this.marked(this.state.pr(pr.number).conflict)) {
       this.state.pr(pr.number).conflict.remove();
-      this.queueProgress(pr.number, { state: "working", if: ["conflict"] });
+      this.queueProgress(pr.number, { state: "working", if: progressGuards.conflictResolved });
     }
     if (
       pr.baseMoved &&
@@ -1655,7 +1662,7 @@ export class EventLoop {
           `PR #${pr.number} (${pr.branch}): STALE${unreachable ? " (worker unreachable)" : ""}: no worker reply for 30+ min after my review ${url}`
         )
       ) {
-        this.queueProgress(pr.number, { state: "idle", if: ["working"] });
+        this.queueProgress(pr.number, { state: "idle", if: progressGuards.stopped });
       }
     }
   }
@@ -2200,7 +2207,7 @@ export class EventLoop {
     if (taskPr && person.role === "worker") {
       this.touchActivity(number, created);
       if (!this.host.conflictFixing?.(number)) {
-        this.queueProgress(number, { state: "working", if: revivedProgressStates });
+        this.queueProgress(number, { state: "working", if: progressGuards.revive });
       }
     }
     let subject = this.subjectPreviews.get(`${repo.toLowerCase()}#${number}`);
@@ -2257,7 +2264,7 @@ export class EventLoop {
       this.touchActivity(number, created);
       if (taskPr) {
         if (!this.host.conflictFixing?.(number)) {
-          this.queueProgress(number, { state: "working", if: revivedProgressStates });
+          this.queueProgress(number, { state: "working", if: progressGuards.revive });
         }
         this.quietOnce(
           `c-${key(url)}`,
@@ -2813,7 +2820,7 @@ export class EventLoop {
       if (
         card.state !== "OPEN" ||
         card.column === "Done" ||
-        (!card.progress.startsWith("🧭") &&
+        (!hasOrchestratorProgress(card.progress) &&
           !(
             (card.column === "Executing" || card.column === "Spec review" || unanswered) &&
             assigned
@@ -3517,7 +3524,7 @@ export class EventLoop {
       ["owner-review", "owner-question"].includes(current.state ?? "");
     const only = Array.isArray(pending.if) ? pending.if.map(str) : undefined;
     const stateAllowed =
-      (!only || only.includes(current.state ?? "")) &&
+      mayReplace(current.state, pending.state === null ? null : str(pending.state), only) &&
       (!ownerPaused ||
         pending.releaseOwner === true ||
         ["owner-review", "owner-question"].includes(str(pending.state)));
@@ -3585,14 +3592,7 @@ export class EventLoop {
       !card.scopePending &&
       ([...this.taskIssues.values()].some((issues) => issues.includes(card.number)) ||
         this.pendingMergedIssues.has(card.number));
-    const role =
-      state === "owner-review" || state === "owner-question"
-        ? "owner"
-        : ["ready", "question", "blocked", "verifying", "design", "handoff"].includes(state ?? "")
-          ? "orchestrator"
-          : state === "working"
-            ? null
-            : undefined;
+    const role = reconciledTurn(state);
     const next =
       role === undefined
         ? undefined
@@ -3710,7 +3710,7 @@ export class EventLoop {
   private ownerTurn(card: CardInfo): boolean {
     return (
       card.assignees.some((login) => this.owners.has(login.toLowerCase())) ||
-      ["owner-review", "owner-question"].includes(parseProgress(card.progress).state ?? "")
+      reconciledTurn(parseProgress(card.progress).state) === "owner"
     );
   }
 
@@ -4051,7 +4051,7 @@ export class EventLoop {
             `PR #${pr.number} (${pr.branch}): SILENT: no commit or comment for 40+ min while Executing ${url}`
           )
         ) {
-          this.queueProgress(pr.number, { state: "silent", if: ["working"] });
+          this.queueProgress(pr.number, { state: "silent", if: progressGuards.silent });
         }
       }
       if (!pr.branch) {
@@ -4121,7 +4121,7 @@ export class EventLoop {
         ) {
           this.queueProgress(pr.number, {
             state: "permission",
-            if: ["working", "silent", "idle", "failed"],
+            if: progressGuards.permission,
           });
         }
       } else if (status.state === "failed") {
@@ -4134,7 +4134,7 @@ export class EventLoop {
         ) {
           this.queueProgress(pr.number, {
             state: "failed",
-            if: ["working", "silent", "idle", "permission"],
+            if: progressGuards.failed,
           });
         }
       } else if (status.state === "idle") {
@@ -4157,7 +4157,7 @@ export class EventLoop {
             "worker",
             `WORKER #${pr.number}: stopped without reply; send it a nudge ${url}`
           );
-          this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
+          this.queueProgress(pr.number, { state: "idle", if: progressGuards.idle });
         }
       }
       stopMarker.write(`${stop}\n`);
