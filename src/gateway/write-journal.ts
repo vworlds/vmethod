@@ -6,13 +6,9 @@ import { stateRoot } from "./digest.js";
 import { object, type ObjectData } from "./people.js";
 import { writeSession } from "./watch-scope.js";
 import { PidLock } from "../journal/locks.js";
+import { JOURNAL_MATCH_MS, OPERATION_INFLIGHT_MS } from "../core/time.js";
 
 const RETENTION_MS = 24 * 60 * 60_000;
-const MATCH_MS = 2 * 60_000;
-/** A verb's operation record counts as in-flight for two minutes; the watcher's
- * violation checks keep such a card quiet so a poll between the verb's own
- * writes never reports its handoff (#199). */
-const INFLIGHT_MS = MATCH_MS;
 
 export interface WriteRecord {
   /** ISO-8601 server-observation time of the successful mutation response. */
@@ -67,7 +63,7 @@ export class WriteJournal {
           ? entry.commentId !== undefined && event.commentId !== undefined
             ? entry.commentId === event.commentId
             : entry.nodeId !== undefined && entry.nodeId === event.nodeId
-          : Number.isFinite(time) && Math.abs(Date.parse(entry.at) - time) <= MATCH_MS)
+          : Number.isFinite(time) && Math.abs(Date.parse(entry.at) - time) <= JOURNAL_MATCH_MS)
     );
   }
 
@@ -98,7 +94,7 @@ export class WriteJournal {
    * violation checks quiet: a verb's operation record within the window (#199), or a
    * recent Status move into a delivery column (the #178 open-task skip).
    */
-  recentlyWrote(repo: string, number: number, withinMs = INFLIGHT_MS): boolean {
+  recentlyWrote(repo: string, number: number, withinMs = OPERATION_INFLIGHT_MS): boolean {
     const since = this.now() - withinMs;
     return this.read().some(
       (entry) =>

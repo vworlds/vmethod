@@ -1,4 +1,5 @@
 import { matchesGlob } from "node:path";
+import { CONFLICT_RESOLUTION_MS, CONFLICT_START_GRACE_MS } from "../core/time.js";
 import type { CiSnapshot } from "../gateway/checks.js";
 import type { ConflictPrior } from "../gateway/task-flow-types.js";
 import { lockfilesOnly } from "../gateway/lockfile.js";
@@ -398,7 +399,7 @@ export function step(record: Resolution | undefined, o: Observation): Transition
     case "outside-proof":
       return o.clean ? (o.retry ? go("deadline") : go("deadline", { kind: "clock" })) : outside();
     case "deadline":
-      if (!o.retry && o.now! - r!.started > 60 * 60_000) {
+      if (!o.retry && o.now! - r!.started > CONFLICT_RESOLUTION_MS) {
         return block("conflict resolution exceeded the one-hour limit");
       }
       return go("status", { kind: "status" });
@@ -415,7 +416,7 @@ export function step(record: Resolution | undefined, o: Observation): Transition
       }
       return s.head === r!.head ? go("grace", { kind: "clock" }) : go("constraints");
     case "grace":
-      if (o.now! - r!.started < 120_000) {
+      if (o.now! - r!.started < CONFLICT_START_GRACE_MS) {
         return done(`PENDING #${pr}: waiting for conflict turn to start`);
       }
       return r!.step === 1
