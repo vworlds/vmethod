@@ -3,7 +3,6 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
-  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -19,6 +18,7 @@ import type { ConflictPrior } from "./task-flow-types.js";
 import { cleanBaseMerges } from "./clean-base.js";
 import { liveBaseHead } from "./base-head.js";
 import { procStart, type EventDeps } from "./events.js";
+import { OwnedLock } from "../journal/locks.js";
 import { assertLockfileInSync, lockfilesOnly, npmCiEnvironment } from "./lockfile.js";
 
 export const conflictCertification =
@@ -272,77 +272,12 @@ export class ConflictService {
 
   /** Create the per-pr lock, or return a quiet in-progress line while a live owner keeps it. */
   private tryAcquire(pr: number, lock: string, start: number): string | undefined {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        writeFileSync(
-          lock,
-          `${JSON.stringify({ pid: this.deps.pid, start, at: new Date(this.deps.now()).toISOString() })}\n`,
-          { flag: "wx", mode: 0o700 }
-        );
-        return undefined;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-          throw error;
-        }
-        let holderText: string;
-        try {
-          holderText = readFileSync(lock, "utf8");
-        } catch (readError) {
-          const code = (readError as NodeJS.ErrnoException).code;
-          if (code === "EISDIR") {
-            // A lock left by versions before the owned lock is a directory: ownerless.
-            try {
-              rmdirSync(lock);
-            } catch (rmdirError) {
-              if ((rmdirError as NodeJS.ErrnoException).code !== "ENOENT") {
-                throw new Error(
-                  `Conflict #${pr}: cannot clear the legacy conflict lock directory`,
-                  {
-                    cause: rmdirError,
-                  }
-                );
-              }
-            }
-            continue;
-          }
-          if (code === "ENOENT" && attempt < 2) {
-            continue; // A contender cleared it; create again.
-          }
-          throw readError;
-        }
-        const holder = lockOwner(holderText);
-        const holderStart = procStart(holder.pid === null ? null : this.deps.readProc(holder.pid));
-        // The same pid with a different start time is a reused pid: stale, not alive.
-        if (holder.pid !== null && holderStart !== null && holderStart === holder.start) {
-          return `PENDING #${pr}: conflict resolution in progress (pid ${holder.pid})`;
-        }
-        // Unlike the watcher there is no freshness gate on an unreadable body: only a
-        // crash between the exclusive create and the body write produces one, and
-        // reading it as a dead owner recovers immediately.
-        if (attempt >= 2) {
-          throw new Error(`Conflict #${pr}: cannot clear the stale conflict lock`, {
-            cause: error,
-          });
-        }
-        // Another contender may already have replaced this stale file.
-        if (readFileSync(lock, "utf8") !== holderText) {
-          continue;
-        }
-        unlinkSync(lock);
-      }
-    }
+    return new OwnedLock(lock, this.deps).conflict(pr, start);
   }
 
   /** Release only while we still own the lock; a takeover must not erase a later owner's claim. */
   private release(lock: string, start: number): void {
-    try {
-      const holder = lockOwner(readFileSync(lock, "utf8"));
-      if (holder.pid === this.deps.pid && holder.start === start) {
-        unlinkSync(lock);
-      }
-    } catch {
-      /* releasing never masks the resolution's own outcome */
-    }
+    new OwnedLock(lock, this.deps).releaseConflict(start);
   }
 
   private async run(pr: number, retry: boolean): Promise<string> {
@@ -793,26 +728,5 @@ export class ConflictService {
     const file = join(this.directory, `${pr}.json`);
     writeFileSync(`${file}.new`, JSON.stringify(record) + "\n", { mode: 0o600 });
     renameSync(`${file}.new`, file);
-  }
-}
-
-/** A conflict lock holder; PIDs are reused, so the recorded process start decides liveness. */
-interface LockOwner {
-  pid: number | null;
-  start: number | null;
-}
-
-/** Anything unreadable reads as no owner, so a damaged lock is cleared instead of blocking. */
-function lockOwner(text: string): LockOwner {
-  try {
-    const holder = JSON.parse(text) as unknown;
-    const pid = Number((holder as { pid?: unknown }).pid);
-    const start = Number((holder as { start?: unknown }).start);
-    return {
-      pid: Number.isSafeInteger(pid) && pid >= 1 ? pid : null,
-      start: Number.isSafeInteger(start) && start >= 0 ? start : null,
-    };
-  } catch {
-    return { pid: null, start: null };
   }
 }

@@ -215,6 +215,10 @@ export class MigrationRunner {
     await this.io.readme(snapshot.id, writeState(snapshot.readme, state));
   }
 
+  // FieldLock stays here rather than in journal/locks.ts: field creation, README
+  // holder writes, recovery snapshots and release must keep their remote ordering.
+  // Host/boot/PID/start proves death; otherwise a fresh holder or holder-less
+  // field refuses recovery, and old/unknown holders require explicit --steal.
   private async acquire(steal: boolean, login: string): Promise<void> {
     let snapshot = await this.io.snapshot();
     const state = readState(snapshot.readme);

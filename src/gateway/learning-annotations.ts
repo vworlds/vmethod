@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
+import { DirLock } from "../journal/locks.js";
 import {
   existsSync,
   linkSync,
   mkdirSync,
   readFileSync,
   readdirSync,
-  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -214,9 +214,9 @@ export class LearningAnnotations {
       String(this.config.stateName ?? String(this.config.repo).replace("/", "-"))
     );
     mkdirSync(state, { recursive: true });
-    const lock = join(state, "learning-generation.lock");
+    const lock = new DirLock(join(state, "learning-generation.lock"));
     try {
-      mkdirSync(lock);
+      lock.acquire();
     } catch (error) {
       throw new Error(
         "Learning generation locked; confirm no writer is running before removing a stale lock",
@@ -226,7 +226,7 @@ export class LearningAnnotations {
     try {
       return input.action === "annotate" ? await this.annotate(input) : await this.aggregate(input);
     } finally {
-      rmdirSync(lock);
+      lock.release();
     }
   }
 

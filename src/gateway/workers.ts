@@ -49,7 +49,7 @@ import type { WorkerResult } from "./transport.js";
 import { modelGateError } from "./model-gate.js";
 import { workerWorktreePrefix } from "./worker-path.js";
 import { workerFirstPrompt } from "./worker-prompt.js";
-import { describeLockHolder, lockHolder } from "./lock-holder.js";
+import { DirLock } from "../journal/locks.js";
 import { renderPermissions } from "./permission-detail.js";
 import {
   decodeLimits,
@@ -487,27 +487,22 @@ export class WorkerService {
   }
   private async locked<T>(pr: number, operation: string, action: () => Promise<T>): Promise<T> {
     mkdirSync(this.state, { recursive: true, mode: 0o700 });
-    const lock = join(this.state, `${pr}.lock`);
+    const lock = new DirLock(join(this.state, `${pr}.lock`));
     try {
-      mkdirSync(lock);
+      lock.acquire();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
-      throw new Error(
-        `Worker #${pr} is locked: ${describeLockHolder(join(lock, "holder.json"), this.deps.now())}`,
-        { cause: error }
-      );
+      throw new Error(`Worker #${pr} is locked: ${lock.describe(this.deps.now())}`, {
+        cause: error,
+      });
     }
     try {
-      writeFileSync(
-        join(lock, "holder.json"),
-        JSON.stringify(lockHolder(operation, process.pid, this.deps.now())) + "\n",
-        { mode: 0o600 }
-      );
+      lock.holder(operation, this.deps.now());
       return await action();
     } finally {
-      rmSync(lock, { recursive: true });
+      lock.release(true);
     }
   }
   private async resolve(
