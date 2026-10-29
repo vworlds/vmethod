@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { DEFAULT_MODEL_FAMILY } from "../core/config.js";
 import { object } from "../gateway/people.js";
+import type { ObjectData } from "../gateway/people.js";
+import type { BoardOperation } from "../gateway/board.js";
 import { checkMarkdown, guardClosingKeywords } from "../gateway/markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "../gateway/git.js";
 import type { OpenTaskInput } from "../gateway/task-flow-types.js";
@@ -77,7 +79,7 @@ export class TaskOpen extends TaskCommon {
     return `https://github.com/${this.repo}/pull/${this.number(String(created.number))}`;
   }
 
-  /** Open an isolated draft delivery, freezing only an on-scale opening issue Estimate. */
+  /** Open an isolated draft delivery, or resume its missing card and turn writes. */
   async open(input: OpenTaskInput): Promise<string> {
     for (const value of [input.hold, input.part, input.ownerApproved]) {
       if (value !== undefined && typeof value !== "boolean") {
@@ -222,6 +224,39 @@ export class TaskOpen extends TaskCommon {
       .replaceAll("<number>", number)
       .replaceAll("<slug>", slug);
     taskBranch(branch, this.config);
+    if (issue) {
+      const existing = await this.host.github.rest(
+        `/repos/${this.repo}/pulls?state=open&head=${encodeURIComponent(`${this.repo.split("/")[0]}:${branch}`)}&per_page=100`
+      );
+      if (!Array.isArray(existing)) {
+        throw new Error("Missing task PR listing");
+      }
+      if (existing.length) {
+        if (existing.length !== 1) {
+          throw new Error("Ambiguous existing task PR");
+        }
+        const ref = String(object(existing[0]).number);
+        const pr = await this.pr(ref);
+        if (
+          pr.state !== "OPEN" ||
+          pr.isDraft !== true ||
+          pr.headRefName !== branch ||
+          pr.baseRefName !== base ||
+          !taskIssueNumbers(String(pr.body))?.includes(this.number(input.issue!))
+        ) {
+          throw new Error("Existing PR is not an open draft task for this issue and branch");
+        }
+        const pending = await this.openingCard(
+          pr,
+          String(pr.body).includes(holdBanner) ? "⛔" : "🤖🔨",
+          model.family,
+          true
+        );
+        await this.turn(ref, null);
+        await this.resumeIssue(issue, input.issue!);
+        return this.opened(ref, branch, input, pending, true);
+      }
+    }
     const templatePath = resolve(
       dirname(fileURLToPath(import.meta.url)),
       "../../templates/task-pr.md"
@@ -325,14 +360,115 @@ export class TaskOpen extends TaskCommon {
         );
       }
     }
-    await this.card(pr, "Executing", input.hold ? "⛔" : "🤖🔨", model.family);
+    const pending = await this.openingCard(
+      pr,
+      input.hold ? "⛔" : "🤖🔨",
+      model.family,
+      false,
+      Boolean(issue)
+    );
     await this.turn(ref, null);
     if (issue) {
       await this.card(issue, "Executing", null);
       await this.turn(input.issue!, null);
       await this.host.copyAutopilot?.(issue, { id: created.node_id, number: created.number, body });
     }
-    return [...advisory, `Opened draft PR #${ref} (${branch})`].join("\n");
+    return [...advisory, this.opened(ref, branch, input, pending)].join("\n");
+  }
+
+  /** Keep one ensured item through retries: only that item's resolution race is recoverable. */
+  private async openingCard(
+    pr: ObjectData,
+    progress: string,
+    model: string,
+    resume = false,
+    recoverable = true
+  ): Promise<boolean> {
+    if (this.config.board?.enabled === false) {
+      return false;
+    }
+    const board = this.host.board();
+    const operation: BoardOperation = {};
+    const id = await board.ensure(String(pr.id), operation);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const values = resume ? (await board.item(id)).values : undefined;
+        if (!values?.Status || values.Status === "Backlog") {
+          await board.set(
+            {
+              itemId: id,
+              field: "Status",
+              value: "Executing",
+              progress: typeof values?.Progress === "string" ? values.Progress : progress,
+            },
+            operation
+          );
+        } else if (values.Progress === undefined || values.Progress === null) {
+          await board.set({ itemId: id, field: "Progress", value: progress }, operation);
+        }
+        if (!values?.Model) {
+          await board.set({ itemId: id, field: "Model", value: model }, operation);
+        }
+        return false;
+      } catch (error) {
+        const unresolved =
+          error instanceof Error &&
+          error.message.match(/Could not resolve to a node with the global id ['"]([^'"]+)['"]/);
+        if (!unresolved || unresolved[1] !== id || (!resume && operation.membership?.node)) {
+          throw error;
+        }
+        if (attempt === 5) {
+          if (!recoverable) {
+            throw error;
+          }
+          return true;
+        }
+        await this.deps.sleep(1000 * 2 ** attempt);
+      }
+    }
+  }
+
+  private opened(
+    ref: string,
+    branch: string,
+    input: OpenTaskInput,
+    pending: boolean,
+    resume = false
+  ): string {
+    const lines = [`${resume ? "Resumed" : "Opened"} draft PR #${ref} (${branch})`];
+    if (pending) {
+      const args = ["vmethod", "open-task", input.issue!];
+      for (const [key, flag] of [
+        ["direct", "--direct"],
+        ["model", "--model"],
+        ["modelOverride", "--model-override"],
+        ["unapproved", "--unapproved"],
+        ["from", "--from"],
+      ] as const) {
+        if (input[key]) {
+          args.push(flag, `'${input[key].replaceAll("'", "'\\''")}'`);
+        }
+      }
+      for (const [key, flag] of [
+        ["hold", "--hold"],
+        ["part", "--part"],
+        ["ownerApproved", "--owner-approved"],
+      ] as const) {
+        if (input[key]) {
+          args.push(flag);
+        }
+      }
+      lines.push(`PR card is not yet resolvable; recover with: ${args.join(" ")}`);
+    }
+    return lines.join("\n");
+  }
+
+  private async resumeIssue(issue: ObjectData, ref: string): Promise<void> {
+    const card = await this.boardCard(issue);
+    if (!card || card.values.Status === undefined || card.values.Progress != null) {
+      await this.card(issue, card?.values.Status ? undefined : "Executing", null);
+    }
+    await this.turn(ref, null);
   }
 
   /** #339: the advisory lines open-task prints when launching without a card Model: one

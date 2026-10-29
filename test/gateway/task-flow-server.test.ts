@@ -838,6 +838,11 @@ test.each(gateScenarios)(
                   },
                 }),
               }),
+              {
+                path: "/repos/example/project/pulls?state=open&head=example%3A8-task&per_page=100",
+                method: "GET",
+                json: [],
+              },
             ]
           : []),
       ],
