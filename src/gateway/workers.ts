@@ -168,6 +168,66 @@ export interface WorkerHooks {
   modelApproval(pr: number, issue: number | undefined, family: string): Promise<boolean>;
 }
 
+/**
+ * Keep queued wakes unless task metadata suppresses them or a genuine later worker reply answers them.
+ * Replies at or after the conflict send boundary answer nothing. Reports stale drops in queue order;
+ * returns the original queue when every wake is kept, without mutating either input.
+ */
+export function filterStaleWakes(
+  record: Pick<Session, "pr" | "pendingWake" | "conflictSentAt">,
+  meta: Pick<TaskMetadata, "ownerPaused" | "merged" | "comments">,
+  report: (message: string) => void
+): string[] {
+  const queued = record.pendingWake ?? [];
+  if (!queued.length) {
+    return [];
+  }
+  // #373: a merged PR's worker session gets no further wakes; the caller
+  // drops the queue exactly like an owner summons does.
+  if (meta.ownerPaused || meta.merged) {
+    return [];
+  }
+  const firstLine = (body: string): string => body.split(/\r?\n/)[0];
+  // No reply in the conflict-only turn can answer a wake still queued at this
+  // drain, regardless of whether its trigger preceded or followed the send.
+  const conflictSentAt = Date.parse(record.conflictSentAt ?? "");
+  const reply = meta.comments
+    .filter(
+      (comment) =>
+        comment.role === "worker" &&
+        /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(firstLine(comment.body)) &&
+        !(Date.parse(comment.date) >= conflictSentAt)
+    )
+    .sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
+    .at(-1);
+  const kept = queued.filter((text) => {
+    const heading = /^\[orchestrator\] (.+) is on your PR;/.exec(text)?.[1];
+    if (!heading) {
+      return true;
+    }
+    const triggered = meta.comments
+      .filter(
+        (comment) =>
+          comment.role === "orchestrator" &&
+          comment.body.split(/\r?\n/)[0].trim() === `[orchestrator] ${heading}`
+      )
+      .map((comment) => comment.date)
+      .sort()
+      .at(-1);
+    if (!triggered) {
+      return true;
+    }
+    if (!reply || Date.parse(triggered) >= Date.parse(reply.date)) {
+      return true;
+    }
+    report(
+      `stale wake dropped for #${record.pr}: ${heading} (${triggered}) superseded by ${firstLine(reply.body)} at ${reply.date}`
+    );
+    return false;
+  });
+  return kept.length === queued.length ? queued : kept;
+}
+
 export class WorkerService {
   private readonly state: string;
   private readonly models: Model[];
@@ -686,50 +746,7 @@ export class WorkerService {
       return [];
     }
     const meta = await this.hooks.metadata(record.pr);
-    // #373: a merged PR's worker session gets no further wakes; the caller
-    // drops the queue exactly like an owner summons does.
-    if (meta.ownerPaused || meta.merged) {
-      return [];
-    }
-    const firstLine = (body: string): string => body.split(/\r?\n/)[0];
-    // No reply in the conflict-only turn can answer a wake still queued at this
-    // drain, regardless of whether its trigger preceded or followed the send.
-    const conflictSentAt = Date.parse(record.conflictSentAt ?? "");
-    const reply = meta.comments
-      .filter(
-        (comment) =>
-          comment.role === "worker" &&
-          /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(firstLine(comment.body)) &&
-          !(Date.parse(comment.date) >= conflictSentAt)
-      )
-      .sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
-      .at(-1);
-    const kept = queued.filter((text) => {
-      const heading = /^\[orchestrator\] (.+) is on your PR;/.exec(text)?.[1];
-      if (!heading) {
-        return true;
-      }
-      const triggered = meta.comments
-        .filter(
-          (comment) =>
-            comment.role === "orchestrator" &&
-            comment.body.split(/\r?\n/)[0].trim() === `[orchestrator] ${heading}`
-        )
-        .map((comment) => comment.date)
-        .sort()
-        .at(-1);
-      if (!triggered) {
-        return true;
-      }
-      if (!reply || Date.parse(triggered) >= Date.parse(reply.date)) {
-        return true;
-      }
-      this.deps.report(
-        `stale wake dropped for #${record.pr}: ${heading} (${triggered}) superseded by ${firstLine(reply.body)} at ${reply.date}`
-      );
-      return false;
-    });
-    return kept.length === queued.length ? queued : kept;
+    return filterStaleWakes(record, meta, (message) => this.deps.report(message));
   }
   private render(record: Session, status: WorkerSessionStatus): string {
     const fallback =
