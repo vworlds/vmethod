@@ -13,6 +13,14 @@ import {
   type Usage,
 } from "../cost.js";
 import { accountUsage } from "../sessions/usage.js";
+import {
+  conflictLine,
+  filterStaleWakes,
+  plan,
+  type DrainPlan,
+  type LifecycleObservation,
+} from "../sessions/lifecycle.js";
+export { filterStaleWakes } from "../sessions/lifecycle.js";
 import { modelRecord } from "../learnings.js";
 import {
   exactMetrics,
@@ -58,7 +66,7 @@ import {
   type ProviderLimits,
 } from "./limits.js";
 
-interface Model {
+export interface Model {
   family: string;
   model: string;
   /** "claude" only on records of the removed `claude -p` backend: their session is unknown. */
@@ -89,7 +97,7 @@ interface Segment {
   pointsOpen?: number | null;
   pointsFinal?: number | null;
 }
-interface Session {
+export interface Session {
   version: 1;
   repo: string;
   pr: number;
@@ -166,66 +174,6 @@ export interface WorkerHooks {
   diffStats?(pr: number, base: string, head: string): Promise<ExactMetrics["diff"]>;
   /** #218: the pinned owner verified this gated family on the task issue or PR. */
   modelApproval(pr: number, issue: number | undefined, family: string): Promise<boolean>;
-}
-
-/**
- * Keep queued wakes unless task metadata suppresses them or a genuine later worker reply answers them.
- * Replies at or after the conflict send boundary answer nothing. Reports stale drops in queue order;
- * returns the original queue when every wake is kept, without mutating either input.
- */
-export function filterStaleWakes(
-  record: Pick<Session, "pr" | "pendingWake" | "conflictSentAt">,
-  meta: Pick<TaskMetadata, "ownerPaused" | "merged" | "comments">,
-  report: (message: string) => void
-): string[] {
-  const queued = record.pendingWake ?? [];
-  if (!queued.length) {
-    return [];
-  }
-  // #373: a merged PR's worker session gets no further wakes; the caller
-  // drops the queue exactly like an owner summons does.
-  if (meta.ownerPaused || meta.merged) {
-    return [];
-  }
-  const firstLine = (body: string): string => body.split(/\r?\n/)[0];
-  // No reply in the conflict-only turn can answer a wake still queued at this
-  // drain, regardless of whether its trigger preceded or followed the send.
-  const conflictSentAt = Date.parse(record.conflictSentAt ?? "");
-  const reply = meta.comments
-    .filter(
-      (comment) =>
-        comment.role === "worker" &&
-        /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(firstLine(comment.body)) &&
-        !(Date.parse(comment.date) >= conflictSentAt)
-    )
-    .sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
-    .at(-1);
-  const kept = queued.filter((text) => {
-    const heading = /^\[orchestrator\] (.+) is on your PR;/.exec(text)?.[1];
-    if (!heading) {
-      return true;
-    }
-    const triggered = meta.comments
-      .filter(
-        (comment) =>
-          comment.role === "orchestrator" &&
-          comment.body.split(/\r?\n/)[0].trim() === `[orchestrator] ${heading}`
-      )
-      .map((comment) => comment.date)
-      .sort()
-      .at(-1);
-    if (!triggered) {
-      return true;
-    }
-    if (!reply || Date.parse(triggered) >= Date.parse(reply.date)) {
-      return true;
-    }
-    report(
-      `stale wake dropped for #${record.pr}: ${heading} (${triggered}) superseded by ${firstLine(reply.body)} at ${reply.date}`
-    );
-    return false;
-  });
-  return kept.length === queued.length ? queued : kept;
 }
 
 export class WorkerService {
@@ -367,141 +315,18 @@ export class WorkerService {
       (await this.client().status(record.directory, record.id)).interruptedPrompt;
     return text?.trim() ? text : undefined;
   }
-  private async recoverQuota(
-    record: Session,
-    status: WorkerSessionStatus
-  ): Promise<WorkerSessionStatus> {
-    if (!status.quotaStopped || status.active || !limitsConfig(this.config).enabled) {
-      return status;
-    }
-    // The same failed idle message remains visible briefly after POST /model and /prompt.
-    if (record.quotaResume) {
-      return this.finishQuotaResume(record, status);
-    }
-    if (
-      record.quotaStop &&
-      record.quotaStop.turn === status.turnId &&
-      record.quotaStop.error === status.error
-    ) {
-      return { ...status, errorFamily: record.quotaStop.family };
-    }
-    const meta = await this.hooks.metadata(record.pr);
-    if (
-      meta.merged ||
-      meta.state !== "OPEN" ||
-      meta.ownerPaused ||
-      meta.blocked ||
-      taskHeld(meta.title, meta.body)
-    ) {
-      return status;
-    }
-    const readings = await this.quotaReadings();
-    const failed = record.model;
-    this.markQuotaFailure(record, status, readings);
-    let selected: Model | undefined;
-    for (const family of this.models.find((m) => m.family === failed.family)?.fallback ?? []) {
-      const model = this.models.find((m) => m.family === family)!;
-      if (
-        model.kind !== failed.kind ||
-        readings.find((r) => r.provider === modelProvider(model))?.atRisk ||
-        this.quotaFailed(model, readings)
-      ) {
-        continue;
-      }
-      if (
-        model.gate === "owner" &&
-        !(await this.hooks.modelApproval(record.pr, meta.issue, model.family))
-      ) {
-        continue;
-      }
-      selected = model;
-      break;
-    }
-    const queued = await this.filterStaleWakes(record);
-    const text = queued.length
-      ? queued.join("\n")
-      : selected
-        ? await this.interruptedPrompt(record, status)
-        : undefined;
-    if (!selected) {
-      const quotaEvent = `QUOTA #${record.pr}: ${failed.family} quota-stopped; no eligible fallback`;
-      this.deps.report(quotaEvent);
-      return { ...status, errorFamily: failed.family, quotaEvent };
-    }
-    if (!text) {
-      throw new Error(
-        `Cannot resume #${record.pr}: interrupted prompt is unavailable; send a prompt explicitly`
-      );
-    }
-    record.quotaResume = {
-      model: selected,
-      text,
-      why: "automatic quota recovery",
-      reason: "quota",
-    };
-    this.save(record);
-    return this.finishQuotaResume(record, status);
-  }
   private async finishQuotaResume(
     record: Session,
     status: WorkerSessionStatus
   ): Promise<WorkerSessionStatus> {
-    const pending = record.quotaResume!;
-    const meta = await this.hooks.metadata(record.pr);
-    if (
-      meta.merged ||
-      meta.state !== "OPEN" ||
-      meta.ownerPaused ||
-      meta.blocked ||
-      taskHeld(meta.title, meta.body)
-    ) {
-      return status;
-    }
-    if (
-      pending.model.gate === "owner" &&
-      !(await this.hooks.modelApproval(record.pr, meta.issue, pending.model.family))
-    ) {
-      throw modelGateError(pending.model.family);
-    }
-    if (
-      record.model.family !== pending.model.family ||
-      record.model.model !== pending.model.model
-    ) {
-      await this.changeModel(record, pending.model, meta, pending.why, status, pending.reason);
-    }
-    if (!pending.synced) {
-      // A quota fallback within a conflict-only turn remains temporary session state.
-      if (!(
-        pending.reason === "quota" &&
-        record.conflictModel &&
-        pending.text.startsWith("CONFLICT:")
-      )) {
-        await this.hooks.setModel(record.pr, pending.model.family);
-      }
-      await this.hooks.modelComment(
-        record.pr,
-        `[orchestrator] NOTE: model switched to ${pending.model.family} (${pending.why.replace(/\s+/g, " ").trim()}); reason: ${pending.reason}`
-      );
-      pending.synced = true;
-      this.save(record);
-    }
-    await this.prompt(record, pending.text, "queue");
-    delete record.pendingWake;
-    delete record.quotaResume;
-    // Recovery of normal queued work supersedes a temporary conflict model.
-    if (record.conflictModel && !pending.text.startsWith("CONFLICT:")) {
-      if (record.pendingConflict) {
-        record.conflictModel = pending.model;
-      } else {
-        delete record.conflictModel;
-        delete record.conflictSentAt;
-      }
-    }
-    this.save(record);
-    const family = record.quotaStop!.family;
-    const quotaEvent = `QUOTA #${record.pr}: ${family} quota-stopped; switched to ${pending.model.family} and resumed`;
-    this.deps.report(quotaEvent);
-    return { ...status, reason: "running", active: true, errorFamily: family, quotaEvent };
+    return this.applyLifecycle(
+      record,
+      plan(record, status, undefined, undefined, this.deps.now(), {
+        comments: false,
+        quotaEnabled: true,
+        models: this.models,
+      })
+    );
   }
   /** Persist watcher observations by event id, independently of its short-lived notification journal. */
   async recordMetric(pr: number, event: MetricEvent): Promise<void> {
@@ -641,98 +466,116 @@ export class WorkerService {
         ? record.segments.flatMap((segment) => Object.keys(segment.requests ?? {}))
         : []
     );
-    if (status.reason === "idle" && comments) {
-      const meta = await this.hooks.metadata(record.pr);
-      const latest = (role: string) =>
-        meta.comments
-          .filter((c) => c.role === role && c.body.startsWith(`[${role}]`))
-          .map((c) => c.date)
-          .sort()
-          .at(-1) ?? "";
-      if (latest("orchestrator") > latest("worker")) {
-        status.reason = "idle without reply";
-      }
-    }
     if (status.error) {
       status.error = this.redact(status.error);
     }
-    const accounted = accountUsage(record, status, this.models);
-    if (accounted) {
-      Object.assign(record, accounted);
-      this.save(record);
-    }
-    if (drainWake && status.quotaStopped) {
-      return this.recoverQuota(record, status);
-    }
-    if (status.active && record.quotaResume?.synced) {
-      delete record.quotaResume;
-      delete record.pendingWake;
-      this.save(record);
-    }
-    if (record.quotaStop && !status.error) {
-      delete record.quotaStop;
-      this.save(record);
-    }
-    if (status.error && record.quotaStop) {
-      status.errorFamily = record.quotaStop.family;
-    }
-    if (
-      drainWake &&
-      record.pendingConflict &&
-      !status.active &&
-      // #286: a stopped worktree-gone session is skipped like an unknown one;
-      // its prompt would 404 against the gone location directory.
-      !["permission-wait", "session unknown", "worktree gone"].includes(status.reason)
-    ) {
-      const meta = await this.hooks.metadata(record.pr);
-      // #373: a merged PR's worker session gets no further wakes.
-      if (meta.merged) {
-        delete record.pendingConflict;
-        delete record.pendingWake;
-        delete record.conflictSentAt;
-        this.save(record);
-        return status;
+    return this.applyLifecycle(
+      record,
+      plan(record, status, undefined, undefined, this.deps.now(), {
+        comments,
+        drainWake,
+        quotaEnabled: limitsConfig(this.config).enabled,
+        models: this.models,
+        accountUsage: true,
+      })
+    );
+  }
+  /** Execute only the effects requested by the pure lifecycle, preserving retry boundaries. */
+  private async applyLifecycle(record: Session, initial: DrainPlan): Promise<WorkerSessionStatus> {
+    let planned = initial;
+    for (;;) {
+      for (const effect of planned.effects) {
+        switch (effect.kind) {
+          case "account-usage": {
+            const accounted = accountUsage(record, planned.status, this.models);
+            if (accounted) {
+              Object.assign(record, accounted);
+              this.save(record);
+            }
+            break;
+          }
+          case "record":
+            Object.assign(record, effect.set);
+            for (const field of effect.clear ?? []) {
+              delete record[field];
+            }
+            break;
+          case "save":
+            this.save(record);
+            break;
+          case "report":
+            this.deps.report(effect.text);
+            break;
+          case "send":
+            await this.prompt(record, effect.text, effect.delivery);
+            break;
+          case "stamp-conflict":
+            record.conflictSentAt = new Date(this.deps.now()).toISOString();
+            break;
+          case "mark-quota":
+            this.markQuotaFailure(record, planned.status, effect.readings);
+            break;
+          case "switch-conflict":
+            await this.switchModel(
+              record,
+              effect.model,
+              "conflict-only resolution",
+              planned.status
+            );
+            break;
+          case "restore-conflict":
+            await this.restoreConflictModel(record, planned.status);
+            break;
+          case "resume-model":
+            await this.resumeModel(record, planned.status);
+            break;
+          case "change-model":
+            await this.changeModel(
+              record,
+              effect.model,
+              effect.meta,
+              effect.pending.why,
+              planned.status,
+              effect.pending.reason
+            );
+            break;
+          case "card-model":
+            await this.hooks.setModel(record.pr, effect.model.family);
+            break;
+          case "model-comment":
+            await this.hooks.modelComment(record.pr, effect.text);
+            break;
+          case "throw":
+            throw effect.error;
+        }
       }
-      if (meta.ownerPaused) {
-        return status;
+      if (!planned.next) {
+        return planned.status;
       }
-      const pending = record.pendingConflict;
-      const model = await this.conflictChoice(
-        record.model.kind,
-        record.conflictModel ?? record.model
+      planned = planned.next.then(
+        await this.observeLifecycle(record, planned.status, planned.next.read)
       );
-      await this.switchModel(record, model, "conflict-only resolution", status);
-      await this.prompt(record, this.conflictLine(pending.base), "queue");
-      record.conflictSentAt = new Date(this.deps.now()).toISOString();
-      delete record.pendingConflict;
-      this.save(record);
-      return { ...status, reason: "running", active: true };
     }
-    if (
-      drainWake &&
-      record.pendingWake?.length &&
-      !status.active &&
-      !["permission-wait", "session unknown", "worktree gone"].includes(status.reason)
-    ) {
-      const queued = await this.filterStaleWakes(record);
-      if (!queued.length) {
-        delete record.pendingWake;
-        delete record.conflictSentAt;
-        this.save(record);
-        return status;
-      }
-      record.pendingWake = queued;
-      if (queued.some((text) => !text.startsWith("[orchestrator] CHECK-IN:"))) {
-        await this.restoreConflictModel(record, status);
-      }
-      await this.resumeModel(record, status);
-      await this.prompt(record, queued.join("\n"), "queue");
-      delete record.pendingWake;
-      delete record.conflictSentAt;
-      this.save(record);
-      return { ...status, reason: "running", active: true };
+  }
+  private async observeLifecycle(
+    record: Session,
+    status: WorkerSessionStatus,
+    read: LifecycleObservation
+  ) {
+    switch (read.kind) {
+      case "metadata":
+        return this.hooks.metadata(record.pr);
+      case "limits":
+        return this.quotaReadings();
+      case "quota-failed":
+        return this.quotaFailed(read.model, read.readings);
+      case "approval":
+        return this.hooks.modelApproval(record.pr, read.meta.issue, read.model.family);
+      case "interrupted-prompt":
+        return this.interruptedPrompt(record, status);
+      case "conflict-choice":
+        return this.conflictChoice(record.model.kind, record.conflictModel ?? record.model);
     }
-    return status;
   }
   /** Drop queued wakes whose orchestrator trigger is older than the worker's latest protocol reply. */
   private async filterStaleWakes(record: Session): Promise<string[]> {
@@ -1479,7 +1322,7 @@ export class WorkerService {
     this.save(record);
   }
   private conflictLine(base: string): string {
-    return `CONFLICT: merge origin/${base}, resolve keeping both sides' behaviour, push, wait-checks, READY. If every conflicted file is package-lock.json, npm-shrinkwrap.json, yarn.lock or pnpm-lock.yaml (at any path), do not hand-merge: keep package.json manifests as merged by git and regenerate the lockfiles with npm install --package-lock-only or the configured equivalent in postMerge.install. Commit the regeneration as the merge resolution; the remerge diff may touch only lockfiles, lockfile sync must pass and configured checks must be green. Mixed conflicts retain the conflicted-hunk rule.`;
+    return conflictLine(base);
   }
   private async conflictChoice(
     kind: Model["kind"] | undefined,
