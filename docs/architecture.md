@@ -264,7 +264,7 @@ stay project scripts.
 src/cli/            the `vmethod` command and its verbs
 src/gateway/        the only code that talks to GitHub and opencode (fetch), with the people filter
 src/board/          board client, migrations runner, lock
-src/watch/          typed watcher state, comment stream and board poll
+src/watch/          typed watcher state, comment stream, board, pull and worker polls
 src/...             tasks, review, merge, learnings, config
 board/migrations/   ordered board migrations (0001-baseline.yaml, …)
 docs/               the methodology
@@ -277,11 +277,15 @@ testing/            exported test kit (`@vworlds/vmethod/testing`) for consumers
 Keep board observation and reconciliation in [`BoardPoller`](../src/watch/board.ts):
 autopilot judgement, closures, blockers, turns, reminders, NEXT/LAUNCH/SCOPE and card
 baselines share one ordered poll. It receives typed state, host services, the write
-journal and explicit loop callbacks. [`EventLoop`](../src/gateway/events.ts) still owns
-step failures, pacing and event delivery, and reads board observations for worker
-polling and budget telemetry. Pull and worker polls remain in the loop pending their
-separate extraction. Preserve the existing marker bytes and prune card absences only
-after the complete board step succeeds.
+journal and explicit loop callbacks. [`PullPoller`](../src/watch/pulls.ts) owns pull
+listing, details, gone PRs and conflict driving; it publishes task links only after
+the full pull step succeeds. [`WorkerPoller`](../src/watch/workers.ts) owns stale and
+silent turns, check-ins, cost synchronization and quotas, using the board poller's
+executing/cost observations. Both receive narrowed host services, typed state and
+explicit callbacks, never an `EventLoop` instance. Pull details and worker sessions
+retain their shared six-cycle cadence. [`EventLoop`](../src/gateway/events.ts) still
+owns step ordering/failures, pacing and event delivery. Preserve the existing marker
+bytes and prune card absences only after the complete board step succeeds.
 
 **The toolchain is the consumers' own**, so any orchestrator or worker can work on vmethod
 without learning anything new:
