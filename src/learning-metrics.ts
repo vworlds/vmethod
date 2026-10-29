@@ -1,3 +1,5 @@
+import { parseFirstLine } from "./core/protocol.js";
+
 /** Machine-owned switch categories. Narrative is retained separately, never used as a category. */
 export const switchReasons = [
   "quota",
@@ -67,7 +69,7 @@ export function exactMetrics(input: {
   const ownerChanges = comments.filter(
     (c) =>
       c.role === "orchestrator" &&
-      /^\[orchestrator\] REVIEW\b/.test(c.body) &&
+      parseFirstLine(c.body, { role: "orchestrator", tags: ["REVIEW"] }) &&
       ownerUrls.has(/^in reply to (\S+)$/m.exec(c.body)?.[1])
   ).length;
   let state: "working" | "owner" | "other" = "working",
@@ -86,22 +88,29 @@ export function exactMetrics(input: {
     }
     if (
       c.role === "worker" &&
-      /^\[worker\] (READY FOR REVIEW|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(c.body)
+      parseFirstLine(c.body, {
+        role: "worker",
+        tags: ["READY", "QUESTION", "BLOCKED", "DESIGN", "HANDOFF"],
+        ready: "full",
+      })
     ) {
       next = "other";
     }
-    if (c.role === "worker" && /^\[worker\] ACK\b/.test(c.body)) {
+    if (c.role === "worker" && parseFirstLine(c.body, { role: "worker", tags: ["ACK"] })) {
       next = "working";
     }
     if (
       c.role === "orchestrator" &&
-      /^\[orchestrator\] (OWNER REVIEW|OWNER QUESTION)\b/.test(c.body)
+      parseFirstLine(c.body, { role: "orchestrator", tags: ["OWNER REVIEW", "OWNER QUESTION"] })
     ) {
       next = "owner";
     }
     if (
       c.role === "orchestrator" &&
-      /^\[orchestrator\] (REVIEW|ANSWER|GO|AMENDMENT)\b/.test(c.body)
+      parseFirstLine(c.body, {
+        role: "orchestrator",
+        tags: ["REVIEW", "ANSWER", "GO", "AMENDMENT"],
+      })
     ) {
       next = "working";
     }

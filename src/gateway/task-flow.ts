@@ -1,3 +1,4 @@
+import { heading as protocolHeading, parseFirstLine, wakeText } from "../core/protocol.js";
 import {
   existsSync,
   mkdirSync,
@@ -555,12 +556,15 @@ export class TaskFlow {
     guardClosingKeywords(body);
     await checkMarkdown(this.root, body);
     if (input.unapproved && issue) {
-      await this.post(input.issue!, `[orchestrator] Unapproved exception\n\n${input.unapproved}`);
+      await this.post(
+        input.issue!,
+        `${protocolHeading("Unapproved exception")}\n\n${input.unapproved}`
+      );
     }
     if (overriding) {
       await this.post(
         input.issue!,
-        `[orchestrator] NOTE: model override: using ${input.model} instead of the card's ${hint} — ${input.modelOverride}`
+        `${protocolHeading("NOTE")}: model override: using ${input.model} instead of the card's ${hint} — ${input.modelOverride}`
       );
     }
     const git = this.git();
@@ -902,17 +906,24 @@ export class TaskFlow {
       1 +
       Math.max(
         0,
-        ...comments.map((c) =>
-          Number(/^\[orchestrator\] REVIEW round (\d+)/.exec(String(c.body))?.[1] ?? 0)
+        ...comments.map(
+          (c) =>
+            parseFirstLine(String(c.body), {
+              role: "orchestrator",
+              tags: ["REVIEW"],
+              round: "single-space",
+            })?.round ?? 0
         )
       );
-    const heading = {
-      changes: `REVIEW round ${round}`,
-      owner: "OWNER REVIEW",
-      answer: "ANSWER",
-      ask: "OWNER QUESTION",
-      approve: "APPROVED",
-    }[input.outcome];
+    const heading = (
+      {
+        changes: `REVIEW round ${round}`,
+        owner: "OWNER REVIEW",
+        answer: "ANSWER",
+        ask: "OWNER QUESTION",
+        approve: "APPROVED",
+      } as const
+    )[input.outcome];
     if (input.replyTo) {
       const url = new URL(input.replyTo);
       if (
@@ -936,7 +947,10 @@ export class TaskFlow {
           !target ||
           target.issue !== this.number(input.ref) ||
           target.author.role !== "worker" ||
-          !/^\[worker\] (QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(target.firstLine)
+          !parseFirstLine(target.firstLine, {
+            role: "worker",
+            tags: ["QUESTION", "BLOCKED", "DESIGN", "HANDOFF"],
+          })
         ) {
           throw new Error(
             "answer replies to a worker QUESTION, BLOCKED, DESIGN or HANDOFF; to reply to the owner use review <pr> ask --in-reply-to <url>"
@@ -977,7 +991,11 @@ export class TaskFlow {
       const since = Math.max(
         ...summonsComments
           .filter((comment) =>
-            /^\[orchestrator\] OWNER (?:QUESTION|REVIEW)(?:\s|$)/.test(String(comment.body))
+            parseFirstLine(String(comment.body), {
+              role: "orchestrator",
+              tags: ["OWNER QUESTION", "OWNER REVIEW"],
+              boundary: "whitespace",
+            })
           )
           .map((comment) => Date.parse(String(comment.lastEditedAt ?? comment.createdAt)))
       );
@@ -1008,7 +1026,7 @@ export class TaskFlow {
     const autopilot =
       input.outcome === "owner" && (await this.host.autopilot?.(input.ref, "pr"))?.active === true;
     const body =
-      `[orchestrator] ${heading}\n\n` +
+      `${protocolHeading(heading)}\n\n` +
       (input.replyTo ? `in reply to ${input.replyTo}\n\n` : "") +
       (input.outcome === "owner" ? `Current head: ${sha(item.headRefOid)}\n\n` : "") +
       handback +
@@ -1063,7 +1081,7 @@ export class TaskFlow {
     if (autopilot && (await this.host.autopilot?.(input.ref, "pr"))?.active) {
       await this.post(
         input.ref,
-        `[orchestrator] AUTOPILOT APPROVED\n\nCurrent head: ${sha(item.headRefOid)}\n\nOwner review → Approved under autopilot, on my delivery review.`
+        `${protocolHeading("AUTOPILOT APPROVED")}\n\nCurrent head: ${sha(item.headRefOid)}\n\nOwner review → Approved under autopilot, on my delivery review.`
       );
       await this.card(item, "Approved", "🧭🔍");
       await this.turn(input.ref, "orchestrator");
@@ -1113,7 +1131,7 @@ export class TaskFlow {
       }
     }
     this.host.github.writes.beginOperation("ask", [{ repo: this.repo, number: this.number(ref) }]);
-    await this.post(ref, `[orchestrator] OWNER QUESTION\n\n${question}`);
+    await this.post(ref, `${protocolHeading("OWNER QUESTION")}\n\n${question}`);
     await this.turn(ref, "owner");
     await this.card(
       issue,
@@ -1161,8 +1179,16 @@ export class TaskFlow {
     this.host.github.writes.beginOperation("release-hold", [
       { repo: this.repo, number: this.number(ref) },
     ]);
-    if (!comments.some((c) => /^\[orchestrator\] GO(?:\s|$)/.test(String(c.body)))) {
-      await this.post(ref, "[orchestrator] GO\n\nThe hold is lifted; work may begin.");
+    if (
+      !comments.some((c) =>
+        parseFirstLine(String(c.body), {
+          role: "orchestrator",
+          tags: ["GO"],
+          boundary: "whitespace",
+        })
+      )
+    ) {
+      await this.post(ref, `${protocolHeading("GO")}\n\nThe hold is lifted; work may begin.`);
     }
     await this.turn(ref, null);
     await this.card(item, "Executing", "🤖🔨");
@@ -1171,10 +1197,7 @@ export class TaskFlow {
   }
 
   private async wake(ref: string, heading: string): Promise<string | void> {
-    return this.deps.workers?.resume(
-      this.number(ref),
-      `[orchestrator] ${heading} is on your PR; read it with vmethod read pr ${ref} --new and act. End your turn with one line naming what you posted.`
-    );
+    return this.deps.workers?.resume(this.number(ref), wakeText(heading, ref));
   }
 
   private async green(ref: string, head: string): Promise<void> {
@@ -1324,7 +1347,7 @@ export class TaskFlow {
       (await this.boardCard(item))?.values.Status === "Approved";
     await this.post(
       ref,
-      `[orchestrator] NOTE: conflict escalated (${reason})\n\nConflicting files:\n${files.map((file) => `- ${JSON.stringify(file)}`).join("\n") || "- (none)"}\n\n${kept ? "Owner approval kept: the card stays Approved." : "Owner review is required; no approval carried."}`
+      `${protocolHeading("NOTE")}: conflict escalated (${reason})\n\nConflicting files:\n${files.map((file) => `- ${JSON.stringify(file)}`).join("\n") || "- (none)"}\n\n${kept ? "Owner approval kept: the card stays Approved." : "Owner review is required; no approval carried."}`
     );
   }
 
@@ -1458,7 +1481,7 @@ export class TaskFlow {
           }
           autopilot = delegated;
           autopilotHead = approved;
-          certification = `[orchestrator] APPROVAL CARRIED${delegated ? " (autopilot)" : ""} from ${approved} to ${head}: ${carryApproval}\n\nI certify there is no behaviour change or algorithmic revamp.\n\nRemerge-diff files:\n${files.length ? files.map((file) => `- ${JSON.stringify(file)}`).join("\n") : "- (none)"}`;
+          certification = `${protocolHeading("APPROVAL CARRIED")}${delegated ? " (autopilot)" : ""} from ${approved} to ${head}: ${carryApproval}\n\nI certify there is no behaviour change or algorithmic revamp.\n\nRemerge-diff files:\n${files.length ? files.map((file) => `- ${JSON.stringify(file)}`).join("\n") : "- (none)"}`;
           break;
         }
         if (!certification) {
@@ -1563,7 +1586,7 @@ export class TaskFlow {
       if (autopilot) {
         await this.post(
           ref,
-          `[orchestrator] AUTOPILOT\n\nMerging ${head} under autopilot, after my delivery review and the normal merge checks.`
+          `${protocolHeading("AUTOPILOT")}\n\nMerging ${head} under autopilot, after my delivery review and the normal merge checks.`
         );
       }
       const merged = object(

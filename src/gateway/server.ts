@@ -1,3 +1,4 @@
+import { autopilotHead, containsScopeHeading, heading, parseFirstLine } from "../core/protocol.js";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
 import { ownerAgreement } from "./owner-agreement.js";
@@ -363,7 +364,10 @@ class GatewayServer {
       ) {
         throw new Error("Incomplete annotation comment");
       }
-      if (/^\[orchestrator\] GRADE\b/.test(c.body) && !c.body.includes(`Graded PR #${pr}:`)) {
+      if (
+        parseFirstLine(c.body, { role: "orchestrator", tags: ["GRADE"] }) &&
+        !c.body.includes(`Graded PR #${pr}:`)
+      ) {
         continue;
       }
       comments.push({
@@ -800,7 +804,10 @@ class GatewayServer {
           .filter((comment) => comment.role === "worker" && Date.parse(comment.date) >= since)
           .sort((a, b) => a.date.localeCompare(b.date))
           .at(-1);
-        return !!latest && /^\[worker\] (BLOCKED|QUESTION)\b/.test(latest.body);
+        return (
+          !!latest &&
+          !!parseFirstLine(latest.body, { role: "worker", tags: ["BLOCKED", "QUESTION"] })
+        );
       },
       directory: (pr) => this.workers.conflictDirectory(pr),
       verify: async (directory, head, reportNotice) => {
@@ -1200,7 +1207,7 @@ class GatewayServer {
    * opens with `[orchestrator] SCOPE REVIEW`, so the summary must not forge a header. */
   private scopeSummary(file: string): string {
     const summary = readFileSync(file, "utf8");
-    if (!summary.trim() || /body sha256:|\[orchestrator\] SCOPE REVIEW/.test(summary)) {
+    if (!summary.trim() || summary.includes("body sha256:") || containsScopeHeading(summary)) {
       throw new Error("Provide a nonempty change summary, without a review tag or body hash");
     }
     guardProtocolHeader(summary, "scope-review");
@@ -1217,7 +1224,7 @@ class GatewayServer {
     const estimate = card?.values.Estimate;
     assertEstimate(estimate);
     const autopilot = (await this.autopilotFor(issue)).active;
-    const body = `[orchestrator] SCOPE REVIEW\n\nI have updated the main body to the final scope.\n\nEstimate: ${estimate}\n\n${summary.trim()}\n\n${autopilot ? "Autopilot: scope approved.\n\nScoping → Spec review under autopilot.\n\n" : ""}body sha256: ${bodyHash(String(issue.body))}`;
+    const body = `${heading("SCOPE REVIEW")}\n\nI have updated the main body to the final scope.\n\nEstimate: ${estimate}\n\n${summary.trim()}\n\n${autopilot ? "Autopilot: scope approved.\n\nScoping → Spec review under autopilot.\n\n" : ""}body sha256: ${bodyHash(String(issue.body))}`;
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
     const assignments = await this.node(
@@ -1265,7 +1272,7 @@ class GatewayServer {
         `/repos/${String(this.config.repo)}/issues/${number}/comments`,
         "POST",
         {
-          body: "[orchestrator] AUTOPILOT\n\nSpec review → Executing under autopilot, on my scope review.",
+          body: `${heading("AUTOPILOT")}\n\nSpec review → Executing under autopilot, on my scope review.`,
         },
         false
       );
@@ -1662,14 +1669,17 @@ class GatewayServer {
           }
         }
         for (const comment of await this.flowComments(String(item.id))) {
-          const delegated =
-            /^\[orchestrator\] AUTOPILOT APPROVED\n\nCurrent head: ([a-f\d]{40})\n/i.exec(
-              String(comment.body)
-            );
+          const delegated = autopilotHead(String(comment.body));
           if (delegated) {
-            candidates.add(delegated[1]);
+            candidates.add(delegated);
           }
-          if (/^\[orchestrator\] OWNER REVIEW(?:\s|$)/.test(String(comment.body))) {
+          if (
+            parseFirstLine(String(comment.body), {
+              role: "orchestrator",
+              tags: ["OWNER REVIEW"],
+              boundary: "whitespace",
+            })
+          ) {
             for (const head of String(comment.body).match(/\b[a-f\d]{40}\b/gi) ?? []) {
               candidates.add(head);
             }
@@ -1720,9 +1730,7 @@ class GatewayServer {
     const pr = await this.flowThread(ref, "pr");
     const state = await this.autopilotFor(pr);
     const reviews = (await this.flowComments(String(pr.id))).filter((comment) =>
-      String(comment.body).startsWith(
-        `[orchestrator] AUTOPILOT APPROVED\n\nCurrent head: ${head}\n`
-      )
+      String(comment.body).startsWith(`${heading("AUTOPILOT APPROVED")}\n\nCurrent head: ${head}\n`)
     );
     if (reviews.length && !state.active) {
       throw new Error("autopilot delegation is no longer current; ask the owner");
@@ -1776,7 +1784,7 @@ class GatewayServer {
         `/repos/${String(this.config.repo)}/issues/${number}/comments`,
         "POST",
         {
-          body: "[orchestrator] AUTOPILOT\n\nStopped autopilot; control returns to the owner at the current step. Completed work is not reverted.",
+          body: `${heading("AUTOPILOT")}\n\nStopped autopilot; control returns to the owner at the current step. Completed work is not reverted.`,
         },
         false
       );
@@ -1802,7 +1810,7 @@ class GatewayServer {
           this.config,
           item,
           pr,
-          "[orchestrator] AUTOPILOT\n\nCopied the task issue's owner-authorized autopilot grant onto this PR."
+          `${heading("AUTOPILOT")}\n\nCopied the task issue's owner-authorized autopilot grant onto this PR.`
         )
       ) {
         return `Autopilot grant copied from #${issue} to #${number}`;
@@ -3076,11 +3084,7 @@ class GatewayServer {
     };
     if (explain) {
       // Delegation must still be current before an old autopilot head is diagnostic evidence.
-      const delegated = comments.filter((comment) =>
-        /^\[orchestrator\] AUTOPILOT APPROVED\n\nCurrent head: [a-f\d]{40}\n/i.test(
-          String(comment.body)
-        )
-      );
+      const delegated = comments.filter((comment) => autopilotHead(String(comment.body)));
       const state = delegated.length
         ? await this.autopilotFor(await this.flowThread(ref, "pr"))
         : undefined;

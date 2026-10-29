@@ -1,3 +1,4 @@
+import { autopilotHead, parseFirstLine } from "../core/protocol.js";
 import { object, type ObjectData, type PeopleFilter } from "./people.js";
 
 export interface ApprovalPR {
@@ -73,7 +74,11 @@ export function approvalRefusal(
     }
     for (const comment of handovers) {
       if (
-        !/^\[orchestrator\] OWNER REVIEW(?:\s|$)/.test(String(comment.body)) ||
+        !parseFirstLine(String(comment.body), {
+          role: "orchestrator",
+          tags: ["OWNER REVIEW"],
+          boundary: "whitespace",
+        }) ||
         Date.parse(String(comment.lastEditedAt ?? comment.createdAt)) >=
           Date.parse(String(event.createdAt))
       ) {
@@ -110,11 +115,9 @@ export function approvalRefusal(
   }
   // Callers supply only currently verified delegated approvals here.
   for (const comment of handovers) {
-    const match = /^\[orchestrator\] AUTOPILOT APPROVED\n\nCurrent head: ([a-f\d]{40})\n/i.exec(
-      String(comment.body)
-    );
-    if (match && match[1] !== pr.headRefOid) {
-      add(comment.lastEditedAt ?? comment.createdAt, moved(match[1]));
+    const head = autopilotHead(String(comment.body));
+    if (head && head !== pr.headRefOid) {
+      add(comment.lastEditedAt ?? comment.createdAt, moved(head));
     }
   }
   return (
@@ -186,7 +189,11 @@ export function isOwnerApproved(
         !!editor &&
         filter.roleIn(editor, repo) === "orchestrator" &&
         typeof comment.body === "string" &&
-        /^\[orchestrator\] OWNER REVIEW(?:\s|$)/.test(comment.body.split(/\r?\n/, 1)[0]) &&
+        parseFirstLine(comment.body.split(/\r?\n/, 1)[0], {
+          role: "orchestrator",
+          tags: ["OWNER REVIEW"],
+          boundary: "whitespace",
+        }) &&
         new RegExp(`(?<![a-zA-Z0-9])${pr.headRefOid}(?![a-zA-Z0-9])`, "i").test(comment.body)
       );
     });
@@ -281,7 +288,13 @@ export function isOwnerApproved(
       return false;
     }
     const firstLine = comment.body.split(/\r?\n/, 1)[0];
-    if (!/^\[orchestrator\] OWNER REVIEW(?:\s|$)/.test(firstLine)) {
+    if (
+      !parseFirstLine(firstLine, {
+        role: "orchestrator",
+        tags: ["OWNER REVIEW"],
+        boundary: "whitespace",
+      })
+    ) {
       return false;
     }
     return new RegExp(`(?<![a-zA-Z0-9])${pr.headRefOid}(?![a-zA-Z0-9])`, "i").test(comment.body);

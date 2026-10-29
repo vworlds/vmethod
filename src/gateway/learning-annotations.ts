@@ -1,3 +1,4 @@
+import { parseFirstLine } from "../core/protocol.js";
 import { createHash, randomUUID } from "node:crypto";
 import { DirLock } from "../journal/locks.js";
 import {
@@ -267,9 +268,16 @@ export class LearningAnnotations {
           (c) =>
             c.role === "owner" ||
             (c.role === "worker" &&
-              /^\[worker\] (READY FOR REVIEW|QUESTION|BLOCKED)\b/.test(c.body)) ||
+              parseFirstLine(c.body, {
+                role: "worker",
+                tags: ["READY", "QUESTION", "BLOCKED"],
+                ready: "full",
+              })) ||
             (c.role === "orchestrator" &&
-              /^\[orchestrator\] (REVIEW|ANSWER|OWNER REVIEW|NOTE|GRADE)\b/.test(c.body))
+              parseFirstLine(c.body, {
+                role: "orchestrator",
+                tags: ["REVIEW", "ANSWER", "OWNER REVIEW", "NOTE", "GRADE"],
+              }))
         );
         const data = {
           deliveryUrl: prUrl(record.repo, record.pr),
