@@ -287,7 +287,7 @@ Each stable ID records a rule, the incident/design that taught it and its curren
 
 | ID | Invariant | Taught by | Enforced at |
 | --- | --- | --- | --- |
-| L1 | Validate before writes; identical regrade no-ops, differing regrade refuses; write issue Estimate, never PR Estimate. | #9, #98 (PR #111), #15 | `src/gateway/workers.ts WorkerService.grade` |
+| L1 | Validate before writes; identical regrade appends no duplicate record, differing regrade refuses; write issue Estimate, never PR Estimate. | #9, #98 (PR #111), #15 | `src/gateway/workers.ts WorkerService.grade` |
 | L2 | Private reduction reconstructs allowlisted fields, never copies narrative wholesale. | #11, #41 | `src/gateway/learnings.ts privateLearning` |
 | L3 | Add-only submissions require centrally bound orchestrator; central dev/open submissions determine novelty, not local receipts. | #11, #51 (PR #52), #186 | `src/gateway/learning-policy.ts` policy readers; `src/gateway/learnings.ts LearningsService.submitLocked` |
 | L4 | Union fills nulls; real conflict excludes only that delivery on read and refuses write. | #379 (PR #380) | `src/gateway/learnings.ts unionRecords` |
