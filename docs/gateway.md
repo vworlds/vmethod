@@ -1446,9 +1446,15 @@ then reconciles the persisted operation without launching another fixer.
 Reconciliation errors are contained per PR and reported once per head; they do
 not interrupt polling other PRs. Inspect the reported gateway state before retrying.
 
-A record whose PR is merged or closed closes quietly with
-`conflict on #n resolved outside the fixer`, removing `conflicts/<n>.json` before
-any snapshot could fail it. A record that dispatched no fixer closes the same way
+A PR that is merged, closed or no longer a task PR closes its record quietly,
+removing `conflicts/<n>.json` without a result line or watcher event. This also
+applies when the lifecycle changes between the listing, task gate and CI read.
+Expected races are typed outcomes (`src/conflicts/outcomes.ts`), not reconciliation
+failures. A head or base that moves during the fetched preview returns a quiet
+`PENDING` result and leaves dispatch to the next poll; genuine read/fetch failures
+still produce the per-head reconciliation error.
+
+A record that dispatched no fixer reports `conflict on #n resolved outside the fixer`
 once its PR stands mergeable with its current base behind a change the resolution
 cannot attribute — a worker's review-round fix, a manual merge, or the stale state
 of an interrupted process. The report is a terminal conflict result: it supersedes

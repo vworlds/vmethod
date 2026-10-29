@@ -4,6 +4,7 @@ import type { ConflictPrior } from "../gateway/task-flow-types.js";
 import { taskHeld, taskIssueNumbers } from "../tasks/markers.js";
 import { setTurn } from "../gateway/turn.js";
 import { TaskCommon } from "../tasks/common.js";
+import { ConflictOutcome } from "./outcomes.js";
 
 /** Conflict-service hooks for task identity, lifecycle and interrupted card turns. */
 export class ConflictCards extends TaskCommon {
@@ -64,14 +65,14 @@ export class ConflictCards extends TaskCommon {
     await setTurn(this.host.github, this.repo, this.number(ref), assigned, prior.assignees);
   }
 
-  /** Apply task identity, fork, track and hold gates before any conflict side effect. */
+  /** Apply identity, fork, track and hold gates before conflict side effects.
+   * Closed/non-task PRs signal a terminal ConflictOutcome; unsafe gates still fail. */
   async conflictTask(ref: string): Promise<void> {
     const item = await this.pr(ref);
-    if (
-      item.state !== "OPEN" ||
-      taskIssueNumbers(String(item.body)) === undefined ||
-      taskHeld(String(item.title), String(item.body))
-    ) {
+    if (item.state !== "OPEN" || taskIssueNumbers(String(item.body)) === undefined) {
+      throw new ConflictOutcome("closed", "Conflict task is no longer open or a task PR");
+    }
+    if (taskHeld(String(item.title), String(item.body))) {
       throw new Error("Conflict resolution requires an open, non-held task PR on this track");
     }
   }

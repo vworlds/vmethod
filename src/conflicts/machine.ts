@@ -114,6 +114,8 @@ export interface Observation {
    * supplies no other reads: resolve answers the holder's PENDING line, recover
    * reports the resolution as active. */
   busy?: string;
+  /** Expected lifecycle/preview races close quietly or defer without dispatching. */
+  outcome?: "closed" | "retry";
 }
 
 /** Ordered I/O requests. `next` is the continuation after the whole batch.
@@ -205,6 +207,15 @@ export function step(record: Resolution | undefined, o: Observation): Transition
   const finish = (): Transition => go("finish");
   const current = (): Transition => go("current");
   const held = r && ["starting", "blocked"].includes(r.phase);
+  if (o.outcome) {
+    const close = o.outcome === "closed" || (r?.phase === "starting" && !r.dispatched);
+    return {
+      record: close ? undefined : r,
+      effects: close ? [{ kind: "close" }] : [],
+      line: o.outcome === "closed" ? "" : `PENDING #${pr}: head or base moved; run again`,
+      ...(o.operation === "recover" ? { active: !close && !!r } : {}),
+    };
+  }
   if (o.busy) {
     return o.operation === "recover" ? active(true) : done(o.busy);
   }
@@ -225,7 +236,7 @@ export function step(record: Resolution | undefined, o: Observation): Transition
         : go("snapshot", { kind: "snapshot", fetch: "preview" });
     case "lifecycle":
       return o.lifecycle !== "open"
-        ? outside()
+        ? step(r, { ...o, outcome: "closed" })
         : go("snapshot", {
             kind: "snapshot",
             fetch: o.operation === "recover" ? "recovery" : "preview",

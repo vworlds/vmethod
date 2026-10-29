@@ -9,6 +9,7 @@ import {
 import { dirname, join } from "node:path";
 import type { Config } from "../config.js";
 import { step, type Effect, type Observation, type Resolution } from "../conflicts/machine.js";
+import { ConflictOutcome } from "../conflicts/outcomes.js";
 import { GitHubHttpError } from "./client.js";
 import { stateRoot } from "./digest.js";
 import { GitTransport } from "./git.js";
@@ -75,7 +76,9 @@ export class ConflictService {
   }
 
   /** Start or reconcile under the per-PR lock. retry re-proves only a recorded
-   * verify failure. Live lock holders return a quiet pending line. */
+   * verify failure. Live lock holders and moved previews return quiet PENDING lines.
+   * Closed/non-task PR races return an empty line after deleting their record;
+   * unexpected failures still throw. */
   async resolve(pr: number, retry = false, waitMs = 0): Promise<string> {
     this.validate(pr);
     if (typeof retry !== "boolean") {
@@ -171,7 +174,19 @@ export class ConflictService {
       const result = step(run.record, run.observation);
       run.record = result.record;
       for (const effect of result.effects) {
-        await this.apply(run, effect);
+        try {
+          await this.apply(run, effect);
+        } catch (error) {
+          if (!(error instanceof ConflictOutcome)) {
+            throw error;
+          }
+          const outcome = step(run.record, { ...run.observation, outcome: error.outcome });
+          run.record = outcome.record;
+          for (const cleanup of outcome.effects) {
+            await this.apply(run, cleanup);
+          }
+          return outcome;
+        }
       }
       if (!result.next) {
         return result;
@@ -384,7 +399,10 @@ export class ConflictService {
           (await run.git.run("rev-parse", `refs/remotes/origin/${snapshot.branch}`)).trim() !==
             snapshot.head
         ) {
-          throw new Error(`Head or base moved during conflict ${effect.fetch}; run again`);
+          throw new ConflictOutcome(
+            "retry",
+            `Head or base moved during conflict ${effect.fetch}; run again`
+          );
         }
       }
       if (effect.current) {
@@ -393,6 +411,9 @@ export class ConflictService {
         o.snapshot = snapshot;
       }
     } catch (error) {
+      if (error instanceof ConflictOutcome) {
+        throw error;
+      }
       if (effect.fetch !== "dispatch") {
         throw error;
       }

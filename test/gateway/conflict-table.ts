@@ -286,7 +286,7 @@ export const conflictTransitions: TransitionRow[] = [
     { line: "nothing to resolve for #31" }
   ),
   ...(["merged", "closed"] as const).map((lifecycle) =>
-    row(`C6/#245: PR ${lifecycle} outside fixer`, waiting, { lifecycle }, null, [], outside)
+    row(`C6/#245: PR ${lifecycle} outside fixer`, waiting, { lifecycle }, null, [], { line: "" })
   ),
   ...(["starting", "blocked"] as const).map((phase) =>
     row(

@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { dirname, join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { fixture, ghConfig } from "../helpers.js";
-import { proc } from "./watch-fake.js";
+import { proc, WatchFake } from "./watch-fake.js";
+import { ConflictOutcome } from "../../src/conflicts/outcomes.js";
 import { type EventDeps } from "../../src/gateway/events.js";
 import {
   ConflictService,
@@ -18,6 +19,78 @@ import { VerificationService } from "../../src/gateway/verify.js";
 import type { ChecksService } from "../../src/gateway/checks.js";
 
 const exec = promisify(execFile);
+
+test.each(["initial", "dispatch"])(
+  "a terminal PR race at the %s read leaves no conflict record",
+  async (stage) => {
+    const f = await setup(true, false);
+    const terminal = new ConflictOutcome("closed", "Task PR is not open");
+    const snapshot = vi.mocked(f.hooks.snapshot);
+    if (stage === "dispatch") {
+      snapshot.mockResolvedValueOnce({ ...f.snapshot });
+    }
+    snapshot.mockRejectedValue(terminal);
+    expect(await f.service.resolve(31)).toBe("");
+    expect(existsSync(f.record())).toBe(false);
+    expect(f.service.pending(31)).toBe(false);
+    expect(f.hooks.fix).not.toHaveBeenCalled();
+    expect(f.hooks.cardConflict).not.toHaveBeenCalled();
+    expect(f.deps.report).not.toHaveBeenCalled();
+  },
+  15000
+);
+
+test.each(["merged", "closed", "non-task", "CI read closed", "head moved", "base moved"])(
+  "listing race %s is quiet and leaves the expected resolution record",
+  async (race) => {
+    const f = await setup(true, false);
+    const moved = race.endsWith("moved");
+    if (!moved) {
+      await f.service.resolve(31);
+      expect(existsSync(f.record())).toBe(true);
+      vi.mocked(f.hooks.snapshot).mockRejectedValue(
+        new ConflictOutcome("closed", race === "CI read closed" ? "Task PR is not open" : race)
+      );
+    } else {
+      // Change the fetched refs, not the snapshot: exercise the real preview race.
+      await f.git(
+        "update-ref",
+        `refs/remotes/origin/${race === "head moved" ? "task" : "dev"}`,
+        race === "head moved" ? f.snapshot.baseSha : f.snapshot.head
+      );
+    }
+    const watcher = new WatchFake();
+    watcher.task();
+    watcher.pulls[0].number = 31;
+    watcher.mergeable = false;
+    watcher.resolveConflicts = (pr) => f.service.resolve(pr);
+    watcher.conflictPending = (pr) => f.service.pending(pr);
+    const loop = watcher.loop();
+    try {
+      const events = await watcher.tick(loop);
+      expect(events.filter((event) => event.kind === "conflict-resolution")).toEqual([]);
+      expect(existsSync(f.record())).toBe(false);
+      expect(f.service.pending(31)).toBe(false);
+      expect(f.deps.report).not.toHaveBeenCalled();
+      if (moved) {
+        expect(f.hooks.fix).not.toHaveBeenCalled();
+        await f.git("update-ref", "refs/remotes/origin/task", f.snapshot.head);
+        await f.git("update-ref", "refs/remotes/origin/dev", f.snapshot.baseSha);
+        await watcher.ack(loop, events);
+        for (let i = 0; i < 6; i++) {
+          watcher.advance();
+          await watcher.tick(loop);
+        }
+        expect(f.hooks.fix).toHaveBeenCalledOnce();
+        expect(JSON.parse(readFileSync(f.record(), "utf8")).phase).toBe("resolved");
+      }
+    } finally {
+      loop.close();
+      watcher.done();
+    }
+  },
+  15000
+);
 
 test("refresh-checks holds dispatch until its push finishes, then dispatch reads the new head", async () => {
   const f = await setup(false, false);
@@ -678,7 +751,7 @@ test.each(["merged", "closed"] as const)(
     );
     vi.mocked(f.hooks.lifecycle).mockResolvedValue(lifecycle);
     vi.mocked(f.hooks.snapshot).mockRejectedValue(new Error("Task PR is not open"));
-    expect(await f.service.resolve(31)).toBe("conflict on #31 resolved outside the fixer");
+    expect(await f.service.resolve(31)).toBe("");
     expect(existsSync(f.record())).toBe(false);
     expect(f.service.pending(31)).toBe(false);
     expect(vi.mocked(f.hooks.snapshot)).toHaveBeenCalledTimes(before.snapshot);
