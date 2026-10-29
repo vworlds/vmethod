@@ -98,7 +98,7 @@ export class TaskCommon {
   }
 
   protected get repo(): string {
-    return this.config.repo ?? "undefined";
+    return this.config.repo;
   }
 
   protected path(ref: string, kind = "issues"): string {

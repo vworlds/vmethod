@@ -46,7 +46,7 @@ export async function inheritAutopilot(
   if (!state?.active || !state.grant) {
     return false;
   }
-  const repo = config.repo ?? "undefined";
+  const repo = config.repo;
   const number = Number(pr.number);
   // The copied label sits alone for seconds until its proof lands; journal the
   // operation first so the watcher's polls leave the window unjudged (#249).
@@ -110,7 +110,7 @@ export class AutopilotReader {
   ) {}
 
   async read(ids: string[]): Promise<Map<string, AutopilotState>> {
-    return autopilotStates(await this.records(ids), this.filter, this.config.repo ?? "undefined");
+    return autopilotStates(await this.records(ids), this.filter, this.config.repo);
   }
 
   /** The wire records behind read()'s states. The watcher cleans an unauthorized

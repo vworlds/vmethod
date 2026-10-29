@@ -70,7 +70,7 @@ export class ConflictService {
     private hooks: ConflictHooks
   ) {
     this.directory = join(
-      stateRoot(env, config.stateName ?? (config.repo ?? "undefined").replace("/", "-")),
+      stateRoot(env, config.stateName ?? config.repo.replace("/", "-")),
       "conflicts"
     );
   }

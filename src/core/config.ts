@@ -51,14 +51,8 @@ export type Config = {
   gateway?: { reserve?: number; maxRetries?: number };
 };
 
-/** Legacy service inputs allow partial, mutable settings and dynamic key reads.
- * File loads still enforce Config's required fields and privacy enum before exposing this view.
- */
-export type ConfigInput = Omit<Partial<Config>, "board" | "learningsPrivacy"> & {
-  board?: Partial<Config["board"]>;
-  learningsPrivacy?: string;
-  [key: string]: unknown;
-};
+/** Service settings use the same required fields and closed keys as validated file loads. */
+export type ConfigInput = Config;
 
 /** One schema-validated model registry entry; historical session backends are not file entries. */
 export interface ModelEntry {

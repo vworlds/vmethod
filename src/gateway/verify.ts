@@ -45,7 +45,7 @@ export class VerificationService {
 
   async refresh(ref: string): Promise<Verdict> {
     const target = reference(ref, this.config);
-    if (target.repo.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()) {
+    if (target.repo.toLowerCase() !== this.config.repo.toLowerCase()) {
       throw new Error("CI operations require the configured repository");
     }
     // #373: hold the conflict lock from the snapshot through the push, so the

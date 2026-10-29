@@ -1,15 +1,27 @@
 import { expect, test, vi } from "vitest";
-import { GitTransport, pushFailureMessage } from "../../src/gateway/git.js";
+import { testConfig } from "../config.js";
+import { GitTransport, pushFailureMessage, taskBranch } from "../../src/gateway/git.js";
 import type { Dependencies } from "../../src/gateway/client.js";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixture, ghConfig } from "../helpers.js";
 import { runChildAsync } from "../child-process.js";
 
+test("an omitted release branch retains the historical protected undefined name", () => {
+  const config = testConfig();
+  expect(() => taskBranch("undefined", config)).toThrow("refusing to push undefined");
+  expect(() => taskBranch("dev", config)).toThrow("refusing to push dev");
+  expect(() => taskBranch("12-task", config)).not.toThrow();
+  expect(() => taskBranch("release", testConfig({ releaseBranch: "release" }))).toThrow(
+    "refusing to push release"
+  );
+  expect(() => taskBranch("undefined", testConfig({ releaseBranch: "release" }))).not.toThrow();
+});
+
 /** A transport whose repo is known, logging in as the fixture gh login. */
 const transport = (exec: Dependencies["exec"]) =>
   new GitTransport(
-    { repo: "example/project" },
+    testConfig(),
     { GH_CONFIG_DIR: ghConfig("fake-token") },
     {
       exec,
@@ -45,7 +57,7 @@ test("real commit-tree uses wrapper identity even with a conflicting global conf
   };
   const exec: Dependencies["exec"] = async (file, args, options) =>
     (await runChildAsync(file, [...args], { ...options, encoding: "utf8", timeout: 5000 })).stdout;
-  const git = new GitTransport({}, env, { exec } as Dependencies, root);
+  const git = new GitTransport(testConfig(), env, { exec } as Dependencies, root);
   await git.run("init", "-q");
   const tree = (await git.run("write-tree")).trim();
   const commit = (await git.run("commit-tree", tree, "-m", "test identity")).trim();
@@ -53,7 +65,7 @@ test("real commit-tree uses wrapper identity even with a conflicting global conf
     "Author <a@example.com>|Committer <c@example.com>"
   );
   const missing = new GitTransport(
-    {},
+    testConfig(),
     { PATH: env.PATH, HOME: root },
     { exec } as Dependencies,
     root
@@ -72,7 +84,7 @@ test("commit-tree receives explicit wrapper identities, never global config or s
   };
   const exec = vi.fn(async () => "commit");
   const git = new GitTransport(
-    {},
+    testConfig(),
     { ...identity, SECRET: "hidden" },
     { exec } as unknown as Dependencies,
     "/work"
@@ -95,7 +107,7 @@ test.each([
   { GIT_AUTHOR_NAME: "Author", GIT_AUTHOR_EMAIL: "a@b" },
 ])("commit-tree requires all explicit identities: %j", async (env) => {
   const exec = vi.fn(async () => "");
-  const git = new GitTransport({}, env, { exec } as unknown as Dependencies, "/work");
+  const git = new GitTransport(testConfig(), env, { exec } as unknown as Dependencies, "/work");
   await expect(git.run("commit-tree", "tree")).rejects.toThrow(
     "set GIT_AUTHOR_NAME/EMAIL in the orchestrator environment"
   );

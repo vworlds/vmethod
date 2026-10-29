@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { testConfig } from "../config.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -89,7 +90,7 @@ function setup(files: Record<string, string> = {}) {
     OPENCODE_SERVER_USERNAME: "user",
     OPENCODE_SERVER_PASSWORD: "password",
   };
-  const config = { repo: "example/project", baseBranch: "dev", workerCheckout: checkout };
+  const config = testConfig({ workerCheckout: checkout });
   return {
     root,
     checkout,
@@ -154,7 +155,7 @@ test("locate never creates, and a worker checkout sharing the orchestrator's .gi
   expect(f.calls.some((call) => call.startsWith("opencode"))).toBe(false);
   const shared = new WorkerWorktrees(
     f.root,
-    { repo: "example/project", workerCheckout: join(f.root, ".worktrees/linked") },
+    testConfig({ workerCheckout: join(f.root, ".worktrees/linked") }),
     {},
     {
       exec: async (file, args, options) =>

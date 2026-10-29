@@ -1,10 +1,60 @@
 import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, expectTypeOf, test } from "vitest";
 import { parse, stringify } from "yaml";
-import { configValue, getConfig, loadYaml } from "../src/config.js";
+import { configValue, getConfig, loadYaml, validateYaml } from "../src/config.js";
+import type { Config, ConfigInput } from "../src/core/config.js";
+import { testConfig } from "./config.js";
 import { validProject } from "./helpers.js";
 import { check } from "../src/check.js";
+
+test("service settings have closed keys and the same required fields as validated Config", () => {
+  expectTypeOf<ConfigInput>().toEqualTypeOf<Config>();
+  expectTypeOf<string>().not.toExtend<keyof ConfigInput>();
+  expectTypeOf<"reop">().not.toExtend<keyof ConfigInput>();
+  expectTypeOf<Omit<ConfigInput, "repo">>().not.toExtend<ConfigInput>();
+  expectTypeOf<Omit<ConfigInput, "org">>().not.toExtend<ConfigInput>();
+  expectTypeOf<Omit<ConfigInput, "baseBranch">>().not.toExtend<ConfigInput>();
+  expectTypeOf<Omit<ConfigInput, "board">>().not.toExtend<ConfigInput>();
+  expectTypeOf<Partial<ConfigInput["board"]>>().not.toExtend<ConfigInput["board"]>();
+  expectTypeOf<ConfigInput["learningsPrivacy"]>().toEqualTypeOf<"public" | "private" | undefined>();
+});
+
+test("minimal valid files omit stateName, releaseBranch and privacy without synthetic values", () => {
+  const config = validateYaml(stringify(testConfig()), "vmethod", "vmethod.yaml");
+  expect(config.repo).toBe("example/project");
+  expect(config.org).toBe("example");
+  expect(config.baseBranch).toBe("dev");
+  expect(config.board).toEqual({
+    owner: "example",
+    number: 1,
+    repos: ["example/project"],
+    enabled: true,
+  });
+  expect(config).not.toHaveProperty("stateName");
+  expect(config).not.toHaveProperty("releaseBranch");
+  expect(config).not.toHaveProperty("learningsPrivacy");
+});
+
+test.each(["repo", "org", "baseBranch", "board"])("schema still requires %s", (key) => {
+  const config = { ...testConfig() };
+  Reflect.deleteProperty(config, key);
+  expect(() => validateYaml(stringify(config), "vmethod", "vmethod.yaml")).toThrow(
+    `required property '${key}'`
+  );
+});
+
+test("testConfig merges board overrides and never shares mutable defaults", () => {
+  const config = testConfig({ repo: "other/repo", board: { enabled: false } });
+  expect(config.board).toEqual({
+    owner: "other",
+    number: 1,
+    repos: ["other/repo"],
+    enabled: false,
+  });
+  config.board.repos.push("other/second");
+  expect(testConfig({ repo: "other/repo" }).board.repos).toEqual(["other/repo"]);
+});
 
 test("quota configuration defaults, overrides and validation", () => {
   const root = validProject();

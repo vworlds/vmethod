@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { testConfig } from "../config.js";
 import { bodyHash, scopeApproved } from "../../src/evidence/scope.js";
 import { autopilotStates } from "../../src/evidence/autopilot.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
@@ -106,7 +107,7 @@ test("historical Approved moves never grant scope approval", () => {
       scopeIssue(),
       [review],
       [scopeMove({ previousStatus: "Backlog", status: "Approved" })],
-      { board: { number: 1 } },
+      testConfig({ board: { number: 1 } }),
       filter
     )
   ).toBe(false);
@@ -150,7 +151,7 @@ test.each(rows)("$name", (row) => {
       issue,
       row.comments ?? [review],
       row.timeline ?? [move],
-      { board: { number: 1 }, scope: { fastPath: row.fast ?? [] } },
+      testConfig({ board: { number: 1 }, scope: { fastPath: row.fast ?? [] } }),
       filter,
       delegation
     )

@@ -166,7 +166,7 @@ function parseThreadRef(config: Config, ref: string): ThreadRef {
     throw new Error("Expected <number> or <org/repo#number>");
   }
   return {
-    repo: match[2] ? `${match[2]}/${match[3]}` : (config.repo ?? "undefined"),
+    repo: match[2] ? `${match[2]}/${match[3]}` : config.repo,
     number: parsed,
   };
 }
@@ -306,8 +306,8 @@ export class EventLoop {
     this.dir = stateRoot(host.env, this.session.stateName);
     this.state = new LoopState(this.dir);
     this.writes = new WriteJournal(config, host.env, host.deps.now, this.session.stateName);
-    this.own = config.repo ?? "undefined";
-    this.org = config.org ?? "undefined";
+    this.own = config.repo;
+    this.org = config.org;
     const methodology = config.vmethod?.repo || "vworlds/vmethod";
     this.subscriptions =
       methodology !== "off" && methodology.toLowerCase() !== this.own.toLowerCase()

@@ -71,7 +71,7 @@ export const push: Handler<"push"> = async function (
       `+refs/heads/${branch}:refs/remotes/origin/${branch}`,
     ]);
     if (!fetched.ok) {
-      throw new Error(pushFailureMessage(fetched, this.config.repo ?? "undefined"));
+      throw new Error(pushFailureMessage(fetched, this.config.repo));
     }
     const remote = (
       await git.run("rev-parse", "--verify", `refs/remotes/origin/${branch}^{commit}`)
@@ -81,10 +81,7 @@ export const push: Handler<"push"> = async function (
       (await git.run("rev-list", "--count", `${commit}..${head}`)).trim() !== "0"
     ) {
       throw new Error(
-        pushFailureMessage(
-          { ok: false, outcome: "moved", detail: "" },
-          this.config.repo ?? "undefined"
-        )
+        pushFailureMessage({ ok: false, outcome: "moved", detail: "" }, this.config.repo)
       );
     }
   }
@@ -139,10 +136,10 @@ export const push: Handler<"push"> = async function (
   }
   const result = await git.transfer("push", [`${commit}:refs/heads/${branch}`]);
   if (!result.ok) {
-    throw new Error(pushFailureMessage(result, this.config.repo ?? "undefined"));
+    throw new Error(pushFailureMessage(result, this.config.repo));
   }
   if (ctx.role === "orchestrator") {
-    this.github.writes.recordPush(this.config.repo ?? "undefined", Number(taskPr), commit);
+    this.github.writes.recordPush(this.config.repo, Number(taskPr), commit);
   }
   await git.run("update-ref", `refs/remotes/origin/${branch}`, commit);
   return `pushed ${branch} at ${commit.slice(0, 7)}`;

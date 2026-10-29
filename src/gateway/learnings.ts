@@ -281,7 +281,7 @@ export class LearningsService {
   }
 
   private async submit(input: LearningReadInput): Promise<string> {
-    if (!["public", "private"].includes(this.config.learningsPrivacy ?? "undefined")) {
+    if (this.config.learningsPrivacy !== "public" && this.config.learningsPrivacy !== "private") {
       throw new Error("Set learningsPrivacy explicitly before submitting");
     }
     if (this.config.learningsPrivacy === "private" && input.notes !== undefined) {
@@ -289,7 +289,7 @@ export class LearningsService {
         "Private distilled notes cannot be cleared per record; use record notes with --include-text <pr>"
       );
     }
-    const repo = (this.config.repo ?? "undefined").toLowerCase();
+    const repo = this.config.repo.toLowerCase();
     const logFile = join(this.root, ".vmethod/model-log.jsonl");
     const annotationsDirectory = join(this.root, "learnings/models", repo.replace("/", "-"));
     const annotationOnly =

@@ -61,7 +61,7 @@ export class EvidenceReader {
           historical: historical !== undefined,
         },
         this.filter,
-        this.config.repo ?? "undefined"
+        this.config.repo
       ) === true
     ) {
       const current = await this.host.thread(ref, "pr");
@@ -147,12 +147,12 @@ export class EvidenceReader {
             ),
           },
           this.filter,
-          this.config.repo ?? "undefined",
+          this.config.repo,
           ref
         )
       );
     }
-    return isOwnerApproved(evidence, this.filter, this.config.repo ?? "undefined");
+    return isOwnerApproved(evidence, this.filter, this.config.repo);
   }
 
   /** Historical exact-head review evidence never replaces a current delegation. */
@@ -310,7 +310,7 @@ export class EvidenceReader {
       /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:pull|issues)\/([1-9]\d*)#issuecomment-([1-9]\d*)$/.exec(
         url
       );
-    if (!match || match[1] !== (this.config.repo ?? "undefined") || match[2] !== ref) {
+    if (!match || match[1] !== this.config.repo || match[2] !== ref) {
       return false;
     }
     const item = await this.host.flowThread(ref, kind);
@@ -320,15 +320,7 @@ export class EvidenceReader {
       url
     );
     return comments.some((comment) =>
-      ownerAgreement(
-        comment,
-        this.filter,
-        this.config.repo ?? "undefined",
-        ref,
-        url,
-        since,
-        handback
-      )
+      ownerAgreement(comment, this.filter, this.config.repo, ref, url, since, handback)
     );
   }
 
@@ -377,10 +369,7 @@ export class EvidenceReader {
       return false;
     }
     const person = this.filter.identity(model.creator);
-    return (
-      person !== undefined &&
-      this.filter.roleIn(person, this.config.repo ?? "undefined") === "owner"
-    );
+    return person !== undefined && this.filter.roleIn(person, this.config.repo) === "owner";
   }
 
   /** One thread's verified-owner comments: bodies are read only after the effective

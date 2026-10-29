@@ -47,7 +47,7 @@ export class GitTransport {
   async transfer(command: "fetch" | "push", refs: string[]): Promise<TransferResult> {
     const credentials = this.config.credentials;
     const token = githubToken(this.env);
-    const repo = this.config.repo ?? "undefined";
+    const repo = this.config.repo;
     const httpsEnv = this.localEnvironment();
     httpsEnv.VMETHOD_GIT_TOKEN = token;
     const helper =
@@ -187,17 +187,17 @@ export function pushFailureMessage(failure: TransferFailure, repo: string): stri
   }
 }
 
+/** Preserve the historical protected name even when no release branch is configured. */
+export function protectedReleaseBranch(config: Config): string {
+  return config.releaseBranch ?? "undefined";
+}
+
 export function taskBranch(branch: string, config: Config): void {
   validateBranch(branch);
   if (
-    [
-      "dev",
-      "master",
-      "main",
-      "HEAD",
-      config.baseBranch ?? "undefined",
-      config.releaseBranch ?? "undefined",
-    ].includes(branch)
+    ["dev", "master", "main", "HEAD", config.baseBranch, protectedReleaseBranch(config)].includes(
+      branch
+    )
   ) {
     throw new Error(`error: refusing to push ${branch}`);
   }

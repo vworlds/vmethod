@@ -65,7 +65,7 @@ export function eventLoop(
     const methodology = this.config.vmethod?.repo ?? "vworlds/vmethod";
     const filter = new PeopleFilter(
       this.filter.people,
-      this.config.org ?? "undefined",
+      this.config.org,
       this.digest,
       methodology === "off" ? [] : [methodology]
     );

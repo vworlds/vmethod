@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { testConfig } from "../config.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -316,11 +317,11 @@ async function setup(row: TransitionRow) {
   }
   const service = new ConflictService(
     root,
-    {
+    testConfig({
       repo: "example/project",
       stateName: "conflict-test",
       ...(o.escalated ? { conflicts: { escalatePaths: ["**/*.txt"] } } : {}),
-    },
+    }),
     env,
     deps,
     hooks

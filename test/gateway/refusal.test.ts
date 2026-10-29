@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { testConfig } from "../config.js";
 import { approvalRefusal, isOwnerApproved, type ApprovalPR } from "../../src/evidence/approval.js";
 import { scopeApproved, scopeRefusal, bodyHash } from "../../src/evidence/scope.js";
 import { guardClosingKeywords } from "../../src/gateway/markdown.js";
@@ -14,7 +15,7 @@ const filter = () =>
     "example",
     new Digest({ XDG_STATE_HOME: fixture() }, "refusals", () => 0)
   );
-const config = { board: { number: 1 } };
+const config = testConfig({ board: { number: 1 } });
 const old = "b".repeat(40);
 const move = (overrides = {}) => ({
   ...scopeMove({ status: "Approved", previousStatus: "Owner review" }),

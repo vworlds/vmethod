@@ -66,7 +66,7 @@ export async function worktreeTaskFor(
   const tasks: number[] = [];
   for (let page = 1; ; page++) {
     const data = await this.github.rest(
-      `/repos/${this.config.repo}/pulls?state=all&head=${encodeURIComponent(`${(this.config.repo ?? "undefined").split("/")[0]}:${branch}`)}&per_page=100&page=${page}`
+      `/repos/${this.config.repo}/pulls?state=all&head=${encodeURIComponent(`${this.config.repo.split("/")[0]}:${branch}`)}&per_page=100&page=${page}`
     );
     if (!Array.isArray(data)) {
       throw new Error("Missing worktree PR listing");
@@ -98,7 +98,7 @@ export async function worktreeTaskFor(
 
 export function localNumber(this: GatewayServices, ref: string): number {
   const target = reference(ref, this.config);
-  if (target.repo.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()) {
+  if (target.repo.toLowerCase() !== this.config.repo.toLowerCase()) {
     throw new Error("Worker operations require configured repository");
   }
   return target.number;
@@ -114,7 +114,7 @@ export function projectCard(this: GatewayServices, item: ObjectData): ObjectData
       (value) =>
         object(object(value).project).number === this.config.board?.number &&
         String(object(object(object(value).project).owner).login).toLowerCase() ===
-          (this.config.board?.owner ?? "undefined").toLowerCase()
+          this.config.board.owner.toLowerCase()
     )
   );
 }

@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { testConfig } from "../config.js";
 import { join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { bodyHash, scopeApproved, ScopeReader } from "../../src/evidence/scope.js";
@@ -23,7 +24,7 @@ import recordedScope from "../fixtures/github/issue-scope.json" with { type: "js
 
 const filter = () =>
   new PeopleFilter(people, "example", new Digest({ XDG_STATE_HOME: fixture() }, "scope", () => 0));
-const config = { board: { number: 1 } };
+const config = testConfig({ board: { number: 1 } });
 const review = (overrides: ObjectData = {}) =>
   scopeComment({
     body: `[orchestrator] SCOPE REVIEW\n\nUpdated scope.\n\nbody sha256: ${bodyHash("Final scope")}`,

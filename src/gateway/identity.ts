@@ -13,8 +13,9 @@ export async function checkOnline(
   const config = getConfig(root, env);
   const filter = new PeopleFilter(
     loadYaml(root, "people"),
-    config.org ?? "undefined",
-    new Digest(env, config.stateName ?? "undefined", deps.now)
+    config.org,
+    // Keep the historical identity-check digest directory; deriving it from repo would move state.
+    new Digest(env, config.stateName ?? IDENTITY_DIGEST_STATE_NAME, deps.now)
   );
   const expected = env.VMETHOD_ROLE;
   try {
@@ -22,7 +23,7 @@ export async function checkOnline(
     const person = tokenIdentity(await tokenViewer(client), filter);
     // The orchestrator role is per repository (#186): a login qualifies only
     // when it belongs to this configuration's own repository's orchestrator.
-    const role = filter.roleIn(person, config.repo ?? "undefined");
+    const role = filter.roleIn(person, config.repo);
     const messages = [`GH_CONFIG_DIR: ${person.login} (${role})`];
     if (expected ? role !== expected : role !== "orchestrator" && role !== "worker") {
       messages.push(
@@ -35,3 +36,5 @@ export async function checkOnline(
     return { code: 1, messages: [`GH_CONFIG_DIR: ${(error as Error).message}`] };
   }
 }
+
+const IDENTITY_DIGEST_STATE_NAME = "undefined";
