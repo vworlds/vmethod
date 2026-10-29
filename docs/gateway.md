@@ -1065,6 +1065,15 @@ Linux `/proc/<pid>/stat` start time, preventing reused PIDs (including container
 PID 1) from blocking adoption. Another live watcher for that state fails clearly.
 State, pending events and cursors survive restart; do not delete them to reconnect.
 
+Watcher files are named by `PrState`, `CardState` and `LoopState` in
+`src/watch/state.ts`; typed markers preserve the existing file names, bytes and
+write modes, so no migration is needed. When a PR closes, or its merge follow-up
+completes, the watcher clears its PR baselines, including base-head, worker
+protocol/stop/check-in/metric, cost, unanswered-worker and conflict/base dispatch
+markers. Incomplete merge follow-up retains these baselines. Once-event history
+and pending Progress retain their existing acknowledgement and board lifecycles;
+card absence pruning and delivery-reminder metadata are unchanged.
+
 ## CI and integration commands
 
 | Command                                       | Role                                 | Behavior                                                                                                                                                                                                              |

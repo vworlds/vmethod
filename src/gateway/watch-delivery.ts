@@ -1,6 +1,5 @@
-import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { LoopState } from "../watch/state.js";
 import type { WatchEvent } from "./events.js";
-import { join } from "node:path";
 
 const RETENTION_MS = 7 * 24 * 60 * 60_000;
 
@@ -12,15 +11,19 @@ interface Delivery {
 
 /** Durable, per-state-directory delivery history. Call only while holding the watcher lock. */
 export class WatchDelivery {
+  private readonly state: LoopState;
+
   constructor(
-    private readonly dir: string,
+    dir: string,
     private readonly now: () => number
-  ) {}
+  ) {
+    this.state = new LoopState(dir);
+  }
 
   /** Record a real client start, not a long-poll continuation or a replay. */
   start(): void {
     this.prune(this.history());
-    this.write("watch-start.json", JSON.stringify({ seq: this.sequence() }));
+    this.state.watchStart.write(JSON.stringify({ seq: this.sequence() }));
   }
 
   /** Persist before returning a batch, including batches stdout never receives. */
@@ -30,12 +33,10 @@ export class WatchDelivery {
     }
     const history = this.history();
     const seq = this.sequence() + 1;
-    this.write("delivery-seq", String(seq));
+    this.state.deliverySeq.write(String(seq));
     this.prune(history);
-    appendFileSync(
-      join(this.dir, "delivered.jsonl"),
-      `${JSON.stringify({ seq, at: new Date(this.now()).toISOString(), events })}\n`,
-      { mode: 0o600 }
+    this.state.delivered.append(
+      `${JSON.stringify({ seq, at: new Date(this.now()).toISOString(), events })}\n`
     );
   }
 
@@ -43,7 +44,7 @@ export class WatchDelivery {
   replay(selector: string): WatchEvent[] {
     let includes: (delivery: Delivery) => boolean;
     if (selector === "previous") {
-      const start = this.read("watch-start.json");
+      const start = this.state.watchStart.raw();
       const seq: unknown = start ? JSON.parse(start).seq : 0;
       if (!Number.isSafeInteger(seq) || Number(seq) < 0) {
         throw new Error("Invalid watch start state");
@@ -65,7 +66,8 @@ export class WatchDelivery {
 
   private history(): Delivery[] {
     let previous = 0;
-    return this.read("delivered.jsonl")
+    return this.state.delivered
+      .raw()
       .split("\n")
       .filter(Boolean)
       .map((line) => {
@@ -88,31 +90,14 @@ export class WatchDelivery {
   }
 
   private prune(history: Delivery[]): void {
-    this.write("delivered.jsonl", history.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
-  }
-
-  private read(name: string): string {
-    try {
-      return readFileSync(join(this.dir, name), "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return "";
-      }
-      throw error;
-    }
+    this.state.delivered.write(history.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
   }
 
   private sequence(): number {
-    const seq = Number(this.read("delivery-seq") || "0");
+    const seq = Number(this.state.deliverySeq.raw() || "0");
     if (!Number.isSafeInteger(seq) || seq < 0 || seq === Number.MAX_SAFE_INTEGER) {
       throw new Error("Invalid watcher delivery sequence");
     }
     return seq;
-  }
-
-  private write(name: string, value: string): void {
-    const path = join(this.dir, name);
-    writeFileSync(`${path}.tmp`, value, { mode: 0o600 });
-    renameSync(`${path}.tmp`, path);
   }
 }
