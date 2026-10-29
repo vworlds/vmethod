@@ -2,7 +2,11 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
-import { AutopilotReader, autopilotStates, inheritAutopilot } from "../../src/evidence/autopilot.js";
+import {
+  AutopilotReader,
+  autopilotStates,
+  inheritAutopilot,
+} from "../../src/evidence/autopilot.js";
 import { GitHubClient } from "../../src/gateway/client.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
