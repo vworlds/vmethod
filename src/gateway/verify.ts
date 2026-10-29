@@ -24,8 +24,7 @@ export class VerificationService {
   ) {}
 
   async verify(input: Operations["verify"]["input"]): Promise<Verdict> {
-    const branches = this.config.branches as
-      { mainCheckout?: string; worktreeRoot?: string } | undefined;
+    const branches = this.config.branches;
     const parent = resolve(
       branches?.mainCheckout ?? this.root,
       branches?.worktreeRoot ?? ".worktrees"
@@ -46,7 +45,7 @@ export class VerificationService {
 
   async refresh(ref: string): Promise<Verdict> {
     const target = reference(ref, this.config);
-    if (target.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+    if (target.repo.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()) {
       throw new Error("CI operations require the configured repository");
     }
     // #373: hold the conflict lock from the snapshot through the push, so the
@@ -136,8 +135,7 @@ export class VerificationService {
     if (prs.some((pr) => pr.base !== base || pr.baseSha !== prs[0].baseSha)) {
       throw new Error("verify requires PRs sharing the same base");
     }
-    const branches = this.config.branches as
-      { mainCheckout?: string; worktreeRoot?: string } | undefined;
+    const branches = this.config.branches;
     const parent = resolve(
       branches?.mainCheckout ?? this.root,
       branches?.worktreeRoot ?? ".worktrees"

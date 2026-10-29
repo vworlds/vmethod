@@ -3,7 +3,6 @@ import { basename, join, resolve } from "node:path";
 import type { Config } from "../config.js";
 import type { Dependencies } from "./client.js";
 import { GitTransport, validateBranch } from "./git.js";
-import { object } from "./people.js";
 import { WorkerWorktrees } from "./worker-launch.js";
 import { workerWorktreeName } from "./worker-path.js";
 
@@ -170,11 +169,11 @@ export class WorktreeService {
         "master",
         "dev",
         "HEAD",
-        String(this.config.baseBranch),
-        String(this.config.releaseBranch),
+        this.config.baseBranch ?? "undefined",
+        this.config.releaseBranch ?? "undefined",
         task.base,
       ].includes(task.branch) ||
-      task.branch.startsWith(String(object(this.config.branches).packPrefix ?? "pack/"))
+      task.branch.startsWith(this.config.branches?.packPrefix ?? "pack/")
     ) {
       return "protected branch";
     }

@@ -125,7 +125,7 @@ export class GitHubClient {
     private deps: Dependencies
   ) {
     this.token = githubToken(env);
-    const budget = config.gateway as { reserve?: number; maxRetries?: number } | undefined;
+    const budget = config.gateway;
     this.reserve = budget?.reserve ?? 100;
     this.retries = budget?.maxRetries ?? 3;
     this.writes = new WriteJournal(config, env, deps.now);

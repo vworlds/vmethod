@@ -57,11 +57,11 @@ export class EvidenceReader {
           reviews,
           timeline: [],
           comments: [],
-          boardNumber: Number(object(this.config.board).number),
+          boardNumber: this.config.board?.number ?? NaN,
           historical: historical !== undefined,
         },
         this.filter,
-        String(this.config.repo)
+        this.config.repo ?? "undefined"
       ) === true
     ) {
       const current = await this.host.thread(ref, "pr");
@@ -126,7 +126,7 @@ export class EvidenceReader {
       reviews,
       timeline,
       comments,
-      boardNumber: Number(object(this.config.board).number),
+      boardNumber: this.config.board?.number ?? NaN,
       historical: historical !== undefined,
     };
     if (explain) {
@@ -147,12 +147,12 @@ export class EvidenceReader {
             ),
           },
           this.filter,
-          String(this.config.repo),
+          this.config.repo ?? "undefined",
           ref
         )
       );
     }
-    return isOwnerApproved(evidence, this.filter, String(this.config.repo));
+    return isOwnerApproved(evidence, this.filter, this.config.repo ?? "undefined");
   }
 
   /** Historical exact-head review evidence never replaces a current delegation. */
@@ -310,7 +310,7 @@ export class EvidenceReader {
       /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:pull|issues)\/([1-9]\d*)#issuecomment-([1-9]\d*)$/.exec(
         url
       );
-    if (!match || match[1] !== String(this.config.repo) || match[2] !== ref) {
+    if (!match || match[1] !== (this.config.repo ?? "undefined") || match[2] !== ref) {
       return false;
     }
     const item = await this.host.flowThread(ref, kind);
@@ -320,7 +320,15 @@ export class EvidenceReader {
       url
     );
     return comments.some((comment) =>
-      ownerAgreement(comment, this.filter, String(this.config.repo), ref, url, since, handback)
+      ownerAgreement(
+        comment,
+        this.filter,
+        this.config.repo ?? "undefined",
+        ref,
+        url,
+        since,
+        handback
+      )
     );
   }
 
@@ -332,7 +340,7 @@ export class EvidenceReader {
         this.github,
         this.filter,
         this.config,
-        object(this.config.board).enabled === false
+        this.config.board?.enabled === false
           ? Infinity
           : legacyScopeCutoff((await this.host.board().snapshot()).readme)
       ).read([String(item.id)])
@@ -371,7 +379,10 @@ export class EvidenceReader {
       return false;
     }
     const person = this.filter.identity(model.creator);
-    return person !== undefined && this.filter.roleIn(person, String(this.config.repo)) === "owner";
+    return (
+      person !== undefined &&
+      this.filter.roleIn(person, this.config.repo ?? "undefined") === "owner"
+    );
   }
 
   /** One thread's verified-owner comments: bodies are read only after the effective

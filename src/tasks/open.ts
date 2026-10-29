@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { loadYaml } from "../config.js";
+import { DEFAULT_MODEL_FAMILY } from "../core/config.js";
 import { object } from "../gateway/people.js";
 import { checkMarkdown, guardClosingKeywords } from "../gateway/markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "../gateway/git.js";
@@ -66,7 +66,7 @@ export class TaskOpen extends TaskCommon {
         "POST",
         {
           head: input.branch,
-          base: String(this.config.baseBranch),
+          base: this.config.baseBranch ?? "undefined",
           title: input.title,
           body,
           draft: input.draft ?? false,
@@ -117,8 +117,8 @@ export class TaskOpen extends TaskCommon {
           "master",
           "main",
           "HEAD",
-          String(this.config.baseBranch),
-          String(this.config.releaseBranch),
+          this.config.baseBranch ?? "undefined",
+          this.config.releaseBranch ?? "undefined",
         ].includes(input.from)
       ) {
         throw new Error("open-task --from refuses the base, release or default branch");
@@ -141,7 +141,7 @@ export class TaskOpen extends TaskCommon {
     }
     let hint: string | undefined;
     let pointsOpen: number | undefined;
-    if (issue && object(this.config.board).enabled !== false) {
+    if (issue && this.config.board?.enabled !== false) {
       const board = this.host.board();
       const snapshot = await board.snapshot();
       const card = (await board.cards(snapshot.id)).find((card) => card.contentId === issue.id);
@@ -156,13 +156,9 @@ export class TaskOpen extends TaskCommon {
         throw new Error("open-task requires an Executing issue with approved scope");
       }
     }
-    const models = loadYaml(this.root, "models") as {
-      family: string;
-      model: string;
-      gate: string;
-      tier: string;
-    }[];
-    const model = models.find((model) => model.family === (input.model ?? hint ?? "sol"));
+    const model = this.models
+      .entries()
+      .find((model) => model.family === (input.model ?? hint ?? DEFAULT_MODEL_FAMILY));
     if (!model) {
       throw new Error("Unknown model family");
     }
@@ -212,7 +208,7 @@ export class TaskOpen extends TaskCommon {
     if (handoff && model.tier !== "expensive") {
       throw new Error("Handoff breakpoints require tier: expensive");
     }
-    const base = String(this.config.baseBranch);
+    const base = this.config.baseBranch ?? "undefined";
     validateBranch(base);
     const slug =
       title
@@ -222,7 +218,7 @@ export class TaskOpen extends TaskCommon {
         .replace(/^-|-$/g, "")
         .slice(0, 70) || "task";
     const number = input.issue ?? createHash("sha256").update(title).digest("hex").slice(0, 8);
-    const branch = String(object(this.config.branches).taskPattern ?? "<number>-<slug>")
+    const branch = (this.config.branches?.taskPattern ?? "<number>-<slug>")
       .replaceAll("<number>", number)
       .replaceAll("<slug>", slug);
     taskBranch(branch, this.config);
@@ -312,7 +308,7 @@ export class TaskOpen extends TaskCommon {
     const pr = { id: created.node_id };
     if (this.config.track) {
       await this.host.github.rest(`${this.path(ref)}/labels`, "POST", {
-        labels: [`track:${String(this.config.track)}`],
+        labels: [`track:${this.config.track}`],
       });
     }
     if (issue && !input.part) {

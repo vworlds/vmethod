@@ -1,11 +1,12 @@
 import { parseFirstLine } from "../core/protocol.js";
 import { EvidenceReader } from "../evidence/reader.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
+import { ModelRegistry } from "../core/config.js";
 import { WorkerWorktrees } from "./worker-launch.js";
 import { WorktreeService } from "./worktrees.js";
 import { GitHubClient, type Dependencies } from "./client.js";
 import { Digest } from "./digest.js";
-import { PeopleFilter, object, type ObjectData, type Person } from "./people.js";
+import { PeopleFilter, object, type ObjectData } from "./people.js";
 import { checkMarkdown, guardClosingKeywords } from "./markdown.js";
 import { inProcess, type Handlers, type Operations, type Transport } from "./transport.js";
 import { inheritAutopilot } from "../evidence/autopilot.js";
@@ -32,6 +33,7 @@ import { authorizeGateway } from "../identity/policy.js";
 /** Builds and shares the lazy services used by gateway handlers. */
 export class GatewayServices {
   config: Config;
+  readonly models: ModelRegistry;
   readonly watchStateConfig: Config;
   peopleMtime: number;
   configMtime: number;
@@ -152,17 +154,18 @@ export class GatewayServices {
     public deps: Dependencies
   ) {
     this.config = getConfig(root, env);
+    this.models = new ModelRegistry(root);
     this.watchStateConfig = this.config;
     this.peopleMtime = this.watchMtime("people");
     this.configMtime = this.watchMtime("vmethod");
     this.digest = new Digest(
       env,
-      String(this.config.stateName ?? String(this.config.repo).replace("/", "-")),
+      this.config.stateName ?? (this.config.repo ?? "undefined").replace("/", "-"),
       deps.now
     );
     this.filter = new PeopleFilter(
-      loadYaml(root, "people") as Person[],
-      String(this.config.org),
+      loadYaml(root, "people"),
+      this.config.org ?? "undefined",
       this.digest
     );
     this.authentication = new TokenAuthentication(
@@ -178,68 +181,73 @@ export class GatewayServices {
   }
 
   get workers(): WorkerService {
-    return (this.workersClient ??= new WorkerService(this.root, this.config, this.env, this.deps, {
-      metadata: (pr) => this.workerMetadata(pr),
-      prepare: async (pr) => {
-        const task = await this.task({ ref: String(pr) }, { role: "orchestrator" });
-        return this.workerWorktrees.prepare({ pr, ...task });
+    return (this.workersClient ??= new WorkerService(
+      this.root,
+      this.config,
+      this.env,
+      this.deps,
+      {
+        metadata: (pr) => this.workerMetadata(pr),
+        prepare: async (pr) => {
+          const task = await this.task({ ref: String(pr) }, { role: "orchestrator" });
+          return this.workerWorktrees.prepare({ pr, ...task });
+        },
+        locate: async (pr) => {
+          const task = await this.task({ ref: String(pr) }, { role: "orchestrator" });
+          return this.workerWorktrees.locate(task.branch);
+        },
+        setModel: async (pr, family) => {
+          await this.setWorkerField(pr, "pr", "Model", family);
+        },
+        modelComment: async (pr, body) => {
+          await checkMarkdown(this.root, body);
+          guardClosingKeywords(body);
+          const { person } = await this.thread(String(pr), "pr");
+          if (!person) {
+            throw new Error("Refusing model note on unaccepted PR");
+          }
+          await this.github.rest(`/repos/${this.config.repo}/issues/${pr}/comments`, "POST", {
+            body,
+          });
+        },
+        setEstimate: (issue, points) => this.setWorkerField(issue, "issue", "Estimate", points),
+        setCost: (pr, cost) => this.setWorkerField(pr, "pr", "Cost", cost),
+        gradeComment: async (issue, body) => {
+          await checkMarkdown(this.root, body);
+          guardClosingKeywords(body);
+          const { person } = await this.thread(String(issue), "issue");
+          if (!person) {
+            throw new Error("Refusing GRADE on unaccepted issue");
+          }
+          await this.github.rest(`/repos/${this.config.repo}/issues/${issue}/comments`, "POST", {
+            body,
+          });
+        },
+        modelApproval: (pr, issue, family) => this.evidence.modelApproval(family, { pr, issue }),
+        submitLearnings: () => this.learningService().command({ action: "submit" }),
+        issue: (issue) => this.workerIssue(issue),
+        diffStats: async (_pr, base, head) => {
+          if (![base, head].every((sha) => /^[a-f0-9]{40}$/i.test(sha))) {
+            throw new Error("Invalid diff boundary SHA");
+          }
+          if (base === head) {
+            return { files: 0, additions: 0, deletions: 0 };
+          }
+          const result = object(
+            await this.github.rest(`/repos/${this.config.repo}/compare/${base}...${head}`)
+          );
+          if (!Array.isArray(result.files) || result.files.length >= 300) {
+            return null;
+          }
+          return {
+            files: result.files.length,
+            additions: result.files.reduce((n, f) => n + Number(object(f).additions), 0),
+            deletions: result.files.reduce((n, f) => n + Number(object(f).deletions), 0),
+          };
+        },
       },
-      locate: async (pr) => {
-        const task = await this.task({ ref: String(pr) }, { role: "orchestrator" });
-        return this.workerWorktrees.locate(task.branch);
-      },
-      setModel: async (pr, family) => {
-        await this.setWorkerField(pr, "pr", "Model", family);
-      },
-      modelComment: async (pr, body) => {
-        await checkMarkdown(this.root, body);
-        guardClosingKeywords(body);
-        const { person } = await this.thread(String(pr), "pr");
-        if (!person) {
-          throw new Error("Refusing model note on unaccepted PR");
-        }
-        await this.github.rest(`/repos/${String(this.config.repo)}/issues/${pr}/comments`, "POST", {
-          body,
-        });
-      },
-      setEstimate: (issue, points) => this.setWorkerField(issue, "issue", "Estimate", points),
-      setCost: (pr, cost) => this.setWorkerField(pr, "pr", "Cost", cost),
-      gradeComment: async (issue, body) => {
-        await checkMarkdown(this.root, body);
-        guardClosingKeywords(body);
-        const { person } = await this.thread(String(issue), "issue");
-        if (!person) {
-          throw new Error("Refusing GRADE on unaccepted issue");
-        }
-        await this.github.rest(
-          `/repos/${String(this.config.repo)}/issues/${issue}/comments`,
-          "POST",
-          { body }
-        );
-      },
-      modelApproval: (pr, issue, family) => this.evidence.modelApproval(family, { pr, issue }),
-      submitLearnings: () => this.learningService().command({ action: "submit" }),
-      issue: (issue) => this.workerIssue(issue),
-      diffStats: async (_pr, base, head) => {
-        if (![base, head].every((sha) => /^[a-f0-9]{40}$/i.test(sha))) {
-          throw new Error("Invalid diff boundary SHA");
-        }
-        if (base === head) {
-          return { files: 0, additions: 0, deletions: 0 };
-        }
-        const result = object(
-          await this.github.rest(`/repos/${String(this.config.repo)}/compare/${base}...${head}`)
-        );
-        if (!Array.isArray(result.files) || result.files.length >= 300) {
-          return null;
-        }
-        return {
-          files: result.files.length,
-          additions: result.files.reduce((n, f) => n + Number(object(f).additions), 0),
-          deletions: result.files.reduce((n, f) => n + Number(object(f).deletions), 0),
-        };
-      },
-    }));
+      this.models
+    ));
   }
 
   get worktrees(): WorktreeService {
@@ -269,7 +277,7 @@ export class GatewayServices {
         (await this.evidence.autopilotApprovalFor(String(pr), head)),
       update: async (pr, head) => {
         await this.github.rest(
-          `/repos/${String(this.config.repo)}/pulls/${pr}/update-branch`,
+          `/repos/${this.config.repo}/pulls/${pr}/update-branch`,
           "PUT",
           {
             expected_head_sha: head,
@@ -351,57 +359,65 @@ export class GatewayServices {
         clearWake: (pr) => this.workers.clearWake(pr),
       },
     };
-    return new TaskFlow(this.root, this.env, this.config, deps, {
-      github: this.github,
-      board: () => this.board,
-      people: loadYaml(this.root, "people") as Person[],
-      autopilot: async (ref, kind) => this.evidence.autopilotFor(await this.flowThread(ref, kind)),
-      copyAutopilot: async (issue, pr) => {
-        if (
-          (object(issue.labels).nodes as ObjectData[]).some((label) => label.name === "autopilot")
-        ) {
-          await inheritAutopilot(this.github, this.filter, this.config, issue, pr);
-        }
+    return new TaskFlow(
+      this.root,
+      this.env,
+      this.config,
+      deps,
+      {
+        github: this.github,
+        board: () => this.board,
+        people: loadYaml(this.root, "people"),
+        autopilot: async (ref, kind) =>
+          this.evidence.autopilotFor(await this.flowThread(ref, kind)),
+        copyAutopilot: async (issue, pr) => {
+          if (
+            (object(issue.labels).nodes as ObjectData[]).some((label) => label.name === "autopilot")
+          ) {
+            await inheritAutopilot(this.github, this.filter, this.config, issue, pr);
+          }
+        },
+        autopilotApproved: (ref, head) => this.evidence.autopilotApprovalFor(ref, head),
+        thread: (ref, kind) => this.flowThread(ref, kind),
+        // #373: closes a recoverable blocked record at once (mergeable head, stopped
+        // fixer) before reporting whether an active record still blocks the handover.
+        conflictPending: async (ref) => this.conflicts.recover(Number(ref)),
+        comments: (id, kind) => this.flowComments(id, kind === "issue" ? "Issue" : "PullRequest"),
+        replyTarget: (id) => this.flowComment(id),
+        approved: (ref, historical) => this.evidence.approvalFor(ref, historical),
+        approvalRefusal: async (ref) => {
+          let reason = `Owner approval is missing or cannot be verified for current head; hand over with review ${ref} owner`;
+          await this.evidence.approvalFor(ref, undefined, (text) => {
+            reason = text;
+          });
+          return reason;
+        },
+        scopeRefusal: async (item) =>
+          scopeReasons.get(String(item.id)) ??
+          `scope not approved: run scope-review ${String(item.number)} <file>`,
+        candidates: (ref) => this.evidence.candidates(ref),
+        issueApproved: async (item) => {
+          const state = await this.evidence.scopeState(item);
+          if (state?.refusal) {
+            scopeReasons.set(String(item.id), state.refusal);
+          }
+          return state?.approved === true;
+        },
+        modelApproval: (issue, family) => this.evidence.modelApproval(family, { issue }),
+        // #339: open-task's advisory lines reuse suggest-model's recommendation and the
+        // per-family learnings aggregate; informational only, never a refusal source.
+        modelSuggestion: async (issue) => {
+          const { model, reason } = await this.workers.recommend(issue);
+          return { family: model.family, tier: model.tier, reason };
+        },
+        learningEvidence: (family) => this.learningService().familyEvidence(family),
+        modelHeadroom: (family) => this.workers.headroom(family),
+        modelQuotaWarning: (family) => this.workers.quotaWarning(family),
+        ownerAgreement: (ref, url, since, handback, kind) =>
+          this.evidence.ownerAgreed(ref, url, since, handback, kind),
       },
-      autopilotApproved: (ref, head) => this.evidence.autopilotApprovalFor(ref, head),
-      thread: (ref, kind) => this.flowThread(ref, kind),
-      // #373: closes a recoverable blocked record at once (mergeable head, stopped
-      // fixer) before reporting whether an active record still blocks the handover.
-      conflictPending: async (ref) => this.conflicts.recover(Number(ref)),
-      comments: (id, kind) => this.flowComments(id, kind === "issue" ? "Issue" : "PullRequest"),
-      replyTarget: (id) => this.flowComment(id),
-      approved: (ref, historical) => this.evidence.approvalFor(ref, historical),
-      approvalRefusal: async (ref) => {
-        let reason = `Owner approval is missing or cannot be verified for current head; hand over with review ${ref} owner`;
-        await this.evidence.approvalFor(ref, undefined, (text) => {
-          reason = text;
-        });
-        return reason;
-      },
-      scopeRefusal: async (item) =>
-        scopeReasons.get(String(item.id)) ??
-        `scope not approved: run scope-review ${String(item.number)} <file>`,
-      candidates: (ref) => this.evidence.candidates(ref),
-      issueApproved: async (item) => {
-        const state = await this.evidence.scopeState(item);
-        if (state?.refusal) {
-          scopeReasons.set(String(item.id), state.refusal);
-        }
-        return state?.approved === true;
-      },
-      modelApproval: (issue, family) => this.evidence.modelApproval(family, { issue }),
-      // #339: open-task's advisory lines reuse suggest-model's recommendation and the
-      // per-family learnings aggregate; informational only, never a refusal source.
-      modelSuggestion: async (issue) => {
-        const { model, reason } = await this.workers.recommend(issue);
-        return { family: model.family, tier: model.tier, reason };
-      },
-      learningEvidence: (family) => this.learningService().familyEvidence(family),
-      modelHeadroom: (family) => this.workers.headroom(family),
-      modelQuotaWarning: (family) => this.workers.quotaWarning(family),
-      ownerAgreement: (ref, url, since, handback, kind) =>
-        this.evidence.ownerAgreed(ref, url, since, handback, kind),
-    });
+      this.models
+    );
   }
 
   /** Fresh readers share the gateway's existing filtered transport helpers. */
@@ -424,7 +440,7 @@ export class GatewayServices {
 
 export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Dependencies): Transport {
   const server = new GatewayServices(root, env, deps);
-  const config = getConfig(root, env);
+  const config = server.config;
   const handlers: Handlers = {
     resolveTask: server.resolveTask,
     learnings: server.learnings,

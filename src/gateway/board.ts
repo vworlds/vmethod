@@ -72,7 +72,7 @@ export interface BoardOperation {
 }
 
 export class BoardService implements BoardIO {
-  private readonly settings: ObjectData;
+  private readonly settings: NonNullable<Config["board"]>;
   private readonly runner: MigrationRunner;
   constructor(
     private config: Config,
@@ -82,7 +82,7 @@ export class BoardService implements BoardIO {
     private boardVersion = packageInfo.boardVersion,
     private filter?: PeopleFilter
   ) {
-    this.settings = object(config.board);
+    this.settings = config.board ?? {};
     if (this.settings.enabled === false) {
       throw new Error("Board is disabled");
     }
@@ -363,7 +363,7 @@ export class BoardService implements BoardIO {
           if (
             typeof repo !== "string" ||
             !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
-            repo.split("/")[0].toLowerCase() !== String(this.config.org).toLowerCase()
+            repo.split("/")[0].toLowerCase() !== (this.config.org ?? "undefined").toLowerCase()
           ) {
             throw new Error("Invalid board repository scope");
           }
@@ -509,7 +509,7 @@ export class BoardService implements BoardIO {
     };
   }
   private scope(card: Card): void {
-    if (card.repo?.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+    if (card.repo?.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()) {
       throw new Error("Refusing write to a foreign repository card");
     }
   }
@@ -613,7 +613,7 @@ export class BoardService implements BoardIO {
         (a, b) => String(b.closedAt).localeCompare(String(a.closedAt)) || a.id.localeCompare(b.id)
       );
     for (const card of cards.slice(6)) {
-      if (card.repo?.toLowerCase() === String(this.config.repo).toLowerCase()) {
+      if (card.repo?.toLowerCase() === (this.config.repo ?? "undefined").toLowerCase()) {
         await this.archive(card.id);
       }
     }
@@ -872,7 +872,7 @@ export class BoardService implements BoardIO {
     if (!this.filter) {
       throw new Error("Assignee housekeeping requires the authenticated people filter");
     }
-    const repo = String(this.config.repo);
+    const repo = this.config.repo ?? "undefined";
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
     const item = object(await this.github.rest(`/repos/${repo}/issues/${number}`));
@@ -1048,10 +1048,11 @@ export class BoardService implements BoardIO {
     if (!this.settings.announce) {
       return;
     }
-    const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(
-      String(this.settings.announce)
-    );
-    if (!match || match[1].split("/")[0].toLowerCase() !== String(this.config.org).toLowerCase()) {
+    const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(this.settings.announce);
+    if (
+      !match ||
+      match[1].split("/")[0].toLowerCase() !== (this.config.org ?? "undefined").toLowerCase()
+    ) {
       throw new Error("Invalid board announcement scope");
     }
     await this.github.rest(`/repos/${match[1]}/issues/${match[2]}/comments`, "POST", { body });
@@ -1099,9 +1100,9 @@ export class BoardService implements BoardIO {
       if (doc.errors.length) {
         throw new Error("Invalid adoption configuration");
       }
-      const config = object(doc.toJS());
-      const base = text(config.baseBranch);
-      const prefixes = object(config.branches);
+      const adoptionConfig = object(doc.toJS());
+      const base = text(adoptionConfig.baseBranch);
+      const prefixes = object(adoptionConfig.branches);
       const branches = new Set([base]);
       // Include all extant track/pack refs, not only branches with a PR. This
       // deliberately fails closed for an unadopted long-lived branch.

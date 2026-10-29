@@ -16,11 +16,7 @@ export function upstreamFooter(repo: string): string {
  * local people.yaml cannot grant this; an unbound caller is refused with the
  * owner ask before any write. */
 export async function upstreamCaller(github: GitHubClient, repo: string): Promise<Person> {
-  const people = validateYaml(
-    await registryText(github),
-    "people",
-    `${central}:people.yaml`
-  ) as Person[];
+  const people = validateYaml(await registryText(github), "people", `${central}:people.yaml`);
   const viewer = object(await github.rest("/user"));
   try {
     return learningAuthor(people, viewer, repo);

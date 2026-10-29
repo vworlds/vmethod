@@ -7,8 +7,6 @@ import {
   boardCost,
   sumUsd,
   zeroTokens,
-  type Price,
-  type PriceTier,
   type RequestCosts,
   type Usage,
 } from "../cost.js";
@@ -44,7 +42,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { loadYaml, type Config } from "../config.js";
+import type { Config } from "../config.js";
+import { DEFAULT_MODEL_FAMILY, ModelRegistry, type ModelEntry } from "../core/config.js";
 import {
   OpencodeClient,
   OpencodeError,
@@ -66,17 +65,9 @@ import {
   type ProviderLimits,
 } from "./limits.js";
 
-export interface Model {
-  family: string;
-  model: string;
+export interface Model extends Omit<ModelEntry, "kind"> {
   /** "claude" only on records of the removed `claude -p` backend: their session is unknown. */
   kind: "opencode" | "claude";
-  gate: "none" | "owner";
-  tier: "expensive" | "standard" | "cheap";
-  fallback?: string[];
-  provider?: string;
-  price?: Price;
-  tiers?: PriceTier[];
 }
 
 interface Segment {
@@ -185,9 +176,10 @@ export class WorkerService {
     private config: Config,
     private env: NodeJS.ProcessEnv,
     private deps: Dependencies,
-    private hooks: WorkerHooks
+    private hooks: WorkerHooks,
+    registry = new ModelRegistry(root)
   ) {
-    const name = String(config.stateName ?? String(config.repo).replace("/", "-"));
+    const name = config.stateName ?? (config.repo ?? "undefined").replace("/", "-");
     if (!/^[\w.-]+$/.test(name) || name === ".." || name === ".") {
       throw new Error("Invalid stateName");
     }
@@ -197,7 +189,7 @@ export class WorkerService {
       name,
       "workers"
     );
-    this.models = loadYaml(root, "models") as Model[];
+    this.models = registry.entries();
     if (new Set(this.models.map((m) => m.family)).size !== this.models.length) {
       throw new Error("Duplicate model family");
     }
@@ -440,7 +432,7 @@ export class WorkerService {
     );
   }
   private redact(text: string): string {
-    const credentials = object(this.config.credentials);
+    const credentials = this.config.credentials ?? {};
     for (const name of [...Object.values(credentials), "OPENCODE_SERVER_PASSWORD"]) {
       const secret = this.env[String(name)];
       if (secret) {
@@ -610,7 +602,7 @@ export class WorkerService {
     return `#${record.pr} ${record.id} ${status.reason}${details}${renderPermissions(status.permissionDetails?.map((text) => this.redact(text)))}${titleMismatch} | tokens ${tokenText} | USD ${usd === null ? "unknown" : `${record.segments.some((segment) => segment.lowerBound) ? "≥ " : ""}$${usd.toFixed(6)}`}${status.error ? ` error from ${status.errorFamily && status.errorFamily !== record.model.family ? `previous model ${status.errorFamily}` : record.model.family}: ${untrusted(status.error)}` : ""}${advice}`;
   }
   private sessionTitle(pr: number): string {
-    return `${String(this.config.repo).split("/").at(-1)}#${pr}`;
+    return `${(this.config.repo ?? "undefined").split("/").at(-1)}#${pr}`;
   }
   private async setOpenCodeTitle(record: Session): Promise<void> {
     await this.client().request("PATCH", `${this.idPath(record)}`, {
@@ -1442,7 +1434,7 @@ export class WorkerService {
     }
     const record: Session = {
       version: 1,
-      repo: String(this.config.repo),
+      repo: this.config.repo ?? "undefined",
       pr,
       issue: meta.issue,
       directory,
@@ -1470,13 +1462,13 @@ export class WorkerService {
   private async adoptLegacy(): Promise<string> {
     const lines: string[] = [];
     const stateRoot = this.env.XDG_STATE_HOME ?? join(this.env.HOME ?? homedir(), ".local/state");
-    for (const name of (this.config.legacyWorkers ?? []) as string[]) {
+    for (const name of this.config.legacyWorkers ?? []) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/.test(name)) {
         throw new Error("Invalid legacyWorkers relative directory path");
       }
       const directory = join(
         stateRoot,
-        `${name}${this.config.track ? `-${String(this.config.track)}` : ""}`
+        `${name}${this.config.track ? `-${this.config.track}` : ""}`
       );
       if (!existsSync(directory)) {
         lines.push(`Skipped directory ${JSON.stringify(name)}: missing legacy directory`);
@@ -1620,7 +1612,7 @@ export class WorkerService {
     }
     const record: Session = {
       version: 1,
-      repo: String(this.config.repo),
+      repo: this.config.repo ?? "undefined",
       pr,
       issue: meta.issue ?? null,
       directory,
@@ -1866,7 +1858,9 @@ export class WorkerService {
   async recommend(issue: number): Promise<{ model: Model; reason: string }> {
     const meta = await this.hooks.issue(issue);
     const wanted =
-      /architecture|security|design/i.test(meta.kind) || (meta.estimate ?? 0) >= 13 ? "sol" : "glm";
+      /architecture|security|design/i.test(meta.kind) || (meta.estimate ?? 0) >= 13
+        ? DEFAULT_MODEL_FAMILY
+        : "glm";
     const model = this.models.find((m) => m.family === wanted);
     if (!model) {
       throw new Error(`Suggested family ${wanted} is not configured`);

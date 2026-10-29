@@ -170,7 +170,7 @@ export class ChecksService {
     learningFork = false
   ): Promise<Omit<CiSnapshot, "runs" | "green" | "stale">> {
     const target = reference(ref, this.config);
-    if (target.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+    if (target.repo.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()) {
       throw new Error("CI operations require the configured repository");
     }
     const pr = object(await this.github.rest(`/repos/${target.repo}/pulls/${target.number}`));

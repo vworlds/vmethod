@@ -1,4 +1,5 @@
 import type { Config } from "../config.js";
+import { ModelRegistry } from "../core/config.js";
 import type { Dependencies } from "./client.js";
 import type { ConflictPrior, OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import type { TaskHost } from "../tasks/common.js";
@@ -22,9 +23,10 @@ export class TaskFlow {
     env: NodeJS.ProcessEnv,
     config: Config,
     deps: Dependencies,
-    host: TaskHost
+    host: TaskHost,
+    models = new ModelRegistry(root)
   ) {
-    this.openTasks = new TaskOpen(root, env, config, deps, host);
+    this.openTasks = new TaskOpen(root, env, config, deps, host, models);
     this.reviews = new TaskReview(root, env, config, deps, host);
     this.merges = new TaskMerge(root, env, config, deps, host);
     this.links = new TaskLink(root, env, config, deps, host);

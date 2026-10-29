@@ -17,12 +17,13 @@ export const learnings: Handler<"learnings"> = async function (input) {
       this.env,
       this.deps,
       () => this.learningService().records(),
-      (pr) => this.learningBundle(pr)
+      (pr) => this.learningBundle(pr),
+      this.models
     ).command(input);
   }
   // Orchestrator-only central merge of an authorized learning submission (#308).
   if (input.action === "merge") {
-    if (String(this.config.repo).toLowerCase() !== "vworlds/vmethod") {
+    if ((this.config.repo ?? "undefined").toLowerCase() !== "vworlds/vmethod") {
       throw new Error("Learning PR merges run only in the central repository");
     }
     if (!Number.isSafeInteger(input.pr) || input.pr < 1) {
@@ -34,7 +35,7 @@ export const learnings: Handler<"learnings"> = async function (input) {
 };
 
 export const learningCheck: Handler<"learningCheck"> = async function ({ ref, label }) {
-  if (String(this.config.repo).toLowerCase() !== "vworlds/vmethod") {
+  if ((this.config.repo ?? "undefined").toLowerCase() !== "vworlds/vmethod") {
     throw new Error("Learning PR checks run only in the central repository");
   }
   return checkLearningPr(this.github, this.localNumber(ref), label);
@@ -53,7 +54,7 @@ export async function learningBundle(this: GatewayServices, pr: number): Promise
       !this.filter.accept(
         entry,
         repoOf(entry).owner,
-        `https://github.com/${String(this.config.repo)}/issues/${meta.issue}`
+        `https://github.com/${this.config.repo}/issues/${meta.issue}`
       )
     ) {
       continue;
@@ -62,7 +63,7 @@ export async function learningBundle(this: GatewayServices, pr: number): Promise
     const author = this.filter.accept(
       c,
       repoOf(c).owner,
-      `https://github.com/${String(this.config.repo)}/issues/${meta.issue}`
+      `https://github.com/${this.config.repo}/issues/${meta.issue}`
     );
     if (!author || this.filter.identity(c.author)?.role !== author.role) {
       continue;
@@ -88,12 +89,12 @@ export async function learningBundle(this: GatewayServices, pr: number): Promise
     });
   }
   return {
-    repo: String(this.config.repo),
+    repo: this.config.repo ?? "undefined",
     pr,
     closedAt: meta.closedAt,
     issue: {
       body: String(issue.body),
-      url: `https://github.com/${String(this.config.repo)}/issues/${meta.issue}`,
+      url: `https://github.com/${this.config.repo}/issues/${meta.issue}`,
     },
     comments,
     diff: meta.diff ?? null,
@@ -108,6 +109,11 @@ export function learningRole(this: GatewayServices, person: Person): string {
   if (person.role !== "orchestrator") {
     return person.role;
   }
-  const [login] = turnAssignees(this.filter.people, String(this.config.repo), [], "orchestrator");
+  const [login] = turnAssignees(
+    this.filter.people,
+    this.config.repo ?? "undefined",
+    [],
+    "orchestrator"
+  );
   return person.login.toLowerCase() === login.toLowerCase() ? "orchestrator" : "peer-orchestrator";
 }

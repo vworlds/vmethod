@@ -90,7 +90,7 @@ export class TaskReview extends TaskCommon {
         }
       }
     }
-    const board = object(this.config.board).enabled === false ? undefined : this.host.board();
+    const board = this.config.board?.enabled === false ? undefined : this.host.board();
     const cards = board ? await board.cards((await board.snapshot()).id) : [];
     const card = cards.find((card) => card.contentId === item.id);
     const issues = taskIssueNumbers(String(item.body)) ?? [];

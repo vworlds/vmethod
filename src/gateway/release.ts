@@ -27,8 +27,8 @@ export async function releaseNext(
   deps: Dependencies,
   github: () => GitHubClient
 ): Promise<string> {
-  const repo = String(config.repo);
-  const base = String(config.baseBranch);
+  const repo = config.repo ?? "undefined";
+  const base = config.baseBranch ?? "undefined";
   validateBranch(base);
   const git = new GitTransport(config, env, deps, root);
   const branch = (await git.run("rev-parse", "--abbrev-ref", "HEAD")).trim();

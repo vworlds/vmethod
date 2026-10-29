@@ -416,7 +416,7 @@ export class PullPoller {
       (existsSync(sharedLegacy) &&
         object(JSON.parse(readFileSync(sharedLegacy, "utf8")))[String(number)] === true);
     const mergeFile = join(
-      stateRoot(this.host.env, String(this.host.config.stateName ?? this.own.replace("/", "-"))),
+      stateRoot(this.host.env, this.host.config.stateName ?? this.own.replace("/", "-")),
       `merge-${number}.json`
     );
     const followUp = existsSync(mergeFile)

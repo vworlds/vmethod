@@ -17,11 +17,11 @@ export const autopilotStop: Handler<"autopilotStop"> = async function ({ ref, ki
   const item = await this.flowThread(String(number), kind);
   if ((object(item.labels).nodes as ObjectData[]).some((label) => label.name === "autopilot")) {
     await this.github.rest(
-      `/repos/${String(this.config.repo)}/issues/${number}/labels/autopilot`,
+      `/repos/${this.config.repo}/issues/${number}/labels/autopilot`,
       "DELETE"
     );
     await this.github.rest(
-      `/repos/${String(this.config.repo)}/issues/${number}/comments`,
+      `/repos/${this.config.repo}/issues/${number}/comments`,
       "POST",
       {
         body: `${heading("AUTOPILOT")}\n\nStopped autopilot; control returns to the owner at the current step. Completed work is not reverted.`,
@@ -102,7 +102,7 @@ export const workerStatus: Handler<"workerStatus"> = async function (input) {
 
 export const resolveTask: Handler<"resolveTask"> = async function ({ branch }) {
   validateBranch(branch);
-  const repo = String(this.config.repo);
+  const repo = this.config.repo ?? "undefined";
   const owner = repo.split("/")[0];
   const listed = await this.github.rest(
     `/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=100`
@@ -194,7 +194,7 @@ export async function checkedTask(this: GatewayServices, ref: string, requirePro
   validateBranch(base);
   if (
     String(object(item.headRepository).nameWithOwner).toLowerCase() !==
-    String(this.config.repo).toLowerCase()
+    (this.config.repo ?? "undefined").toLowerCase()
   ) {
     throw new Error("Task branch must belong to the configured repository");
   }

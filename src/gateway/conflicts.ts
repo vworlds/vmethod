@@ -69,7 +69,7 @@ export class ConflictService {
     private hooks: ConflictHooks
   ) {
     this.directory = join(
-      stateRoot(env, String(config.stateName ?? String(config.repo).replace("/", "-"))),
+      stateRoot(env, config.stateName ?? (config.repo ?? "undefined").replace("/", "-")),
       "conflicts"
     );
   }
@@ -154,8 +154,7 @@ export class ConflictService {
         retry,
         at: "start",
         root: this.root,
-        escalatePaths:
-          (this.config.conflicts as { escalatePaths?: string[] } | undefined)?.escalatePaths ?? [],
+        escalatePaths: this.config.conflicts?.escalatePaths ?? [],
       },
       git: new GitTransport(this.config, this.env, this.deps, this.root),
     };

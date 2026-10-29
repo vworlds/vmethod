@@ -190,7 +190,7 @@ export const post: Handler<"post"> = async function ({ ref, file, replyTo }, ctx
   }
   const warning =
     ctx.role === "orchestrator" &&
-    target.repo === String(this.config.repo) &&
+    target.repo === (this.config.repo ?? "undefined") &&
     item.__typename === "PullRequest" &&
     (await this.ownerReplyTurn(item, target.link))
       ? `\nWarning: this does not hand the turn back; use review ${target.number} owner`
@@ -235,19 +235,19 @@ export async function flowComments(
   const output: ObjectData[] = [];
   for (const meta of await this.collection(id, type, "comments")) {
     const author = this.filter.identity(meta.author);
-    if (!author || this.filter.roleIn(author, String(this.config.repo)) !== "orchestrator") {
+    if (!author || this.filter.roleIn(author, this.config.repo ?? "undefined") !== "orchestrator") {
       continue;
     }
     const comment = await this.node(String(meta.id), "body createdAt url", "IssueComment");
     const effective = this.filter.accept(
       comment,
       repoOf(comment).owner,
-      `https://github.com/${String(this.config.repo)}`
+      `https://github.com/${this.config.repo}`
     );
     if (
       this.filter.identity(comment.author)?.role === "orchestrator" &&
       effective &&
-      this.filter.roleIn(effective, String(this.config.repo)) === "orchestrator"
+      this.filter.roleIn(effective, this.config.repo ?? "undefined") === "orchestrator"
     ) {
       output.push(comment);
     }
@@ -267,9 +267,7 @@ export async function flowComment(
 ): Promise<{ author: Person; issue: number; firstLine: string } | undefined> {
   let comment: ObjectData;
   try {
-    comment = object(
-      await this.github.rest(`/repos/${String(this.config.repo)}/issues/comments/${id}`)
-    );
+    comment = object(await this.github.rest(`/repos/${this.config.repo}/issues/comments/${id}`));
   } catch (error) {
     // An unknown REST id (including review-thread hashes) is no protocol target.
     if (error instanceof GitHubHttpError && error.status === 404) {
@@ -289,14 +287,14 @@ export async function flowComment(
   const issue = object(node.issue).number;
   if (
     !author ||
-    repoOf(node).repo !== String(this.config.repo) ||
+    repoOf(node).repo !== (this.config.repo ?? "undefined") ||
     !Number.isSafeInteger(issue) ||
     Number(issue) < 1
   ) {
     return undefined;
   }
   return {
-    author: { ...author, role: this.filter.roleIn(author, String(this.config.repo)) },
+    author: { ...author, role: this.filter.roleIn(author, this.config.repo ?? "undefined") },
     issue: Number(issue),
     firstLine: typeof node.body === "string" ? node.body.split(/\r?\n/)[0] : "",
   };
@@ -369,7 +367,7 @@ export async function collection(
       cursorError: "Invalid GitHub pagination cursor",
       stop: (parent) => {
         const scope = repoOf(parent);
-        const link = `https://github.com/${scope.repo || String(this.config.repo)}`;
+        const link = `https://github.com/${scope.repo || (this.config.repo ?? "undefined")}`;
         rejected = !this.filter.accept(parent, scope.owner, link);
         return rejected;
       },
@@ -559,7 +557,7 @@ export async function issueThread(
     throw new Error("Missing issue state");
   }
   // The exact body this read delivered, hashed for `issue edit`'s stale-read guard.
-  if (target.repo === String(this.config.repo)) {
+  if (target.repo === (this.config.repo ?? "undefined")) {
     mkdirSync(resolve(this.root, ".tmp"), { recursive: true });
     writeFileSync(
       resolve(this.root, ".tmp", `issue-read-${target.number}.sha256`),
@@ -622,7 +620,7 @@ export async function threadReport(
   if (!items) {
     return "No accepted thread";
   }
-  const base = snapshotBase(target, String(this.config.repo));
+  const base = snapshotBase(target, this.config.repo ?? "undefined");
   if (option !== "--new") {
     saveThreadSnapshot(this.root, base, items);
     return items.map(threadSection).join("\n\n");
@@ -684,7 +682,7 @@ export async function ownerReplyTurn(
   item: ObjectData,
   link: string
 ): Promise<boolean> {
-  if (object(this.config.board).enabled === false) {
+  if (this.config.board?.enabled === false) {
     return false;
   }
   const board = this.board;
@@ -697,7 +695,7 @@ export async function ownerReplyTurn(
       !card.assignees.some((login) =>
         this.filter.people.some(
           (person) =>
-            this.filter.roleIn(person, String(this.config.repo)) === "orchestrator" &&
+            this.filter.roleIn(person, this.config.repo ?? "undefined") === "orchestrator" &&
             person.login === login
         )
       ))
