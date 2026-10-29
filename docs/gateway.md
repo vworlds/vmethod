@@ -696,22 +696,25 @@ Provider mapping defaults to the `model:` prefix in `models.yaml`; set `provider
 on a family only when its quota adapter uses another provider id.
 
 Configure `limits: { enabled: true, atRisk: 15, pollSeconds: 300 }` in
-`vmethod.yaml` (these are the defaults). A provider is at risk when its shortest
-usable reported window has strictly less than `atRisk` percent left. When
-durations are absent, the adapter's shortest-first ordering is retained.
-Model-specific windows retain their model qualifier in the summary. Slack is remaining
-percentage minus the elapsed percentage of the window; positive slack is shown
-as `expiring unused`. Missing duration/reset timing leaves slack unknown rather
-than inventing a window start. Expired windows are not usable readings.
+`vmethod.yaml` (these are the defaults). A provider is at risk when any usable
+reported window has strictly less than `atRisk` percent left. When durations are
+absent, the adapter's shortest-first ordering breaks ties between windows with the
+same remaining percentage. Model-specific windows retain their model qualifier in
+the summary. Slack is remaining percentage minus the elapsed percentage of the window;
+positive slack is shown as `expiring unused`. Missing duration/reset timing leaves
+slack unknown rather than inventing a window start. Expired windows are not usable
+readings.
 `suggest-model`, the `open-task` advisory and `worker models` append headroom;
 `open-task` and `worker start` warn about an at-risk selection but never refuse it.
 Owner gates remain unchanged.
 
 While workers run, the watcher checks headroom every `limits.pollSeconds` without
-GitHub requests. It emits one event at each observed crossing:
+GitHub requests. It emits one event at each observed crossing, naming the binding
+window: the one with the lowest remaining percentage, with ties going to the shorter
+window. Recovery requires every usable window back above the threshold.
 
 ```text
-QUOTA ollama-cloud session 0% left (resets 2026-10-29T00:00:00.000Z); at risk: #378 (glm)
+QUOTA ollama-cloud weekly 0% left (resets 2026-11-02T00:00:00.000Z); at risk: #378 (glm)
 QUOTA ollama-cloud recovered (session 80%)
 ```
 
