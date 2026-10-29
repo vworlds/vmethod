@@ -1737,7 +1737,10 @@ session with `follow-up complete`. Owner button
 merges notify normally; after follow-up completes they stop repeating.
 Obsolete `.turn-*` and `merged-*` stamps are imported once to preserve old
 suppression state, not written by verbs anymore. Done capping ranks all board repositories but archives
-only this repository's cards after the newest six. Keep the main checkout clean on
+only this repository's cards after the newest six. Merge follow-up leaves an
+already-archived Done PR card untouched while still clearing its turn. A PR card
+archived in another column is unarchived before moving to Done; the normal Done
+cap then re-archives it if it falls outside the newest six. Keep the main checkout clean on
 the configured base branch before retrying its fast-forward. Install is the final
 effect, after all follow-up is checkpointed, with no token environment or second
 CLI process. Pending installs may safely repeat after an interrupted run.

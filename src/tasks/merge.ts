@@ -30,7 +30,9 @@ interface Journal {
   checkout?: { old: string; target: string; trigger: string };
   install?: boolean;
 }
-/** Merge gates, resumable follow-up journal and abandoned-delivery closure. */
+/** Merge gates, resumable follow-up journal and abandoned-delivery closure.
+ * Follow-up preserves archived Done PR cards; other archived PR cards are
+ * unarchived before moving to Done, then subject to the normal Done cap. */
 export class TaskMerge extends TaskCommon {
   /** Merge a stopped/session-less task against the live base; delegated carries also require cleanBaseMerges proof. */
   async merge(
@@ -470,7 +472,19 @@ export class TaskMerge extends TaskCommon {
       });
     }
     await step("pr-card", async () => {
-      await this.card(item, "Done", null);
+      if (this.config.board?.enabled !== false) {
+        const board = this.host.board();
+        // Resolve content-side membership: the active listing omits archived cards.
+        const id = await board.ensure(String(item.id));
+        const card = await board.item(id);
+        if (!card.archived || card.values.Status !== "Done") {
+          if (card.archived) {
+            const snapshot = await board.snapshot();
+            await board.setArchived(snapshot.id, id, false);
+          }
+          await board.set({ itemId: id, field: "Status", value: "Done", progress: null });
+        }
+      }
       await this.turn(ref, null);
     });
     await step("done-cap", async () => {

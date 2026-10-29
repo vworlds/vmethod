@@ -54,7 +54,10 @@ export interface TaskHost {
   /** Verify an exact-head delegated review (including historical heads) and current delegation. */
   autopilotApproved?(ref: string, head: string): Promise<boolean>;
   github: GitHubClient;
-  board: () => Pick<BoardService, "ensure" | "item" | "set" | "capDone" | "snapshot" | "cards">;
+  board: () => Pick<
+    BoardService,
+    "ensure" | "item" | "set" | "setArchived" | "capDone" | "snapshot" | "cards"
+  >;
   people: Person[];
 }
 /** Validate a commit id before it reaches task git operations or journal records. */

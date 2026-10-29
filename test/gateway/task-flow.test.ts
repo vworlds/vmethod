@@ -1440,6 +1440,9 @@ function fixture() {
       capDone: async () => {
         events.push("done-cap");
       },
+      setArchived: async () => {
+        throw new Error("Unexpected archive change");
+      },
       snapshot: async () => ({ id: "board", readme: "", fields: [] }),
       cards: async () => [
         ...cards,
@@ -2887,6 +2890,117 @@ test("merge follow-up completes a GitHub-auto-closed issue without closing or co
   ).toHaveLength(1);
   f.done();
 });
+
+test.each([
+  { status: "Done", interrupt: false },
+  { status: "Executing", interrupt: false },
+  { status: "Executing", interrupt: true },
+])(
+  "merge follow-up completes a PR card archived in $status without writing while archived (interrupted: $interrupt)",
+  async ({ status, interrupt }) => {
+    const f = fixture();
+    f.set({ state: "MERGED", assignees: ["owner"] });
+    const board = f.host.board();
+    const card: Card = {
+      id: "pr",
+      contentId: "pr",
+      repo: "example/project",
+      kind: "PullRequest",
+      assignees: ["owner"],
+      closedAt: "2026-01-01T00:00:00Z",
+      archived: status !== "Done",
+      values: { Status: status, Progress: null },
+    };
+    const effects: string[] = [];
+    let failWrite = interrupt;
+    const capper = new BoardService(f.config, f.host.github, f.deps);
+    capper.snapshot = board.snapshot;
+    capper.cards = async () => [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        ...card,
+        id: `newer-${index}`,
+        archived: false,
+        closedAt: "2026-02-01T00:00:00Z",
+        values: { Status: "Done" },
+      })),
+      ...(!card.archived ? [structuredClone(card)] : []),
+    ];
+    capper.archive = async (id) => {
+      expect(id).toBe("pr");
+      card.archived = true;
+      effects.push("archive");
+      return "ok";
+    };
+    if (status === "Done") {
+      // An earlier follow-up's real Done cap archived this older PR.
+      await capper.capDone();
+      expect(card.archived).toBe(true);
+      expect(effects).toEqual(["archive"]);
+      effects.length = 0;
+    }
+    f.host.board = () => ({
+      ...board,
+      // Archived cards are absent from the active listing; resolve membership instead.
+      cards: async () => [],
+      item: async (id) => {
+        expect(id).toBe("pr");
+        return structuredClone(card);
+      },
+      setArchived: async (project, id, archived) => {
+        expect(project).toBe("board");
+        expect(id).toBe("pr");
+        effects.push(archived ? "archive" : "unarchive");
+        card.archived = archived;
+      },
+      set: async (input) => {
+        if (input.itemId !== "pr") {
+          return board.set(input);
+        }
+        if (card.archived) {
+          throw new Error("Cannot update an archived card");
+        }
+        if (failWrite) {
+          failWrite = false;
+          throw new Error("Interrupted PR card write");
+        }
+        effects.push("write");
+        card.values.Status = String(input.value);
+        card.values.Progress = input.progress ?? null;
+        return "ok";
+      },
+      capDone: async () => {
+        effects.push("cap");
+        await capper.capDone();
+      },
+    });
+    const journal = join(
+      f.env.XDG_STATE_HOME,
+      "vmethod",
+      String(f.config.stateName),
+      "merge-27.json"
+    );
+    if (interrupt) {
+      await expect(f.flow().merge("27")).rejects.toThrow("Interrupted PR card write");
+      expect(card).toMatchObject({ archived: false, values: { Status: "Executing" } });
+      expect(JSON.parse(readFileSync(journal, "utf8")).done).not.toContain("pr-card");
+      expect(effects).toEqual(["unarchive"]);
+    }
+    await expect(f.flow().merge("27")).resolves.toBe("Merged #27");
+    expect(card).toMatchObject({ archived: true, values: { Status: "Done", Progress: null } });
+    expect(effects).toEqual(status === "Done" ? ["cap"] : ["unarchive", "write", "cap", "archive"]);
+    expect(f.writes).toContainEqual({
+      path: "/repos/example/project/issues/27/assignees",
+      body: { assignees: ["owner"] },
+    });
+    expect(JSON.parse(readFileSync(journal, "utf8")).done).toEqual(
+      expect.arrayContaining(["pr-card", "done-cap", "follow-up"])
+    );
+    const before = [...effects];
+    await f.flow().merge("27");
+    expect(effects).toEqual(before);
+    f.done();
+  }
+);
 
 test.each(["Closes #8", "Part of #8", "Fixes #8"])(
   "open-task still guards source prose: %s",
