@@ -1164,6 +1164,7 @@ function fixture() {
   let body = '<!-- vmethod-task {"issues":[8]} -->';
   let issueNumber = 8;
   let isDraft = true;
+  let opened = false;
   let references: ObjectData = structuredClone(
     developmentLinks.before.data.repository.pullRequest.closingIssuesReferences
   );
@@ -1207,7 +1208,10 @@ function fixture() {
         path = url.pathname + url.search;
       const payload = init?.body ? object(JSON.parse(String(init.body))) : {};
       events.push(`${method} ${path}`);
-      writes.push({ path, body: payload });
+      // Task discovery is a read, not a side effect of opening a delivery.
+      if (!(method === "GET" && path.startsWith("/repos/example/project/pulls?state=open&head="))) {
+        writes.push({ path, body: payload });
+      }
       if (fail && path.includes(fail)) {
         throw new Error("injected failure");
       }
@@ -1259,7 +1263,14 @@ function fixture() {
       } else if (method === "POST" && path === "/repos/example/project/pulls") {
         expect(typeof payload.body).toBe("string");
         body = String(payload.body);
+        opened = true;
         data = { number: 27, node_id: "pr" };
+      } else if (
+        method === "GET" &&
+        path.startsWith("/repos/example/project/pulls?state=open&head=example%3A") &&
+        url.searchParams.get("per_page") === "100"
+      ) {
+        data = opened ? [{ number: 27 }] : [];
       } else if (method === "PATCH" && path === "/repos/example/project/pulls/27") {
         expect(["string", "undefined"]).toContain(typeof payload.body);
         if (typeof payload.body === "string") {
@@ -3524,6 +3535,125 @@ test("open-task refuses a gated model without --owner-approved before any verifi
   expect(f.events).not.toContain("model-approval 8 astra");
   f.done();
 });
+
+test.each([1, 3, 5, 6])(
+  "open-task retries an unresolved new card (%s failures) and resumes without duplicating delivery",
+  async (failures) => {
+    const f = fixture();
+    const board = f.host.board();
+    const set = board.set;
+    const item = board.item;
+    const values: Card["values"] = { Status: "Backlog" };
+    board.item = async (id) => ({ ...(await item(id)), values: { ...values } });
+    let attempts = 0;
+    const waits: number[] = [];
+    let now = 0;
+    f.deps.now = () => now;
+    f.deps.sleep = async (ms) => {
+      waits.push(ms);
+      now += ms;
+    };
+    board.set = async (input, operation) => {
+      if (input.itemId === "pr" && input.field === "Status" && attempts++ < failures) {
+        throw new Error("Could not resolve to a node with the global id 'pr'");
+      }
+      const result = await set(input, operation);
+      if (input.itemId === "pr") {
+        values[input.field] = input.value;
+        if (input.progress !== undefined) {
+          values.Progress = input.progress;
+        }
+      }
+      return result;
+    };
+    f.host.board = () => board;
+    const result = await f.flow().open({ issue: "8", model: "sol", hold: true });
+    expect(waits).toEqual([1000, 2000, 4000, 8000, 16000].slice(0, Math.min(failures, 5)));
+    expect(now).toBe(waits.reduce((sum, ms) => sum + ms, 0));
+    expect(f.events.filter((event) => event === "board-add pr")).toHaveLength(1);
+    expect(f.touched).toContainEqual(
+      expect.objectContaining({ id: "issue", field: "Status", progress: null })
+    );
+    expect(f.events).toContain("GET /repos/example/project/issues/27");
+    if (failures === 6) {
+      expect(result).toContain("recover with: vmethod open-task 8 --model 'sol' --hold");
+      await expect(f.flow().open({ issue: "8", model: "sol", hold: true })).resolves.toBe(
+        "Resumed draft PR #27 (8-task)"
+      );
+      expect(
+        f.writes.filter((write) => write.path === "/repos/example/project/pulls")
+      ).toHaveLength(1);
+      expect(
+        f.events.filter((event) => event.startsWith("git") && event.includes("push"))
+      ).toHaveLength(1);
+      expect(f.writes.filter((write) => write.path.endsWith("/labels"))).toHaveLength(0);
+      expect(
+        f.writes.filter(
+          (write) =>
+            write.path === "/graphql" &&
+            String(write.body.query).includes("addCloseIssueReferences")
+        )
+      ).toHaveLength(1);
+      expect(values).toEqual({ Status: "Executing", Progress: "⛔", Model: "sol" });
+      const touched = [...f.touched];
+      await expect(f.flow().open({ issue: "8" })).resolves.toBe("Resumed draft PR #27 (8-task)");
+      expect(f.touched).toEqual(touched);
+    } else {
+      expect(result).not.toContain("recover with:");
+    }
+    expect(f.touched).toContainEqual(
+      expect.objectContaining({ id: "pr", field: "Model", value: "sol" })
+    );
+    f.done();
+  }
+);
+
+test.each(["permission denied", "Could not resolve to a node with the global id 'other'"])(
+  "open-task fails immediately for %s",
+  async (message) => {
+    const f = fixture();
+    const board = f.host.board();
+    board.set = async () => {
+      throw new Error(message);
+    };
+    f.host.board = () => board;
+    await expect(f.flow().open({ issue: "8", model: "sol" })).rejects.toThrow(message);
+    expect(f.events).not.toContain("GET /repos/example/project/issues/27");
+    f.done();
+  }
+);
+
+test.each(["ready", "unrelated", "base", "fork"])(
+  "open-task refuses to resume an existing %s PR",
+  async (kind) => {
+    const f = fixture();
+    await f.flow().open({ issue: "8", model: "sol" });
+    const thread = f.host.thread;
+    f.host.thread = async (ref, type) => {
+      const value = await thread(ref, type);
+      if (type !== "pr") {
+        return value;
+      }
+      return {
+        ...value,
+        ...(kind === "ready"
+          ? { isDraft: false }
+          : kind === "unrelated"
+            ? { body: '<!-- vmethod-task {"issues":[9]} -->' }
+            : kind === "base"
+              ? { baseRefName: "other" }
+              : { headRepository: { nameWithOwner: "other/project" } }),
+      };
+    };
+    await expect(f.flow().open({ issue: "8", model: "sol" })).rejects.toThrow(
+      kind === "fork" ? "fork" : "Existing PR"
+    );
+    expect(f.writes.filter((write) => write.path === "/repos/example/project/pulls")).toHaveLength(
+      1
+    );
+    f.done();
+  }
+);
 
 test("open-task creates a draft with a manual Development link, clears issue Progress and never estimates PRs", async () => {
   const f = fixture();

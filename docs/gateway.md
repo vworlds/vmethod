@@ -1292,6 +1292,14 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   closing link appears in Development and the board's linked-PR field; GitHub closes
   the issue when the completing PR merges into the repository's default branch.
   No closing-keyword or association-reference text is added to the PR description.
+  A newly added PR card that GitHub cannot yet resolve is retried after 1, 2, 4, 8
+  and 16 seconds; unrelated errors still fail immediately. If it remains unresolved,
+  independent opening steps finish and the output gives the exact recovery command.
+  Re-run that command: an existing open draft task PR for the same issue, branch,
+  repository, track and base resumes only missing card and turn writes, without
+  creating another branch, PR, label or Development link. Existing card values are
+  preserved, except the default Backlog status advances to Executing. Issue-less
+  direct tasks still fail if all card retries are exhausted.
   Gates and expensive-only Handoff breakpoints are enforced server-side; an
   owner-gated `--model` (or its issue-card Model hint) additionally requires
   `--owner-approved` and the owner's verified approval on the issue — the
