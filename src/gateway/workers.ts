@@ -313,7 +313,7 @@ export class WorkerService {
   ): Promise<WorkerSessionStatus> {
     return this.applyLifecycle(
       record,
-      plan(record, status, undefined, undefined, this.deps.now(), {
+      plan(record, status, undefined, undefined, {
         comments: false,
         quotaEnabled: true,
         models: this.models,
@@ -465,7 +465,7 @@ export class WorkerService {
     }
     return this.applyLifecycle(
       record,
-      plan(record, status, undefined, undefined, this.deps.now(), {
+      plan(record, status, undefined, undefined, {
         comments,
         drainWake,
         quotaEnabled: limitsConfig(this.config).enabled,

@@ -13,7 +13,6 @@ import type { ProviderLimits } from "../../src/gateway/limits.js";
 
 // Restate the step-1 oracle here, leaving wake-seam.test.ts byte-for-byte unchanged.
 const time = (minute: number) => new Date(Date.UTC(2026, 0, 1, 0, minute)).toISOString();
-const now = Date.parse(time(3));
 const wake = (heading: string) =>
   `[orchestrator] ${heading} is on your PR; read it with vmethod read pr 31 --new and act.`;
 const answer = wake("ANSWER");
@@ -251,7 +250,7 @@ function run(
   } = {}
 ) {
   const original = structuredClone({ saved, status, task });
-  let planned = plan(saved, status, undefined, undefined, now, { comments: false, ...options });
+  let planned = plan(saved, status, undefined, undefined, { comments: false, ...options });
   expect({ saved, status, task }).toEqual(original);
   const effects: LifecycleEffect[] = [];
   const reads: string[] = [];
@@ -745,12 +744,10 @@ test("comments classification and usage accounting precede drain reads", () => {
     { reason: "idle", active: false },
     metadata({ comments: [trigger()] }),
     [],
-    now,
     { comments: true, accountUsage: true }
   );
   expect(initial.status.reason).toBe("idle without reply");
   expect(initial.effects).toEqual([{ kind: "account-usage" }]);
-  expect(initial.observedAt).toBe(now);
 });
 
 test("failed conflict send keeps both queues and the old boundary for retry", () => {

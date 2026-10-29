@@ -52,7 +52,6 @@ type ObservationValue = TaskMetadata | ProviderLimits[] | Model | boolean | stri
  */
 export interface DrainPlan {
   state: SessionState;
-  observedAt: number;
   effects: LifecycleEffect[];
   status: WorkerSessionStatus;
   next?: { read: LifecycleObservation; then(value: ObservationValue): DrainPlan };
@@ -68,14 +67,13 @@ export interface LifecycleOptions {
 
 /** Plan one status observation without mutating its record, status, metadata or readings.
  * The runner executes effects in order, then supplies the requested observation.
- * `now` is the observation time; the send boundary is stamped by its own effect.
+ * Planning reads no clock: the send boundary is stamped by its own effect.
  */
 export function plan(
   record: Session,
   status: WorkerSessionStatus,
   meta: TaskMetadata | undefined,
   readings: ProviderLimits[] | undefined,
-  now: number,
   options: LifecycleOptions = {}
 ): DrainPlan {
   const current = structuredClone(record);
@@ -83,7 +81,6 @@ export function plan(
   const state = sessionState(observed);
   const done = (effects: LifecycleEffect[] = [], result = observed): DrainPlan => ({
     state,
-    observedAt: now,
     effects,
     status: result,
   });
