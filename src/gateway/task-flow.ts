@@ -10,7 +10,7 @@ import {
   rmSync,
 } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
-import { renderProgress } from "../board/progress.js";
+import { renderProgress, reviewProgress, expectedTurn } from "../core/progress.js";
 import { dirname, join, matchesGlob, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -113,9 +113,6 @@ export function legacyIssueHeaders(body: string): number[] {
   }
   return numbers;
 }
-const roundText = (round: number) =>
-  String(round).replace(/\d/g, (digit) => `${digit}\uFE0F\u20E3`);
-
 /** #339: model tier ordering for the cheaper-tier note; unknown tiers never count as more expensive. */
 const tierRank: Record<string, number> = { cheap: 0, standard: 1, expensive: 2 };
 
@@ -1042,21 +1039,8 @@ export class TaskFlow {
     ]);
     await this.post(input.ref, body);
     await this.ready(item, !["owner", "approve"].includes(input.outcome));
-    const progress = {
-      changes: `🤖🔨 🔁${roundText(round)}`,
-      owner: "👤🔍",
-      answer: "🤖🔨",
-      ask: "👤❓",
-      approve: "🧭🔍",
-    }[input.outcome];
-    await this.turn(
-      input.ref,
-      input.outcome === "approve"
-        ? "orchestrator"
-        : input.outcome === "owner" || input.outcome === "ask"
-          ? "owner"
-          : null
-    );
+    const progress = reviewProgress(input.outcome, round);
+    await this.turn(input.ref, expectedTurn(progress.state, "Executing"));
     await this.card(
       item,
       input.outcome === "owner"
@@ -1064,7 +1048,7 @@ export class TaskFlow {
         : input.outcome === "approve" && card?.values.Status === "Approved"
           ? "Approved"
           : "Executing",
-      progress
+      renderProgress(progress)
     );
     for (const number of taskIssueNumbers(String(item.body)) ?? []) {
       const issue = await this.host.thread(String(number), "issue");

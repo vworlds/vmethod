@@ -56,7 +56,7 @@ import {
 import { inheritAutopilot, workflowLabels } from "../evidence/autopilot.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { ownerForTurn, setTurn, turnAssignees } from "./turn.js";
-import { renderProgress } from "../board/progress.js";
+import { renderProgress, ownerReplyProgress } from "../core/progress.js";
 import { workflowColumns } from "../board/runner.js";
 import { legacyIssueHeaders, TaskFlow } from "./task-flow.js";
 import { isTaskPrompt } from "./task-flow-types.js";
@@ -2384,7 +2384,7 @@ class GatewayServer {
     if (
       !card ||
       !["Owner review", "Executing"].includes(String(card.values.Status)) ||
-      (!String(card.values.Progress ?? "").startsWith("🧭") &&
+      (!ownerReplyProgress(card.values.Progress, String(card.values.Status)) &&
         !card.assignees.some((login) =>
           this.filter.people.some(
             (person) =>

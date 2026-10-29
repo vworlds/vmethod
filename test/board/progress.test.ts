@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { parseProgress, renderProgress, progressStates } from "../../src/board/progress.js";
+import { parseProgress, renderProgress, progressStates } from "../../src/core/progress.js";
 import { loadMigrations } from "../../src/board/migrations.js";
 import { compatibility, readState } from "../../src/board/readme.js";
 import { FakeBoard } from "./fake.js";
