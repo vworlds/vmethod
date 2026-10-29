@@ -3394,7 +3394,7 @@ test("adaptive board pacing above reserve eventually polls again instead of movi
 
 test("the real operation wiring delivers and acknowledges server events with the board disabled", async () => {
   const f = setup();
-  f.config.board = { ...object(f.config.board), enabled: false };
+  f.config.board = { ...f.config.board, enabled: false };
   writeFileSync(join(f.root, "vmethod.yaml"), stringify(f.config));
   writeFileSync(join(f.root, "people.yaml"), stringify(people));
   const gateway = createGateway(f.root, f.env, f.deps);

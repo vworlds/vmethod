@@ -4481,7 +4481,7 @@ test.each(["cardConflict", "cardRestore"] as const)(
   "board-disabled configuration still moves the %s assignees without board writes",
   async (verb) => {
     const f = fixture();
-    f.config.board = { ...object(f.config.board), enabled: false };
+    f.config.board = { ...f.config.board, enabled: false };
     f.set({ assignees: verb === "cardRestore" ? ["worker"] : ["owner"] });
     await f.flow()[verb]("27", {
       status: "Owner review",
@@ -4509,7 +4509,7 @@ test.each(["cardConflict", "cardRestore"] as const)(
 
 test("card prior reads only the PR when the board is disabled", async () => {
   const f = fixture();
-  f.config.board = { ...object(f.config.board), enabled: false };
+  f.config.board = { ...f.config.board, enabled: false };
   f.set({ boardValues: { Status: "Owner review" }, assignees: ["owner"] });
   expect(await f.flow().cardPrior("27")).toEqual({
     status: null,

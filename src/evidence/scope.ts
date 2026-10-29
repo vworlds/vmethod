@@ -134,7 +134,7 @@ export function scopeRefusal(
 ): string {
   const reasons: { at: number; text: string }[] = [];
   const time = (item: ObjectData) => Date.parse(String(item.lastEditedAt ?? item.createdAt));
-  const repo = repoOf(issue).repo || (config.repo ?? "undefined");
+  const repo = repoOf(issue).repo || config.repo;
   const trusted = (item: ObjectData) =>
     orchestrates(filter, filter.identity(item.author), repo) &&
     (item.lastEditedAt == null || orchestrates(filter, filter.identity(item.editor), repo));
@@ -278,8 +278,7 @@ export class ScopeReader {
       const person = this.filter.identity(item.author);
       return (
         !!person &&
-        this.filter.roleIn(person, repoOf(item).repo || (this.config.repo ?? "undefined")) ===
-          "orchestrator"
+        this.filter.roleIn(person, repoOf(item).repo || this.config.repo) === "orchestrator"
       );
     };
     const trusted = metas.filter((item) => this.accept(item) && binds(item));

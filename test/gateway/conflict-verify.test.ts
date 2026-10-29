@@ -1,4 +1,5 @@
 import { expect, test, vi } from "vitest";
+import { testConfig } from "../config.js";
 import { fixture, ghConfig } from "../helpers.js";
 import { verifyConflictHead } from "../../src/gateway/verify-hook.js";
 import type { Dependencies } from "../../src/gateway/client.js";
@@ -29,15 +30,9 @@ test("conflict verification skips an absent hook but still pins the clean head",
     },
     report: vi.fn(),
   };
-  expect(
-    await verifyConflictHead(
-      root,
-      head,
-      { repo: "example/project" },
-      { XDG_STATE_HOME: root },
-      deps
-    )
-  ).toBe(true);
+  expect(await verifyConflictHead(root, head, testConfig(), { XDG_STATE_HOME: root }, deps)).toBe(
+    true
+  );
   expect(calls).toEqual([
     ["git", "status", "--porcelain"],
     ["git", "status", "--porcelain"],
@@ -87,7 +82,7 @@ test.each([true, false])(
       await verifyConflictHead(
         root,
         head,
-        { repo: "example/project" },
+        testConfig(),
         { XDG_STATE_HOME: root, GH_CONFIG_DIR: ghConfig("secret") },
         deps
       )

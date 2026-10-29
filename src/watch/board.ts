@@ -706,7 +706,7 @@ export class BoardPoller {
         (number) => !this.writes.recentlyWrote(card.repo, number)
       )
     );
-    let states = autopilotStates(records, this.host.filter, this.host.config.repo ?? "undefined");
+    let states = autopilotStates(records, this.host.filter, this.host.config.repo);
     for (const card of targets) {
       if (!states.get(card.contentId)?.unauthorized) {
         continue;
@@ -742,7 +742,7 @@ export class BoardPoller {
           );
         }
       }
-      states = autopilotStates(records, this.host.filter, this.host.config.repo ?? "undefined");
+      states = autopilotStates(records, this.host.filter, this.host.config.repo);
     }
     this.autopilot = states;
     for (const card of targets) {

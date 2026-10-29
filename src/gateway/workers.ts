@@ -177,7 +177,7 @@ export class WorkerService {
     private hooks: WorkerHooks,
     registry = new ModelRegistry(root)
   ) {
-    const name = config.stateName ?? (config.repo ?? "undefined").replace("/", "-");
+    const name = config.stateName ?? config.repo.replace("/", "-");
     if (!/^[\w.-]+$/.test(name) || name === ".." || name === ".") {
       throw new Error("Invalid stateName");
     }
@@ -604,7 +604,7 @@ export class WorkerService {
     return `#${record.pr} ${record.id} ${status.reason}${details}${renderPermissions(status.permissionDetails?.map((text) => this.redact(text)))}${titleMismatch} | tokens ${tokenText} | USD ${usd === null ? "unknown" : `${record.segments.some((segment) => segment.lowerBound) ? "≥ " : ""}$${usd.toFixed(6)}`}${status.error ? ` error from ${status.errorFamily && status.errorFamily !== record.model.family ? `previous model ${status.errorFamily}` : record.model.family}: ${untrusted(status.error)}` : ""}${advice}`;
   }
   private sessionTitle(pr: number): string {
-    return `${(this.config.repo ?? "undefined").split("/").at(-1)}#${pr}`;
+    return `${this.config.repo.split("/").at(-1)}#${pr}`;
   }
   private async setOpenCodeTitle(record: Session): Promise<void> {
     await this.client().request("PATCH", `${this.idPath(record)}`, {
@@ -1415,7 +1415,7 @@ export class WorkerService {
     }
     const record: Session = {
       version: 1,
-      repo: this.config.repo ?? "undefined",
+      repo: this.config.repo,
       pr,
       issue: meta.issue,
       directory,
@@ -1520,7 +1520,7 @@ export class WorkerService {
     }
     const record: Session = {
       version: 1,
-      repo: this.config.repo ?? "undefined",
+      repo: this.config.repo,
       pr,
       issue: meta.issue ?? null,
       directory,

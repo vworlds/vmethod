@@ -102,7 +102,7 @@ export const workerStatus: Handler<"workerStatus"> = async function (input) {
 
 export const resolveTask: Handler<"resolveTask"> = async function ({ branch }) {
   validateBranch(branch);
-  const repo = this.config.repo ?? "undefined";
+  const repo = this.config.repo;
   const owner = repo.split("/")[0];
   const listed = await this.github.rest(
     `/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=100`
@@ -194,7 +194,7 @@ export async function checkedTask(this: GatewayServices, ref: string, requirePro
   validateBranch(base);
   if (
     String(object(item.headRepository).nameWithOwner).toLowerCase() !==
-    (this.config.repo ?? "undefined").toLowerCase()
+    this.config.repo.toLowerCase()
   ) {
     throw new Error("Task branch must belong to the configured repository");
   }

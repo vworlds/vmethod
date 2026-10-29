@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { testConfig } from "../config.js";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
@@ -84,12 +85,12 @@ function setup() {
     },
     report: (message) => reports.push(message),
   };
-  const config = {
+  const config = testConfig({
     repo: "example/project",
     baseBranch: "dev",
     releaseBranch: "master",
     workerCheckout: checkout,
-  };
+  });
   const env: NodeJS.ProcessEnv = {
     OPENCODE_BASE_URL: "http://opencode.test",
     OPENCODE_SERVER_USERNAME: "user",

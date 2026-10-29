@@ -209,13 +209,10 @@ export class LearningAnnotations {
     if (input.pr && input.since) {
       throw new Error("Choose --pr or --since");
     }
-    if (!["public", "private"].includes(this.config.learningsPrivacy ?? "undefined")) {
+    if (this.config.learningsPrivacy !== "public" && this.config.learningsPrivacy !== "private") {
       throw new Error("Set learningsPrivacy explicitly");
     }
-    const state = stateRoot(
-      this.env,
-      this.config.stateName ?? (this.config.repo ?? "undefined").replace("/", "-")
-    );
+    const state = stateRoot(this.env, this.config.stateName ?? this.config.repo.replace("/", "-"));
     mkdirSync(state, { recursive: true });
     const lock = new DirLock(join(state, "learning-generation.lock"));
     try {
@@ -236,8 +233,7 @@ export class LearningAnnotations {
   private async annotate(input: AnnotationInput): Promise<string> {
     const records = this.records().filter(
       (r) =>
-        r.repo.toLowerCase() === (this.config.repo ?? "undefined").toLowerCase() &&
-        (!input.pr || r.pr === input.pr)
+        r.repo.toLowerCase() === this.config.repo.toLowerCase() && (!input.pr || r.pr === input.pr)
     );
     if (input.pr && !records.length) {
       throw new Error(`#${input.pr}: No delivery record for requested PR`);
@@ -541,10 +537,7 @@ export class LearningAnnotations {
           .map((line) => {
             try {
               const a = annotation(JSON.parse(line));
-              if (
-                !all &&
-                a.repo.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()
-              ) {
+              if (!all && a.repo.toLowerCase() !== this.config.repo.toLowerCase()) {
                 throw new Error("Foreign annotation in project directory");
               }
               return a;
@@ -558,11 +551,7 @@ export class LearningAnnotations {
       );
   }
   private directory(): string {
-    return join(
-      this.root,
-      "learnings/models",
-      (this.config.repo ?? "undefined").toLowerCase().replace("/", "-")
-    );
+    return join(this.root, "learnings/models", this.config.repo.toLowerCase().replace("/", "-"));
   }
   private model(input: AnnotationInput): { model: string } {
     const models = this.models.entries();

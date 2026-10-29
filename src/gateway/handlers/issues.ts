@@ -99,7 +99,7 @@ export const issueCreate: Handler<"issueCreate"> = async function ({
       // One operation for the board init writes (#199): membership add, then the
       // Estimate/Status fields in a single ordered mutation.
       this.github.writes.beginOperation("issue create", [
-        { repo: this.config.repo ?? "undefined", number: Number(created.number) },
+        { repo: this.config.repo, number: Number(created.number) },
       ]);
       const membership = await board.ensureCard(created.node_id);
       // One ordered board mutation, Status last with its progress companion (#199);
@@ -162,10 +162,10 @@ export const upstreamIssue: Handler<"upstreamIssue"> = async function ({ title, 
   if (!raw.trim()) {
     throw new Error("Post must contain nonempty Markdown");
   }
-  const body = `${raw.trimEnd()}\n\n${upstreamFooter(this.config.repo ?? "undefined")}`;
+  const body = `${raw.trimEnd()}\n\n${upstreamFooter(this.config.repo)}`;
   await checkMarkdown(this.root, `${title}\n\n${body}`);
   guardClosingKeywords(`${title}\n\n${body}`);
-  await upstreamCaller(this.github, this.config.repo ?? "undefined");
+  await upstreamCaller(this.github, this.config.repo);
   const created = object(
     await this.github.rest(`/repos/${central}/issues`, "POST", { title, body }, false)
   );
@@ -186,7 +186,7 @@ export const upstreamComment: Handler<"upstreamComment"> = async function ({ ref
   const body = readFileSync(file, "utf8");
   await checkMarkdown(this.root, body);
   guardClosingKeywords(body);
-  await upstreamCaller(this.github, this.config.repo ?? "undefined");
+  await upstreamCaller(this.github, this.config.repo);
   const found = object(
     await this.github.graphql(
       `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { id } } }`,
@@ -226,9 +226,7 @@ export const issueEdit: Handler<"issueEdit"> = async function ({ ref, file, scop
   const stale = summary === undefined ? await this.staleScopeApproval(number, item) : undefined;
   // Journal the body write as the verb's operation (#199) so a poll between it and
   // a sibling write cannot report the card.
-  this.github.writes.beginOperation("issue edit", [
-    { repo: this.config.repo ?? "undefined", number },
-  ]);
+  this.github.writes.beginOperation("issue edit", [{ repo: this.config.repo, number }]);
   await this.github.rest(`/repos/${this.config.repo}/issues/${number}`, "PATCH", { body }, false);
   writeFileSync(snapshot, bodyHash(body));
   if (summary !== undefined) {
@@ -272,9 +270,7 @@ export const issueClose: Handler<"issueClose"> = async function ({ ref, comment,
       throw new Error("Issue has an open blocker; use --force to close it anyway");
     }
   }
-  this.github.writes.beginOperation("issue-close", [
-    { repo: this.config.repo ?? "undefined", number },
-  ]);
+  this.github.writes.beginOperation("issue-close", [{ repo: this.config.repo, number }]);
   const path = `/repos/${this.config.repo}/issues/${number}`;
   if (body !== undefined) {
     await this.github.rest(`${path}/comments`, "POST", { body }, false);
@@ -317,9 +313,7 @@ export const issueReopen: Handler<"issueReopen"> = async function ({ ref, commen
     ?.options.some((option) => option.name === previous)
     ? previous
     : "Backlog";
-  this.github.writes.beginOperation("issue-reopen", [
-    { repo: this.config.repo ?? "undefined", number },
-  ]);
+  this.github.writes.beginOperation("issue-reopen", [{ repo: this.config.repo, number }]);
   const path = `/repos/${this.config.repo}/issues/${number}`;
   if (body !== undefined) {
     await this.github.rest(`${path}/comments`, "POST", { body }, false);
@@ -468,16 +462,14 @@ export async function scopeReviewCore(
   );
   const next = turnAssignees(
     this.filter.people,
-    this.config.repo ?? "undefined",
+    this.config.repo,
     current,
     "owner",
-    await ownerForTurn(this.github, this.filter.people, this.config.repo ?? "undefined", number)
+    await ownerForTurn(this.github, this.filter.people, this.config.repo, number)
   );
   // One operation for the assignment, summary comment and board handoff writes (#199).
-  this.github.writes.beginOperation("scope-review", [
-    { repo: this.config.repo ?? "undefined", number },
-  ]);
-  await setTurn(this.github, this.config.repo ?? "undefined", number, current, next);
+  this.github.writes.beginOperation("scope-review", [{ repo: this.config.repo, number }]);
+  await setTurn(this.github, this.config.repo, number, current, next);
   await this.github.rest(
     `/repos/${this.config.repo}/issues/${number}/comments`,
     "POST",
@@ -501,10 +493,10 @@ export async function scopeReviewCore(
     );
     await setTurn(
       this.github,
-      this.config.repo ?? "undefined",
+      this.config.repo,
       number,
       next,
-      turnAssignees(this.filter.people, this.config.repo ?? "undefined", next, null)
+      turnAssignees(this.filter.people, this.config.repo, next, null)
     );
     await this.board.setIssueField(String(issue.id), "Status", "Executing");
     return `Scope approved under autopilot for #${number}`;
@@ -579,7 +571,7 @@ export async function issueNodeId(
  * so a raw pre-existing parent can also read `repo#n` in the messages below (#327). */
 export function subIssueParentRef(this: GatewayServices, epic: string): ThreadRef {
   const ref = parentReference(epic, this.config);
-  if (ref.repo.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()) {
+  if (ref.repo.toLowerCase() !== this.config.repo.toLowerCase()) {
     throw new Error(
       `Sub-issue parent must be in the configured repository, not ${ref.repo}#${ref.number}`
     );
@@ -593,7 +585,7 @@ export async function subIssueParent(
   this: GatewayServices,
   childNumber: number
 ): Promise<ObjectData | null> {
-  const [owner, name] = (this.config.repo ?? "undefined").split("/");
+  const [owner, name] = this.config.repo.split("/");
   const result = object(
     await this.github.graphql(
       `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { parent { id number repository { nameWithOwner } } } } }`,
@@ -623,9 +615,7 @@ export function parentLabel(this: GatewayServices, parent: ObjectData): string {
   if (!repo || !Number.isSafeInteger(number) || number < 1) {
     throw new Error("Incomplete sub-issue parent read");
   }
-  return repo.toLowerCase() === (this.config.repo ?? "undefined").toLowerCase()
-    ? `#${number}`
-    : `${repo}#${number}`;
+  return repo.toLowerCase() === this.config.repo.toLowerCase() ? `#${number}` : `${repo}#${number}`;
 }
 
 /** One sub-issue relation move shared by `issue parent`/`issue unparent` and
@@ -680,7 +670,7 @@ export function parentMatchesEpic(
 ): boolean {
   const repo = String(object(parent.repository).nameWithOwner ?? "");
   return (
-    repo.toLowerCase() === (this.config.repo ?? "undefined").toLowerCase() &&
+    repo.toLowerCase() === this.config.repo.toLowerCase() &&
     Number(parent.number) === epicRef.number
   );
 }

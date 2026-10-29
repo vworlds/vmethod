@@ -81,9 +81,7 @@ export const boardAdd: Handler<"boardAdd"> = async function ({ ref, estimate, st
   ];
   // One operation for the board writes (#199), exactly as issue create's
   // follow-up: the membership add, then the fields in a single ordered mutation.
-  this.github.writes.beginOperation("board add", [
-    { repo: this.config.repo ?? "undefined", number },
-  ]);
+  this.github.writes.beginOperation("board add", [{ repo: this.config.repo, number }]);
   const membership = await this.board.ensureCard(contentId);
   if (entries.length) {
     await this.board.setIssueFields(contentId, entries, membership);

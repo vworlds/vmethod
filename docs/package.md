@@ -50,13 +50,16 @@ automatic watcher dispatch, cheap-model turns and `conflicts.escalatePaths`.
 
 Use the typed loaders in [`src/core/config.ts`](../src/core/config.ts) when reading
 `vmethod.yaml`, `models.yaml` or `people.yaml`. `src/config.ts` retains the existing
-loader entry points and its partial, mutable `ConfigInput` compatibility view for
-existing services; core `Config` represents the validated required fields and enum
-values. Each load applies the corresponding schema once, preserving
+loader entry points; `ConfigInput` is an alias of core `Config`, so services use the
+same required fields, closed keys and enum values as validated file loads. Each load applies the corresponding schema once, preserving
 YAML line diagnostics, defaults and `VMETHOD_*` overrides (including `VMETHOD_BASE`
-and the boolean `VMETHOD_BOARD` alias). Service settings remain optional so existing
-partial in-memory configurations keep their explicit use-site fallbacks; file loads
-still enforce every required schema field.
+and the boolean `VMETHOD_BOARD` alias). Provide `repo`, `org`, `baseBranch` and
+`board` with its required `owner`, `number` and `repos` fields when constructing
+settings in memory. `stateName`, `releaseBranch` and `learningsPrivacy` remain optional:
+state directories retain their existing per-service names (including the legacy
+identity-check digest name), branch guards retain their historical protected name
+when no release branch is configured, and learning submission requires explicit
+privacy. Tests use `test/config.ts`'s `testConfig()` for small, typed overrides.
 
 The gateway shares one lazy `ModelRegistry` snapshot between task opening, workers
 (including quota advice) and learning generation. A failed initial load is not

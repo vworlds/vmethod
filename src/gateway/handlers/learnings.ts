@@ -23,7 +23,7 @@ export const learnings: Handler<"learnings"> = async function (input) {
   }
   // Orchestrator-only central merge of an authorized learning submission (#308).
   if (input.action === "merge") {
-    if ((this.config.repo ?? "undefined").toLowerCase() !== "vworlds/vmethod") {
+    if (this.config.repo.toLowerCase() !== "vworlds/vmethod") {
       throw new Error("Learning PR merges run only in the central repository");
     }
     if (!Number.isSafeInteger(input.pr) || input.pr < 1) {
@@ -35,7 +35,7 @@ export const learnings: Handler<"learnings"> = async function (input) {
 };
 
 export const learningCheck: Handler<"learningCheck"> = async function ({ ref, label }) {
-  if ((this.config.repo ?? "undefined").toLowerCase() !== "vworlds/vmethod") {
+  if (this.config.repo.toLowerCase() !== "vworlds/vmethod") {
     throw new Error("Learning PR checks run only in the central repository");
   }
   return checkLearningPr(this.github, this.localNumber(ref), label);
@@ -89,7 +89,7 @@ export async function learningBundle(this: GatewayServices, pr: number): Promise
     });
   }
   return {
-    repo: this.config.repo ?? "undefined",
+    repo: this.config.repo,
     pr,
     closedAt: meta.closedAt,
     issue: {
@@ -109,11 +109,6 @@ export function learningRole(this: GatewayServices, person: Person): string {
   if (person.role !== "orchestrator") {
     return person.role;
   }
-  const [login] = turnAssignees(
-    this.filter.people,
-    this.config.repo ?? "undefined",
-    [],
-    "orchestrator"
-  );
+  const [login] = turnAssignees(this.filter.people, this.config.repo, [], "orchestrator");
   return person.login.toLowerCase() === login.toLowerCase() ? "orchestrator" : "peer-orchestrator";
 }

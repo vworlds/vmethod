@@ -190,7 +190,7 @@ export const post: Handler<"post"> = async function ({ ref, file, replyTo }, ctx
   }
   const warning =
     ctx.role === "orchestrator" &&
-    target.repo === (this.config.repo ?? "undefined") &&
+    target.repo === this.config.repo &&
     item.__typename === "PullRequest" &&
     (await this.ownerReplyTurn(item, target.link))
       ? `\nWarning: this does not hand the turn back; use review ${target.number} owner`
@@ -235,7 +235,7 @@ export async function flowComments(
   const output: ObjectData[] = [];
   for (const meta of await this.collection(id, type, "comments")) {
     const author = this.filter.identity(meta.author);
-    if (!author || this.filter.roleIn(author, this.config.repo ?? "undefined") !== "orchestrator") {
+    if (!author || this.filter.roleIn(author, this.config.repo) !== "orchestrator") {
       continue;
     }
     const comment = await this.node(String(meta.id), "body createdAt url", "IssueComment");
@@ -247,7 +247,7 @@ export async function flowComments(
     if (
       this.filter.identity(comment.author)?.role === "orchestrator" &&
       effective &&
-      this.filter.roleIn(effective, this.config.repo ?? "undefined") === "orchestrator"
+      this.filter.roleIn(effective, this.config.repo) === "orchestrator"
     ) {
       output.push(comment);
     }
@@ -287,14 +287,14 @@ export async function flowComment(
   const issue = object(node.issue).number;
   if (
     !author ||
-    repoOf(node).repo !== (this.config.repo ?? "undefined") ||
+    repoOf(node).repo !== this.config.repo ||
     !Number.isSafeInteger(issue) ||
     Number(issue) < 1
   ) {
     return undefined;
   }
   return {
-    author: { ...author, role: this.filter.roleIn(author, this.config.repo ?? "undefined") },
+    author: { ...author, role: this.filter.roleIn(author, this.config.repo) },
     issue: Number(issue),
     firstLine: typeof node.body === "string" ? node.body.split(/\r?\n/)[0] : "",
   };
@@ -367,7 +367,7 @@ export async function collection(
       cursorError: "Invalid GitHub pagination cursor",
       stop: (parent) => {
         const scope = repoOf(parent);
-        const link = `https://github.com/${scope.repo || (this.config.repo ?? "undefined")}`;
+        const link = `https://github.com/${scope.repo || this.config.repo}`;
         rejected = !this.filter.accept(parent, scope.owner, link);
         return rejected;
       },
@@ -557,7 +557,7 @@ export async function issueThread(
     throw new Error("Missing issue state");
   }
   // The exact body this read delivered, hashed for `issue edit`'s stale-read guard.
-  if (target.repo === (this.config.repo ?? "undefined")) {
+  if (target.repo === this.config.repo) {
     mkdirSync(resolve(this.root, ".tmp"), { recursive: true });
     writeFileSync(
       resolve(this.root, ".tmp", `issue-read-${target.number}.sha256`),
@@ -620,7 +620,7 @@ export async function threadReport(
   if (!items) {
     return "No accepted thread";
   }
-  const base = snapshotBase(target, this.config.repo ?? "undefined");
+  const base = snapshotBase(target, this.config.repo);
   if (option !== "--new") {
     saveThreadSnapshot(this.root, base, items);
     return items.map(threadSection).join("\n\n");
@@ -695,7 +695,7 @@ export async function ownerReplyTurn(
       !card.assignees.some((login) =>
         this.filter.people.some(
           (person) =>
-            this.filter.roleIn(person, this.config.repo ?? "undefined") === "orchestrator" &&
+            this.filter.roleIn(person, this.config.repo) === "orchestrator" &&
             person.login === login
         )
       ))

@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { testConfig } from "../config.js";
+import type { Config } from "../../src/core/config.js";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { stringify } from "yaml";
@@ -111,7 +113,7 @@ function setup(
     failBeforePr?: boolean;
     viewer?: unknown;
     shared?: string;
-    privacy?: string;
+    privacy?: Config["learningsPrivacy"];
     chunks?: Record<string, string>;
     existingPending?: boolean;
     truncated?: boolean;
@@ -129,12 +131,12 @@ function setup(
   mkdirSync(join(root, ".vmethod"));
   writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(record()) + "\n");
   const env = { XDG_STATE_HOME: join(root, "state"), GH_CONFIG_DIR: ghConfig("secret") };
-  const config = {
+  const config = testConfig({
     repo,
     stateName: "test",
     learningsPrivacy: options.privacy ?? "private",
     gateway: { maxRetries: 0 },
-  };
+  });
   let forkCreated = !options.createFork;
   let forkPending = false;
   let branch: string | undefined = options.existingPending ? "learnings/existing" : undefined;
@@ -582,12 +584,12 @@ test("unmodified captured contents decode through show and the pre-binding regis
   const root = fixture();
   mkdirSync(join(root, ".vmethod"));
   writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(record()) + "\n");
-  const config = {
+  const config = testConfig({
     repo,
     learningsPrivacy: "private",
     stateName: "capture",
     gateway: { maxRetries: 0 },
-  };
+  });
   const env = { GH_CONFIG_DIR: ghConfig("secret"), XDG_STATE_HOME: join(root, "state") };
   const calls: string[] = [];
   const deps: Dependencies = {
@@ -709,7 +711,14 @@ test("already-shared records reconcile without an empty PR and absent privacy fa
   expect(await f.service.command({ action: "submit" })).toBe("No new learnings to submit");
   expect(f.writes).toEqual([]);
   expect(JSON.parse(readFileSync(f.cursor, "utf8")).submitted).toEqual([]);
-  const missing = setup({ privacy: "unset" });
+  const missing = setup();
+  delete missing.config.learningsPrivacy;
+  await expect(missing.service.command({ action: "submit" })).rejects.toThrow(
+    "Set learningsPrivacy"
+  );
+  expect(missing.requests).toEqual([]);
+  // A malformed, unvalidated in-memory value still fails closed.
+  Reflect.set(missing.config, "learningsPrivacy", "unset");
   await expect(missing.service.command({ action: "submit" })).rejects.toThrow(
     "Set learningsPrivacy"
   );
@@ -1110,7 +1119,7 @@ test("report reads local JSONL or the bundled records and fails for missing scan
     "learnings/models/vworlds-vecs/309-309-abcdef012345.jsonl":
       JSON.stringify(record({ pr: 309 })) + "\n",
   };
-  const service = new LearningsService(root, {}, {}, deps, noClient, snapshot);
+  const service = new LearningsService(root, testConfig(), {}, deps, noClient, snapshot);
   expect(JSON.parse(await service.command({ action: "report", json: true })).deliveries).toBe(2);
   const text = await service.command({ action: "report" });
   expect(text).toContain("rounds per point: 0.50");
@@ -1340,7 +1349,7 @@ test("familyEvidence returns one family's graded aggregate and undefined without
   const noClient = () => {
     throw new Error("familyEvidence must not construct a GitHub client");
   };
-  const withData = new LearningsService(root, {}, {}, deps, noClient, {
+  const withData = new LearningsService(root, testConfig(), {}, deps, noClient, {
     "learnings/models/example.jsonl":
       JSON.stringify(
         record({
@@ -1368,14 +1377,14 @@ test("familyEvidence returns one family's graded aggregate and undefined without
     totalDeliveries: 2,
   });
   expect(withData.familyEvidence("glm")).toBeUndefined();
-  const noData = new LearningsService(root, {}, {}, deps, noClient, {});
+  const noData = new LearningsService(root, testConfig(), {}, deps, noClient, {});
   expect(noData.familyEvidence("sol")).toBeUndefined();
 });
 
 test("show reads dev, fences hostile advice and falls back to the injected bundled snapshot offline", async () => {
   const calls: string[] = [];
   let offline = false;
-  const config = { gateway: { maxRetries: 0 } };
+  const config = testConfig({ gateway: { maxRetries: 0 } });
   const deps: Dependencies = {
     fetch: loudFetch(async (input) => {
       const url = new URL(String(input));
@@ -1454,7 +1463,7 @@ test("show reads legacy seeds and new records/notes without treating their conte
 }, 15000);
 
 test("a successful show read with no page reports central absence, not bundled fallback", async () => {
-  const config = { gateway: { maxRetries: 0 } };
+  const config = testConfig({ gateway: { maxRetries: 0 } });
   const deps: Dependencies = {
     fetch: loudFetch(async (input) => {
       const url = new URL(String(input));
@@ -1653,7 +1662,7 @@ test.each([
       report: () => {},
     };
     const github = new GitHubClient(
-      { gateway: { maxRetries: 0 } },
+      testConfig({ gateway: { maxRetries: 0 } }),
       { GH_CONFIG_DIR: ghConfig("secret") },
       deps
     );

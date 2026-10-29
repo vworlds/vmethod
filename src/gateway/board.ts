@@ -363,7 +363,7 @@ export class BoardService implements BoardIO {
           if (
             typeof repo !== "string" ||
             !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
-            repo.split("/")[0].toLowerCase() !== (this.config.org ?? "undefined").toLowerCase()
+            repo.split("/")[0].toLowerCase() !== this.config.org.toLowerCase()
           ) {
             throw new Error("Invalid board repository scope");
           }
@@ -513,7 +513,7 @@ export class BoardService implements BoardIO {
     };
   }
   private scope(card: Card): void {
-    if (card.repo?.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()) {
+    if (card.repo?.toLowerCase() !== this.config.repo.toLowerCase()) {
       throw new Error("Refusing write to a foreign repository card");
     }
   }
@@ -617,7 +617,7 @@ export class BoardService implements BoardIO {
         (a, b) => String(b.closedAt).localeCompare(String(a.closedAt)) || a.id.localeCompare(b.id)
       );
     for (const card of cards.slice(6)) {
-      if (card.repo?.toLowerCase() === (this.config.repo ?? "undefined").toLowerCase()) {
+      if (card.repo?.toLowerCase() === this.config.repo.toLowerCase()) {
         await this.archive(card.id);
       }
     }
@@ -878,7 +878,7 @@ export class BoardService implements BoardIO {
     if (!this.filter) {
       throw new Error("Assignee housekeeping requires the authenticated people filter");
     }
-    const repo = this.config.repo ?? "undefined";
+    const repo = this.config.repo;
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
     const item = object(await this.github.rest(`/repos/${repo}/issues/${number}`));
@@ -1055,10 +1055,7 @@ export class BoardService implements BoardIO {
       return;
     }
     const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(this.settings.announce);
-    if (
-      !match ||
-      match[1].split("/")[0].toLowerCase() !== (this.config.org ?? "undefined").toLowerCase()
-    ) {
+    if (!match || match[1].split("/")[0].toLowerCase() !== this.config.org.toLowerCase()) {
       throw new Error("Invalid board announcement scope");
     }
     await this.github.rest(`/repos/${match[1]}/issues/${match[2]}/comments`, "POST", { body });

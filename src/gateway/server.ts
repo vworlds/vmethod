@@ -160,14 +160,10 @@ export class GatewayServices {
     this.configMtime = this.watchMtime("vmethod");
     this.digest = new Digest(
       env,
-      this.config.stateName ?? (this.config.repo ?? "undefined").replace("/", "-"),
+      this.config.stateName ?? this.config.repo.replace("/", "-"),
       deps.now
     );
-    this.filter = new PeopleFilter(
-      loadYaml(root, "people"),
-      this.config.org ?? "undefined",
-      this.digest
-    );
+    this.filter = new PeopleFilter(loadYaml(root, "people"), this.config.org, this.digest);
     this.authentication = new TokenAuthentication(
       () => this.github,
       () => this.config,

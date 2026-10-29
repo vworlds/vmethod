@@ -10,7 +10,12 @@ import { object } from "../gateway/people.js";
 import type { ObjectData } from "../gateway/people.js";
 import type { BoardOperation } from "../gateway/board.js";
 import { checkMarkdown, guardClosingKeywords } from "../gateway/markdown.js";
-import { GitTransport, taskBranch, validateBranch } from "../gateway/git.js";
+import {
+  GitTransport,
+  protectedReleaseBranch,
+  taskBranch,
+  validateBranch,
+} from "../gateway/git.js";
 import type { OpenTaskInput } from "../gateway/task-flow-types.js";
 import { holdBanner, taskIssueNumbers } from "./markers.js";
 import { modelGateError } from "../evidence/model-gate.js";
@@ -68,7 +73,7 @@ export class TaskOpen extends TaskCommon {
         "POST",
         {
           head: input.branch,
-          base: this.config.baseBranch ?? "undefined",
+          base: this.config.baseBranch,
           title: input.title,
           body,
           draft: input.draft ?? false,
@@ -119,8 +124,8 @@ export class TaskOpen extends TaskCommon {
           "master",
           "main",
           "HEAD",
-          this.config.baseBranch ?? "undefined",
-          this.config.releaseBranch ?? "undefined",
+          this.config.baseBranch,
+          protectedReleaseBranch(this.config),
         ].includes(input.from)
       ) {
         throw new Error("open-task --from refuses the base, release or default branch");
@@ -210,7 +215,7 @@ export class TaskOpen extends TaskCommon {
     if (handoff && model.tier !== "expensive") {
       throw new Error("Handoff breakpoints require tier: expensive");
     }
-    const base = this.config.baseBranch ?? "undefined";
+    const base = this.config.baseBranch;
     validateBranch(base);
     const slug =
       title

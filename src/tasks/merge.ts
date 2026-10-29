@@ -11,6 +11,7 @@ import {
 import { dirname, join, matchesGlob, resolve } from "node:path";
 import { homedir } from "node:os";
 import { loadYaml } from "../config.js";
+import { protectedReleaseBranch } from "../gateway/git.js";
 import { object, type ObjectData } from "../gateway/people.js";
 import { checkMarkdown, guardClosingKeywords } from "../gateway/markdown.js";
 import { cleanBaseMerges } from "../evidence/clean-base.js";
@@ -246,7 +247,7 @@ export class TaskMerge extends TaskCommon {
           .trim()
           .split("\n");
         if (
-          base === (this.config.releaseBranch ?? "undefined") ||
+          base === protectedReleaseBranch(this.config) ||
           files.some((file) =>
             /(?:^|\/)people\.ya?ml$|(?:^|\/)CODEOWNERS$|^(?:\.claude\/|\.opencode\/|opencode\.jsonc?$|vmethod\.yaml$)/.test(
               file

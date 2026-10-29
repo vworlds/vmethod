@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { testConfig } from "../config.js";
 import { promisify } from "node:util";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -108,7 +109,7 @@ test("refresh-checks holds dispatch until its push finishes, then dispatch reads
   const verification = new VerificationService(
     f.root,
     f.env,
-    { repo: "example/project", org: "example" },
+    testConfig(),
     f.deps,
     checks,
     async () => {
@@ -478,11 +479,11 @@ async function setup(
   const createService = () =>
     new ConflictService(
       root,
-      {
+      testConfig({
         repo: "example/project",
         stateName: "conflict-test",
         ...(escalated ? { conflicts: { escalatePaths: ["**/*.txt"] } } : {}),
-      },
+      }),
       env,
       deps,
       hooks
@@ -565,7 +566,7 @@ async function setup(
       now += 61 * 60_000;
     },
     verifyWithoutHook: (directory: string, head: string, reportNotice?: () => boolean) =>
-      verifyConflictHead(directory, head, { repo: "example/project" }, env, deps, reportNotice),
+      verifyConflictHead(directory, head, testConfig(), env, deps, reportNotice),
   };
 }
 
