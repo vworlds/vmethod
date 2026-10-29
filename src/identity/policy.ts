@@ -28,6 +28,7 @@ const policy = {
   limits: ["orchestrator"],
   openTask: ["orchestrator"],
   prOpen: ["orchestrator"],
+  prEdit: ["orchestrator"],
   prMerge: ["orchestrator"],
   reviewTask: ["orchestrator"],
   askIssue: ["orchestrator"],

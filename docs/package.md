@@ -22,7 +22,7 @@ resolve the checkout from `VMETHOD_ROOT` or git discovery. `vmethod check` verif
 Every verb except `version` and `init --launcher` resolves the project root once per run exactly as the stubs and the launcher do: `VMETHOD_ROOT` first, then `git rev-parse --show-toplevel` from the current directory. The cwd is never assumed to be the root, so commands work from any subdirectory of a checkout. `init --launcher` can also run outside a repository when invoked through an installed bin.
 
 Template identities and model ids are examples, not real credentials or an authoritative allowlist.
-`pr open` and `pr merge` manage orchestrator-authored non-task changes; see
+`pr open`, `pr edit` and `pr merge` manage orchestrator-authored non-task changes; see
 [non-task PR commands](gateway.md#non-task-pr-commands). `check` skips its PATH
 launcher report when `npm_lifecycle_event` is set because npm scripts intentionally
 resolve the package bin first.
