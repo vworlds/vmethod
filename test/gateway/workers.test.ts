@@ -14,6 +14,7 @@ import { getConfig } from "../../src/config.js";
 import { OpencodeClient, type Dependencies } from "../../src/gateway/client.js";
 import { WorkerService, type TaskMetadata, type WorkerHooks } from "../../src/gateway/workers.js";
 import { validProject } from "../helpers.js";
+import { WatchFake } from "./watch-fake.js";
 import captured from "../fixtures/usage/opencode-session.json" with { type: "json" };
 import messageCapture from "../fixtures/usage/opencode-message.json" with { type: "json" };
 import messageCursor from "../fixtures/usage/opencode-message-cursor.json" with { type: "json" };
@@ -2434,6 +2435,45 @@ const quotaProviders = {
   fable: "claude-code",
 };
 
+test("watcher quota recovery delivers one QUOTA line across consecutive polls", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...quotaPoll(),
+      ...modelRequests("sol"),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+      ...quotaPoll(),
+    ],
+    true,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  const watcher = new WatchFake();
+  watcher.task();
+  watcher.pulls[0].number = 31;
+  watcher.pulls[0].head = { ref: "9-task", sha: "a".repeat(40) };
+  watcher.issues[1].number = 31;
+  watcher.cards = [watcher.card(31, "Executing", "PullRequest")];
+  watcher.workerTrees = async () => [{ branch: "9-task", path: f.directory }];
+  watcher.workerStatus = (pr) => f.service.watchStatus(pr);
+  const loop = watcher.loop();
+  const delivered: string[] = [];
+  try {
+    for (let i = 0; i < 7; i++) {
+      delivered.push(...(await watcher.once(loop)).map((event) => event.line));
+    }
+    delivered.push(...vi.mocked(f.deps.report).mock.calls.map(([line]) => line));
+    expect(delivered.filter((line) => line.startsWith("QUOTA #"))).toEqual([
+      "QUOTA #31: glm quota-stopped; switched to sol and resumed",
+    ]);
+    expect(watcher.staleWorkerReads).toEqual([31, 31]);
+    expect(f.hooks.modelComment).toHaveBeenCalledTimes(1);
+    f.done();
+  } finally {
+    watcher.done();
+  }
+});
+
 test.each(["provider.quota", "provider.free-limit"])(
   "automatic %s recovery skips risky, quota-failed and unapproved gated families and resends",
   async (code) => {
@@ -2473,6 +2513,7 @@ test.each(["provider.quota", "provider.free-limit"])(
       provider: "claude-code",
       quotaEvent: "QUOTA #31: glm quota-stopped; switched to sonnet and resumed",
     });
+    expect(f.deps.report).not.toHaveBeenCalledWith(result.quotaEvent);
     expect(f.prompts[1]).toBe(f.prompts[0]);
     expect(f.record().model.family).toBe("sonnet");
     expect(f.record().segments[1].switchReason).toBe("quota");
@@ -2583,9 +2624,33 @@ test("no eligible quota fallback reports once and changes nothing", async () => 
     quotaEvent: "QUOTA #31: glm quota-stopped; no eligible fallback",
   });
   expect(await f.service.watchStatus(31)).not.toHaveProperty("quotaEvent");
+  expect(f.deps.report).not.toHaveBeenCalledWith(
+    "QUOTA #31: glm quota-stopped; no eligible fallback"
+  );
   expect(f.record().model.family).toBe("glm");
   expect(f.record().segments).toHaveLength(1);
   expect(f.prompts).toHaveLength(1);
+  f.done();
+});
+
+test("CLI status still reports automatic quota recovery once", async () => {
+  const f = fixture(
+    [
+      ...start,
+      ...quotaPoll(),
+      ...modelRequests("sol"),
+      { path: "/api/session/ses_fake/prompt", method: "POST" },
+      ...quotaPoll(),
+    ],
+    true,
+    "none"
+  );
+  await f.service.command(["start", "31"]);
+  await f.service.command(["status", "31"]);
+  await f.service.command(["status", "31"]);
+  expect(
+    vi.mocked(f.deps.report).mock.calls.filter(([line]) => line.startsWith("QUOTA #"))
+  ).toEqual([["QUOTA #31: glm quota-stopped; switched to sol and resumed"]]);
   f.done();
 });
 
@@ -2606,6 +2671,9 @@ test("manual model switch away from a quota-stopped turn resends its interrupted
   );
   await f.service.command(["start", "31"]);
   expect(await f.service.command(["model", "31", "sol"])).toContain("and resumed");
+  expect(f.deps.report).toHaveBeenCalledWith(
+    "QUOTA #31: glm quota-stopped; switched to sol and resumed"
+  );
   expect(f.prompts[1]).toBe(f.prompts[0]);
   expect(f.record().quotaStop.family).toBe("glm");
   f.done();
