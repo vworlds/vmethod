@@ -1,9 +1,9 @@
 import { expect, test } from "vitest";
-import { ownerAgreement } from "../../src/gateway/owner-agreement.js";
+import { ownerAgreement } from "../../src/evidence/owner-agreement.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
-import { actor, people } from "./helpers.js";
-import { scopeComment } from "./scope-fixture.js";
+import { actor, people } from "../gateway/helpers.js";
+import { scopeComment } from "../gateway/scope-fixture.js";
 import { fixture } from "../helpers.js";
 
 test.each([

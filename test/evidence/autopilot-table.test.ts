@@ -1,10 +1,10 @@
 import { expect, test } from "vitest";
-import { autopilotStates } from "../../src/gateway/autopilot.js";
+import { autopilotStates } from "../../src/evidence/autopilot.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { fixture } from "../helpers.js";
-import { actor, people } from "./helpers.js";
-import { scopeIssue } from "./scope-fixture.js";
+import { actor, people } from "../gateway/helpers.js";
+import { scopeIssue } from "../gateway/scope-fixture.js";
 import recording from "../fixtures/github/autopilot-wire.json" with { type: "json" };
 
 // Same recorded label-event projection as autopilot.test.ts; only pins, IDs and times change.

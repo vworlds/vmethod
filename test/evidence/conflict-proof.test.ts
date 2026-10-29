@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { fixture } from "../helpers.js";
-import { conflictHunksOnly, proveConflictMerge } from "../../src/gateway/conflict-proof.js";
+import { conflictHunksOnly, proveConflictMerge } from "../../src/evidence/conflict-proof.js";
 
 const exec = promisify(execFile);
 

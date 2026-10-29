@@ -189,7 +189,7 @@ accepted issue or PR. It posts the stop in the thread; the next watcher poll
 reconciles the owner's turn without reverting completed steps. There is no agent
 grant command, and `issue create --label autopilot` is refused. The typed operation
 is `autopilotStop({ref, kind: "issue" | "pr"}) → string`. Owner-event authentication
-and `open-task` inheritance live in `src/gateway/autopilot.ts`; see
+and `open-task` inheritance live in `src/evidence/autopilot.ts`; see
 [autopilot procedure](orchestrator-guide.md#autopilot). Under current delegation,
 `scope-review` and `review <pr> owner` explicitly record and advance their owner
 gates. `merge-task` rechecks delegation after normal verification.

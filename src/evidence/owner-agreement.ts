@@ -1,4 +1,4 @@
-import { object, type ObjectData, type PeopleFilter } from "./people.js";
+import { object, type ObjectData, type PeopleFilter } from "../gateway/people.js";
 import { repoOf } from "../github/diagnostic.js";
 
 /** Validate the current, effectively owner-authored comment and an exact block quotation.

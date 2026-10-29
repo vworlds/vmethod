@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { isModelApproved, modelGateError } from "../../src/gateway/model-gate.js";
+import { isModelApproved, modelGateError } from "../../src/evidence/model-gate.js";
 
 const comment = (body: string, at: { createdAt?: string; lastEditedAt?: string | null } = {}) => ({
   body,
