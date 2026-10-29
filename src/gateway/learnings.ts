@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { DirLock } from "../journal/locks.js";
+import { restPages } from "../github/pages.js";
 import {
   existsSync,
   mkdirSync,
@@ -728,13 +729,16 @@ export class LearningsService {
     const annotations = new Map<string, string>();
     const urls: string[] = [];
     const targets: { number: number; branch: string; head: string; addOnly: boolean }[] = [];
-    for (let page = 1; ; page++) {
-      const listed = await github.rest(
-        `/repos/${central}/pulls?state=open&base=${base}&per_page=100&page=${page}`
-      );
-      if (!Array.isArray(listed)) {
-        throw new Error("Invalid open learning PR list");
+    for await (const listed of restPages(
+      (page) =>
+        github.rest(`/repos/${central}/pulls?state=open&base=${base}&per_page=100&page=${page}`),
+      {
+        error: "Invalid open learning PR list",
+        size: 100,
+        limit: 30,
+        limitError: "Open learning PR pagination limit reached",
       }
+    )) {
       for (const value of listed) {
         const candidate = object(value);
         const user = object(candidate.user);
@@ -826,12 +830,6 @@ export class LearningsService {
           throw new Error("Invalid pending learning branch");
         }
         targets.push({ number, branch, head: ref, addOnly });
-      }
-      if (listed.length < 100) {
-        break;
-      }
-      if (page >= 30) {
-        throw new Error("Open learning PR pagination limit reached");
       }
     }
     const records = unionRecords(texts, "write", (message) => this.deps.report(message));

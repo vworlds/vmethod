@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { restPages } from "../github/pages.js";
 import { join } from "node:path";
 import type { Config } from "../config.js";
 import { liveBaseHead } from "./base-head.js";
@@ -312,14 +313,16 @@ function runUrl(repo: string, run: ObjectData): string {
 /** Failed step names per job, bounded; a failed job without steps names itself. */
 async function failedSteps(github: GitHubClient, repo: string, runId: number): Promise<string[]> {
   const output: string[] = [];
-  for (let page = 1; ; page++) {
-    const result = object(
-      await github.rest(`/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&page=${page}`)
-    );
-    if (!Array.isArray(result.jobs)) {
-      throw new Error("Invalid publish run job list");
-    }
-    for (const value of result.jobs) {
+  for await (const jobs of restPages(
+    async (page) => {
+      const result = object(
+        await github.rest(`/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&page=${page}`)
+      );
+      return result.jobs;
+    },
+    { error: "Invalid publish run job list", size: 100, limit: jobPages }
+  )) {
+    for (const value of jobs) {
       const job = object(value);
       if (!Number.isSafeInteger(job.id) || Number(job.id) < 1 || typeof job.name !== "string") {
         throw new Error("Invalid publish run job");
@@ -331,9 +334,6 @@ async function failedSteps(github: GitHubClient, repo: string, runId: number): P
         .filter((step) => step.conclusion != null && !success.includes(String(step.conclusion)))
         .map((step) => `${job.name} / ${step.name}`.slice(0, 200));
       output.push(...(steps.length ? steps : [`${job.name} / no failed step reported`]));
-    }
-    if (result.jobs.length < 100 || page >= jobPages) {
-      break;
     }
   }
   return output;

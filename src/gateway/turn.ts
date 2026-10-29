@@ -1,6 +1,7 @@
 import { GitHubHttpError, type GitHubClient } from "./client.js";
 import { object, pinnedIdentity, type ObjectData, type Person } from "./people.js";
-import { actorFields } from "./queries.js";
+import { actorFields } from "../github/selections.js";
+import { pages } from "../github/pages.js";
 
 /** Management assignees encode whose move it is; null preserves worker assignments.
  * Owner turns select the interaction winner supplied by ownerForTurn, otherwise
@@ -64,12 +65,12 @@ export async function ownerForTurn(
   if (owners.length <= 1) {
     return owners[0]?.login;
   }
-  let connection = initial;
-  let before: string | null = null;
-  const seen = new Set<string>();
   const interactions: { login: string; time: number }[] = [];
-  for (;;) {
-    if (!connection) {
+  for await (const connection of pages(
+    async (before) => {
+      if (before === null && initial) {
+        return initial;
+      }
       const [owner, name] = repo.split("/");
       const data = object(
         await github.graphql(
@@ -82,11 +83,15 @@ export async function ownerForTurn(
           { owner, name, number, before }
         )
       );
-      connection = object(object(object(data.repository).issueOrPullRequest).ownerActivity);
+      return object(object(data.repository).issueOrPullRequest).ownerActivity;
+    },
+    {
+      connectionError: "Missing owner activity timeline",
+      cursorError: "Invalid owner activity pagination",
+      direction: "backward",
+      nonempty: true,
     }
-    if (!Array.isArray(connection.nodes)) {
-      throw new Error("Missing owner activity timeline");
-    }
+  )) {
     interactions.push(
       ...connection.nodes.map(object).flatMap((event) => {
         const actor = event.lastEditedAt != null ? event.editor : (event.author ?? event.actor);
@@ -101,28 +106,13 @@ export async function ownerForTurn(
         return [{ login: person.login, time }];
       })
     );
-    const info = object(connection.pageInfo);
-    if (info.hasPreviousPage === false) {
-      interactions.sort(
-        (a, b) =>
-          b.time - a.time ||
-          owners.findIndex((p) => p.login === a.login) -
-            owners.findIndex((p) => p.login === b.login)
-      );
-      return interactions[0]?.login ?? owners[0].login;
-    }
-    if (
-      info.hasPreviousPage !== true ||
-      typeof info.startCursor !== "string" ||
-      !info.startCursor ||
-      seen.has(info.startCursor)
-    ) {
-      throw new Error("Invalid owner activity pagination");
-    }
-    before = info.startCursor;
-    seen.add(before);
-    connection = undefined;
   }
+  interactions.sort(
+    (a, b) =>
+      b.time - a.time ||
+      owners.findIndex((p) => p.login === a.login) - owners.findIndex((p) => p.login === b.login)
+  );
+  return interactions[0]?.login ?? owners[0].login;
 }
 
 /** Apply a turn from an already-read snapshot, with no redundant assignment writes. */

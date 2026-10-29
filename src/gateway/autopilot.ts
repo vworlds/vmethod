@@ -1,7 +1,9 @@
 import type { Config } from "../config.js";
 import type { GitHubClient } from "./client.js";
 import { object, type ObjectData, type PeopleFilter } from "./people.js";
-import { actorFields, identityFields, repoOf } from "./queries.js";
+import { repoOf } from "../github/diagnostic.js";
+import { batchPages, pageCursor } from "../github/pages.js";
+import { actorFields, identityFields, labelEvents } from "../github/selections.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 
 /** Labels managed by vmethod workflow rather than describing task kind. */
@@ -24,8 +26,6 @@ export interface AutopilotState {
    * is never unauthorized and the watcher leaves it unjudged this poll. */
   unknown?: boolean;
 }
-
-const labelEvents = `__typename ... on LabeledEvent { id createdAt actor { ${actorFields} } label { name } } ... on UnlabeledEvent { id createdAt actor { ${actorFields} } label { name } }`;
 
 /** Copy a current owner grant to a newly created task PR. Persist the exact
  * generated event ID in authenticated task metadata, then announce inheritance.
@@ -142,12 +142,11 @@ export class AutopilotReader {
 
   private async histories(items: ObjectData[]): Promise<Map<string, ObjectData[]>> {
     const result = new Map(items.map((item) => [String(item.id), [] as ObjectData[]]));
-    let pending = items.map((item) => ({ id: String(item.id), cursor: null as string | null }));
-    const seen = new Set<string>();
-    while (pending.length) {
-      const next: typeof pending = [];
-      for (let start = 0; start < pending.length; start += 50) {
-        const batch = pending.slice(start, start + 50);
+    const pending = items.map((item) => ({ id: String(item.id), cursor: null as string | null }));
+    const seen = new Map(items.map((item) => [String(item.id), new Set<string>()]));
+    await batchPages(
+      pending,
+      async (batch) => {
         const variables: ObjectData = {};
         const declarations: string[] = [];
         const selections = batch.map(({ id, cursor }, i) => {
@@ -163,7 +162,8 @@ export class AutopilotReader {
             variables
           )
         );
-        batch.forEach(({ id }, i) => {
+        batch.forEach((entry, i) => {
+          const { id } = entry;
           const parent = object(data[`n${i}`]);
           if (!this.accept(parent)) {
             throw new Error("Autopilot identity changed");
@@ -173,20 +173,14 @@ export class AutopilotReader {
             throw new Error("Missing autopilot history");
           }
           result.get(id)!.push(...connection.nodes.map(object));
-          const page = object(connection.pageInfo);
-          if (page.hasNextPage === false) {
-            return;
-          }
-          const key = `${id}:${String(page.endCursor)}`;
-          if (page.hasNextPage !== true || typeof page.endCursor !== "string" || seen.has(key)) {
-            throw new Error("Invalid autopilot history cursor");
-          }
-          seen.add(key);
-          next.push({ id, cursor: page.endCursor });
+          const cursor = pageCursor(connection, seen.get(id)!, {
+            cursorError: "Invalid autopilot history cursor",
+          });
+          entry.cursor = cursor;
         });
-      }
-      pending = next;
-    }
+      },
+      { size: 50, strategy: "rounds" }
+    );
     return result;
   }
 

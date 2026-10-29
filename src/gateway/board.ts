@@ -20,15 +20,15 @@ import { ownerForTurn, sameAssignees, setTurn, turnAssignees } from "./turn.js";
 import { ScopeReader } from "./scope.js";
 import { migrationIdentity, migrationHolderDead } from "./process-identity.js";
 import packageInfo from "../../package.json" with { type: "json" };
+import { batchPages, pages, pageCursor } from "../github/pages.js";
+import {
+  fieldSelection,
+  pageInfo,
+  contentSelection,
+  valueSelection,
+  initialValues,
+} from "../github/selections.js";
 
-const fieldSelection =
-  "... on ProjectV2Field { id name dataType createdAt } ... on ProjectV2IterationField { id name dataType createdAt } ... on ProjectV2SingleSelectField { id name dataType createdAt options { id name color description } }";
-const pageInfo = "pageInfo { hasNextPage endCursor }";
-const contentSelection =
-  "content { __typename ... on Issue { id number closedAt repository { nameWithOwner } assignees(first: 100) { nodes { login } } } ... on PullRequest { id number closedAt repository { nameWithOwner } assignees(first: 100) { nodes { login } } } }";
-const valueSelection =
-  "... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } }";
-const initialValues = `fieldValues(first: 100) { nodes { ${valueSelection} } ${pageInfo} }`;
 function nodes(value: unknown): ObjectData[] {
   const connection = object(value);
   if (!Array.isArray(connection.nodes)) {
@@ -62,15 +62,7 @@ function created(value: unknown): number {
 }
 
 function nextCursor(connection: ObjectData, seen: Set<string>): string | null {
-  const info = object(connection.pageInfo);
-  if (info.hasNextPage === false) {
-    return null;
-  }
-  if (info.hasNextPage !== true || typeof info.endCursor !== "string" || seen.has(info.endCursor)) {
-    throw new Error("Invalid board pagination cursor");
-  }
-  seen.add(info.endCursor);
-  return info.endCursor;
+  return pageCursor(connection, seen, { cursorError: "Invalid board pagination cursor" });
 }
 
 export class BoardService implements BoardIO {
@@ -139,18 +131,14 @@ export class BoardService implements BoardIO {
   }
 
   private async pages(read: (cursor: string | null) => Promise<ObjectData>): Promise<ObjectData[]> {
-    let cursor: string | null = null;
-    const seen = new Set<string>();
     const output: ObjectData[] = [];
-    for (;;) {
-      const connection = await read(cursor);
+    for await (const connection of pages(read, {
+      connectionError: "Missing board connection",
+      cursorError: "Invalid board pagination cursor",
+    })) {
       output.push(...nodes(connection));
-      const next = nextCursor(connection, seen);
-      if (next === null) {
-        return output;
-      }
-      cursor = next;
     }
+    return output;
   }
 
   async snapshot(): Promise<Snapshot> {
@@ -320,37 +308,40 @@ export class BoardService implements BoardIO {
       const seen = new Set<string>();
       return { entry, values: nodes(connection), seen, cursor: nextCursor(connection, seen) };
     });
-    while (pending.some(({ cursor }) => cursor !== null)) {
-      const batch = pending.filter(({ cursor }) => cursor !== null).slice(0, 25);
-      const declarations: string[] = [];
-      const selections: string[] = [];
-      const variables: ObjectData = {};
-      batch.forEach(({ entry, cursor }, index) => {
-        declarations.push(`$id${index}: ID!`, `$cursor${index}: String!`);
-        variables[`id${index}`] = text(entry.id);
-        variables[`cursor${index}`] = cursor;
-        const connection =
-          field === "projectItems"
-            ? `projectItems(first: 25, after: $cursor${index}, includeArchived: true) { nodes { id isArchived project { id } ${contentSelection} ${initialValues} } ${pageInfo} }`
-            : `fieldValues(first: 100, after: $cursor${index}) { nodes { ${valueSelection} } ${pageInfo} }`;
-        const fragments =
-          field === "projectItems"
-            ? `... on Issue { ${connection} } ... on PullRequest { ${connection} }`
-            : `... on ProjectV2Item { ${connection} }`;
-        selections.push(`n${index}: node(id: $id${index}) { ${fragments} }`);
-      });
-      const data = object(
-        await this.github.graphql(
-          `query BoardCardConnections(${declarations.join(", ")}) { ${selections.join(" ")} }`,
-          variables
-        )
-      );
-      batch.forEach((entry, index) => {
-        const connection = object(object(data[`n${index}`])[field]);
-        entry.values.push(...nodes(connection));
-        entry.cursor = nextCursor(connection, entry.seen);
-      });
-    }
+    await batchPages(
+      pending,
+      async (batch) => {
+        const declarations: string[] = [];
+        const selections: string[] = [];
+        const variables: ObjectData = {};
+        batch.forEach(({ entry, cursor }, index) => {
+          declarations.push(`$id${index}: ID!`, `$cursor${index}: String!`);
+          variables[`id${index}`] = text(entry.id);
+          variables[`cursor${index}`] = cursor;
+          const connection =
+            field === "projectItems"
+              ? `projectItems(first: 25, after: $cursor${index}, includeArchived: true) { nodes { id isArchived project { id } ${contentSelection} ${initialValues} } ${pageInfo} }`
+              : `fieldValues(first: 100, after: $cursor${index}) { nodes { ${valueSelection} } ${pageInfo} }`;
+          const fragments =
+            field === "projectItems"
+              ? `... on Issue { ${connection} } ... on PullRequest { ${connection} }`
+              : `... on ProjectV2Item { ${connection} }`;
+          selections.push(`n${index}: node(id: $id${index}) { ${fragments} }`);
+        });
+        const data = object(
+          await this.github.graphql(
+            `query BoardCardConnections(${declarations.join(", ")}) { ${selections.join(" ")} }`,
+            variables
+          )
+        );
+        batch.forEach((entry, index) => {
+          const connection = object(object(data[`n${index}`])[field]);
+          entry.values.push(...nodes(connection));
+          entry.cursor = nextCursor(connection, entry.seen);
+        });
+      },
+      { size: 25, strategy: "drain", initial: "pending" }
+    );
     for (const { entry, values } of pending) {
       entry[field] = { nodes: values, pageInfo: { hasNextPage: false, endCursor: null } };
     }
