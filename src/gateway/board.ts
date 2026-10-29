@@ -492,8 +492,12 @@ export class BoardService implements BoardIO {
         { id: itemId }
       )
     );
-    const node = object(data.node);
-    if (object(node.project).id !== snapshot.id) {
+    return this.projectCard(object(data.node), snapshot.id);
+  }
+  /** One card shape for the writer: the configured-board check, then only the five
+   * operation fields with null defaults (no arbitrary custom field text). */
+  private async projectCard(node: ObjectData, projectId: string): Promise<Card> {
+    if (object(node.project).id !== projectId) {
       throw new Error("Card is not on configured board");
     }
     const card = await this.decodeCard(node);
@@ -642,7 +646,9 @@ export class BoardService implements BoardIO {
       operation?.membership?.itemId === input.itemId ? operation.membership : undefined;
     const card = membership
       ? (operation?.card ??
-        (membership.node ? await this.decodeCard(membership.node) : await this.item(input.itemId)))
+        (membership.node
+          ? await this.projectCard(membership.node, membership.snapshot.id)
+          : await this.item(input.itemId)))
       : await this.item(input.itemId);
     this.scope(card);
     if (input.field === "Estimate" && card.kind === "PullRequest") {

@@ -150,3 +150,23 @@ test.each([false, true])(
     f.board.done();
   }
 );
+
+test("a cached write keeps the writer's single card shape: the five operation fields", async () => {
+  const f = scenario();
+  f.card.kind = "PullRequest";
+  const operation: BoardOperation = {};
+  const itemId = await f.service.ensure(f.card.contentId!, operation);
+  await f.service.set({ itemId, field: "Status", value: "Executing", progress: "🤖🔨" }, operation);
+  expect(Object.keys(operation.card!.values).sort()).toEqual([
+    "Cost",
+    "Estimate",
+    "Model",
+    "Progress",
+    "Status",
+  ]);
+  expect(operation.card!.values).toMatchObject({
+    Status: "Executing",
+    Progress: "🤖🔨",
+  });
+  f.board.done();
+});
