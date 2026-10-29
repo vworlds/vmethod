@@ -3,6 +3,7 @@ import {
   step,
   type Effect,
   type Observation,
+  type Phase,
   type Resolution,
 } from "../../src/conflicts/machine.js";
 import type { CiSnapshot } from "../../src/gateway/checks.js";
@@ -11,6 +12,14 @@ import {
   type Effect as OracleEffect,
   type TransitionRow,
 } from "../gateway/conflict-table.js";
+
+test("oracle covers every durable phase", () => {
+  const phases: Phase[] = ["starting", "waiting", "resolved", "blocked", "merged"];
+  const observed = conflictTransitions
+    .flatMap((row) => [row.prior?.phase, row.expected.record?.phase])
+    .filter(Boolean);
+  expect(new Set(observed)).toEqual(new Set(phases));
+});
 
 test.each(conflictTransitions)("pure machine: $name", (row) => {
   const before = structuredClone(row);
