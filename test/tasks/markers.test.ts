@@ -5,7 +5,6 @@ import {
   closingIssueNumbers,
   holdBanner,
   isTaskPrompt,
-  legacyIssueHeaders,
   setHeaderPart,
   taskHeader,
   taskHeld,
@@ -22,7 +21,7 @@ import {
 // The body table characterizes every former reader of the task markers: the
 // relation decoder (taskRelation), the issue-number decoder (taskIssueNumbers),
 // isTaskPrompt, the model-override decoder, the metadata reader's own header read
-// (taskHeader with server's options), the legacy headers, the merge relation
+// (taskHeader with server's options), the merge relation
 // (taskIssues with the watcher's report) and the native closing references
 // (closingIssueNumbers), plus the hold test (taskHeld).
 const repo = "example/project";
@@ -38,7 +37,6 @@ interface Row {
   prompt?: boolean;
   override?: { from: string; to: string; reason: string } | undefined | "throws";
   metadata?: number | undefined;
-  legacy?: number[] | "throws";
   issues?: number[] | "throws";
   reports?: string[];
   closing?: number[] | "throws";
@@ -53,7 +51,6 @@ const rows: Row[] = [
     issueNumbers: [8],
     prompt: true,
     metadata: 8,
-    legacy: [],
     issues: [8],
     reports: [],
     closing: [],
@@ -66,7 +63,6 @@ const rows: Row[] = [
     issueNumbers: [8],
     prompt: true,
     metadata: 8,
-    legacy: [],
     issues: [],
     reports: [],
     closing: [],
@@ -79,7 +75,6 @@ const rows: Row[] = [
     issueNumbers: [],
     prompt: true,
     metadata: undefined,
-    legacy: [],
     issues: [],
     reports: [],
     closing: [],
@@ -92,7 +87,6 @@ const rows: Row[] = [
     issueNumbers: [9],
     prompt: true,
     metadata: 9,
-    legacy: [],
     issues: [9],
     reports: [],
     closing: [],
@@ -105,7 +99,6 @@ const rows: Row[] = [
     issueNumbers: undefined,
     prompt: false,
     metadata: 9,
-    legacy: [],
     issues: [],
     reports: ["no linked issue"],
     closing: [],
@@ -118,7 +111,6 @@ const rows: Row[] = [
     issueNumbers: undefined,
     prompt: false,
     metadata: 8,
-    legacy: [],
     issues: [8],
     reports: [],
     closing: [],
@@ -131,7 +123,6 @@ const rows: Row[] = [
     issueNumbers: [9],
     prompt: true,
     metadata: 9,
-    legacy: [],
     issues: [],
     reports: ["no linked issue"],
     closing: [],
@@ -144,7 +135,6 @@ const rows: Row[] = [
     issueNumbers: [8],
     prompt: true,
     metadata: 9,
-    legacy: [],
     issues: [8],
     reports: [],
     closing: [],
@@ -157,35 +147,8 @@ const rows: Row[] = [
     issueNumbers: undefined,
     prompt: false,
     metadata: 8,
-    legacy: [],
     issues: [],
     reports: ["no linked issue"],
-    closing: [],
-    held: false,
-  },
-  {
-    name: "legacy headers",
-    body: "Pre-adoption PR.\n\nCloses #12\n\nAgent task for #13\n",
-    relation: undefined,
-    issueNumbers: undefined,
-    prompt: false,
-    metadata: undefined,
-    legacy: [12, 13],
-    issues: [12, 13],
-    reports: ["legacy link: using pre-adoption issue relation"],
-    closing: [],
-    held: false,
-  },
-  {
-    name: "legacy headers: quoted, bold and lowercase all match",
-    body: "> Closes #3\n\n**Agent task for #4**\n\ncloses #5\n",
-    relation: undefined,
-    issueNumbers: undefined,
-    prompt: false,
-    metadata: undefined,
-    legacy: [3, 4, 5],
-    issues: [3, 4, 5],
-    reports: ["legacy link: using pre-adoption issue relation"],
     closing: [],
     held: false,
   },
@@ -196,7 +159,6 @@ const rows: Row[] = [
     issueNumbers: undefined,
     prompt: false,
     metadata: undefined,
-    legacy: [],
     issues: [],
     reports: [],
     closing: [],
@@ -209,7 +171,6 @@ const rows: Row[] = [
     issueNumbers: [8],
     prompt: true,
     metadata: 8,
-    legacy: [10],
     issues: [8],
     reports: [],
     closing: [],
@@ -223,7 +184,6 @@ const rows: Row[] = [
     prompt: false,
     override: undefined,
     metadata: undefined,
-    legacy: [],
     issues: "throws",
     closing: [],
     held: false,
@@ -235,7 +195,6 @@ const rows: Row[] = [
     issueNumbers: undefined,
     prompt: false,
     metadata: undefined,
-    legacy: [],
     issues: "throws",
     closing: [],
     held: false,
@@ -247,7 +206,6 @@ const rows: Row[] = [
     issueNumbers: undefined,
     prompt: false,
     metadata: undefined,
-    legacy: [],
     issues: "throws",
     closing: [],
     held: false,
@@ -260,7 +218,6 @@ const rows: Row[] = [
     prompt: false,
     override: undefined,
     metadata: undefined,
-    legacy: [],
     issues: [8],
     reports: [],
     closing: [],
@@ -274,7 +231,6 @@ const rows: Row[] = [
     prompt: true,
     override: { from: "glm", to: "sol", reason: "tier" },
     metadata: undefined,
-    legacy: [],
     issues: [8],
     reports: [],
     closing: [],
@@ -288,7 +244,6 @@ const rows: Row[] = [
     prompt: true,
     override: "throws",
     metadata: undefined,
-    legacy: [],
     issues: [8],
     reports: [],
     closing: [],
@@ -301,7 +256,6 @@ const rows: Row[] = [
     issueNumbers: [7],
     prompt: true,
     metadata: undefined,
-    legacy: [],
     issues: [7],
     reports: [],
     closing: [],
@@ -314,7 +268,6 @@ const rows: Row[] = [
     issueNumbers: [8],
     prompt: true,
     metadata: undefined,
-    legacy: [],
     issues: [8],
     reports: [],
     closing: [],
@@ -328,7 +281,6 @@ const rows: Row[] = [
     issueNumbers: [],
     prompt: true,
     metadata: undefined,
-    legacy: [],
     issues: [],
     reports: [],
     closing: [],
@@ -341,7 +293,6 @@ const rows: Row[] = [
     issueNumbers: [],
     prompt: true,
     metadata: undefined,
-    legacy: [],
     issues: [],
     reports: [],
     closing: [],
@@ -358,7 +309,6 @@ const rows: Row[] = [
     issueNumbers: undefined,
     prompt: false,
     metadata: undefined,
-    legacy: [12],
     issues: [7],
     reports: ["legacy link: using pre-adoption issue relation"],
     closing: [7],
@@ -378,7 +328,6 @@ const rows: Row[] = [
     issueNumbers: undefined,
     prompt: false,
     metadata: undefined,
-    legacy: [],
     issues: [6],
     reports: ["legacy link: using pre-adoption issue relation"],
     closing: [6],
@@ -395,7 +344,6 @@ const rows: Row[] = [
     issueNumbers: undefined,
     prompt: false,
     metadata: undefined,
-    legacy: [12],
     issues: "throws",
     closing: "throws",
     held: false,
@@ -419,7 +367,6 @@ test.each(rows)("$name", (row) => {
     () => taskHeader(row.body, { anchor: "any line", title: "any text", end: "anywhere" })?.issue,
     row.metadata
   );
-  outcome(() => legacyIssueHeaders(row.body), row.legacy);
   const item: ObjectData = {
     body: row.body,
     closingIssuesReferences: row.references ?? { nodes: [], pageInfo: { hasNextPage: false } },
@@ -433,6 +380,15 @@ test.each(rows)("$name", (row) => {
   expect(taskHeld(row.title ?? "feat: delivery", row.body)).toBe(row.held);
 });
 
+test.each(["Closes #12", "> **Agent task for #12**", "closes #12"])(
+  "removed prose header %s does not link a task",
+  (body) => {
+    const reports: string[] = [];
+    expect(taskIssues({ body }, repo, (line) => reports.push(line))).toEqual([]);
+    expect(reports).toEqual(["no linked issue"]);
+  }
+);
+
 test.each([
   ["Invalid task header issue", () => taskRelation("# Task: t (issue #99999999999999999999)\n")],
   [
@@ -444,7 +400,6 @@ test.each([
     "Invalid task model override",
     () => taskModelOverride('<!-- vmethod-task {"issues":[8],"modelOverride":{}} -->'),
   ],
-  ["Invalid legacy issue link", () => legacyIssueHeaders("Closes #99999999999999999999")],
   [
     "Invalid legacy issue link",
     () =>

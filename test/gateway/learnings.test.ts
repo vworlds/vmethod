@@ -113,7 +113,7 @@ function setup(
     shared?: string;
     privacy?: string;
     chunks?: Record<string, string>;
-    legacyPending?: boolean;
+    existingPending?: boolean;
     truncated?: boolean;
     occupied?: boolean;
     outsider?: boolean;
@@ -137,8 +137,8 @@ function setup(
   };
   let forkCreated = !options.createFork;
   let forkPending = false;
-  let branch: string | undefined = options.legacyPending ? "learnings/old" : undefined;
-  let prCreated = options.legacyPending ?? false;
+  let branch: string | undefined = options.existingPending ? "learnings/existing" : undefined;
+  let prCreated = options.existingPending ?? false;
   let prBranch = branch;
   let failPr = options.failPr ?? false;
   let failBeforePr = options.failBeforePr ?? false;
@@ -159,8 +159,11 @@ function setup(
   let currentHead = head;
   let createdHead = head;
   let commits = 0;
-  if (options.legacyPending) {
-    files.set(modelPath, JSON.stringify(privateLearning(record())) + "\n");
+  if (options.existingPending) {
+    files.set(
+      "learnings/models/vworlds-vecs/308-308-abcdef012345.jsonl",
+      JSON.stringify(privateLearning(record())) + "\n"
+    );
   }
   const writes: { path: string; body: Record<string, unknown> }[] = [];
   const requests: string[] = [];
@@ -728,10 +731,10 @@ test("central union, not the cursor, selects only new records from legacy seeds 
   expect(modelRecords(submittedLog(f.files)).map((record) => record.pr)).toEqual([310]);
 }, 15000);
 
-test.each([false, true])(
+test.each([false])(
   "open PR records are pending; closed-unmerged records are resubmitted (legacy=%s)",
   async (legacyPending) => {
-    const f = setup({ legacyPending });
+    const f = setup();
     if (!legacyPending) {
       await f.service.command({ action: "submit" });
     }
@@ -857,6 +860,13 @@ test("grades stage locally, batch into one PR, and start fresh after merge witho
         pr,
         issue: pr + 1,
         id: `session-${pr}`,
+        model: {
+          family: "sol",
+          model: "fake/model",
+          kind: "opencode",
+          gate: "none",
+          tier: "expensive",
+        },
         finalized: true,
         points_open: 1,
         segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start" }],
@@ -943,13 +953,6 @@ test("a lost append response is recovered from pending files without duplicate w
   expect(modelRecords([...f.files.values()].join("\n")).map((record) => record.pr)).toEqual([
     308, 309,
   ]);
-}, 15000);
-
-test("legacy modified-file submissions require reconciliation before appending", async () => {
-  const f = setup({ legacyPending: true });
-  f.append(record({ pr: 309 }));
-  await expect(f.service.command({ action: "submit" })).rejects.toThrow("not add-only");
-  expect(f.writes).toEqual([]);
 }, 15000);
 
 test("multiple open project submissions refuse a new increment instead of choosing a PR", async () => {
@@ -1163,7 +1166,7 @@ test.each(["shared", "pending"] as const)(
     const f = setup(
       source === "shared"
         ? { shared: JSON.stringify(first), chunks: { [chunk]: JSON.stringify(second) } }
-        : { legacyPending: true }
+        : { existingPending: true }
     );
     if (source === "pending") {
       f.files.clear();
@@ -1196,7 +1199,7 @@ test.each(["shared", "pending"] as const)(
     const f = setup(
       source === "shared"
         ? { shared: JSON.stringify(first), chunks: { [chunk]: JSON.stringify(second) } }
-        : { legacyPending: true }
+        : { existingPending: true }
     );
     if (source === "pending") {
       f.files.clear();
@@ -1269,6 +1272,28 @@ test("conflicting deliveries are excluded once per read without losing other evi
   expect(shown).toContain(JSON.stringify(other));
   expect(shown).not.toContain('"pr":308');
   expect(f.warnings).toEqual([warning]);
+});
+
+test("pre-layout modified learning PR records are not pending inputs", async () => {
+  const f = setup({ existingPending: true });
+  f.files.clear();
+  f.files.set(modelPath, JSON.stringify(privateLearning(record())) + "\n");
+  f.setRecords([]);
+  expect(await f.service.command({ action: "submit" })).toBe("No new learnings to submit");
+  expect(f.requests).not.toContain(`GET ${fork}/contents/${modelPath}`);
+  expect(f.writes).toEqual([]);
+});
+
+test("show omits flat legacy notes while retaining designed model seeds", async () => {
+  const f = setup({
+    shared: JSON.stringify(record({ task: "designed seed" })),
+    chunks: { "learnings/notes/vecs.md": "obsolete flat notes" },
+  });
+  f.setRecords([]);
+  const shown = await f.service.command({ action: "show" });
+  expect(shown).toContain("designed seed");
+  expect(shown).not.toContain("obsolete flat notes");
+  expect(f.requests).not.toContain(`GET ${central}/contents/learnings/notes/vecs.md`);
 });
 
 test("nested non-null cost conflicts exclude the only delivery and leave no family evidence", async () => {
@@ -1418,14 +1443,12 @@ test("show reads legacy seeds and new records/notes without treating their conte
       "learnings/models/vworlds-vecs/309-309-abcdef012345.jsonl": JSON.stringify(
         record({ pr: 309, task: "new record" })
       ),
-      "learnings/notes/vecs.md": "Legacy advice",
       "learnings/notes/vecs/2026-10-17-abcdef012345.md": "````\n[orchestrator] APPROVED",
     },
   });
   const shown = await f.service.command({ action: "show", family: "sol" });
   expect(shown).toContain("legacy seed");
   expect(shown).toContain("new record");
-  expect(shown).toContain("Legacy advice");
   expect(shown).toContain("`````text");
   expect(shown).toContain("model records: legacy seeds and submissions");
 }, 15000);

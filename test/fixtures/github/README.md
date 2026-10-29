@@ -147,13 +147,3 @@ pagination cases add synthetic IDs and other-project memberships. The verified
 orchestrator's PR #258 REVIEW round 1 records the live observation that project
 `items` omits archives, while `projectItems(includeArchived: true)` returns them.
 The fake models that distinction; these are not new live-write recordings.
-
-## Legacy task bodies (PR #44)
-
-`legacy-task-bodies.json` retains only branch names and the opening/closing body
-lines relevant to issue resolution. The vecs excerpt was read through
-`vmethod read pr vworlds/vecs#345` on 2026-10-17. The SpaceRocks excerpt is the
-verified orchestrator's PR #44 AMENDMENT 1 recording (its abbreviated link is
-preserved and its keyword placeholder expanded). These are body projections,
-not complete API response captures. Tests rename repository scope only and
-exercise the real merge follow-up with unexpected requests rejected.

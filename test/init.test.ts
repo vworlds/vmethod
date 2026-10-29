@@ -96,7 +96,7 @@ test("stub resolves git root and preserves hostile arguments without shell evalu
   expect(JSON.parse(copiedContext.stdout)).toEqual(["check", ...args]);
 }, 4000);
 
-test("converts the verbatim vecs registry, moving legacy claude rows onto the claude-code provider", () => {
+test("converts the migrated vecs registry with explicit OpenCode provider IDs", () => {
   const root = fixture();
   const text = readFileSync("test/fixtures/models-vecs.tsv", "utf8");
   writeFileSync(join(root, "models.tsv"), text);
@@ -164,6 +164,16 @@ test("converts the verbatim vecs registry, moving legacy claude rows onto the cl
   expect(readFileSync(join(root, "models.tsv"), "utf8")).toBe(text);
   expect(init(root, templates)).toEqual([]);
 }, 15000);
+
+test("models.tsv no longer converts removed Claude backend rows", () => {
+  const root = fixture();
+  writeFileSync(
+    join(root, "models.tsv"),
+    "family\tmodel\tkind\tgate\nsonnet\tclaude-sonnet-5-5\tclaude\tnone\n"
+  );
+  expect(() => init(root, templates)).toThrow("models.tsv conversion");
+  expect(existsSync(join(root, "models.yaml"))).toBe(false);
+});
 
 test("converts models.tsv once, preserving gate and original TSV", () => {
   const root = fixture();

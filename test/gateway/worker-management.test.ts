@@ -15,7 +15,6 @@ import { expect, test, vi } from "vitest";
 import { createGateway } from "../../src/gateway/server.js";
 import recordedFields from "../fixtures/github/board-fields.json" with { type: "json" };
 import learningCapture from "../fixtures/github/learnings-recorded.json" with { type: "json" };
-import legacyRecords from "../fixtures/legacy-workers/records.json" with { type: "json" };
 import sessionCapture from "../fixtures/usage/opencode-session.json" with { type: "json" };
 import recordedClosedPulls from "../fixtures/github/diagnostic-pulls-closed.json" with { type: "json" };
 import recordedCompare from "../fixtures/github/diagnostic-compare.json" with { type: "json" };
@@ -637,17 +636,11 @@ test.each(["success", "failure", "existing", "populated", "symlink-parent"])(
   }
 );
 
-test.each(["live", "unknown", "claude", "patch-failure", "malformed-metadata"])(
+test.each(["live", "unknown", "patch-failure", "malformed-metadata"])(
   "session closure safely handles %s",
   async (scenario) => {
     const f = fixture();
     await f.transport.call("worker", { args: ["start", "31"] }, f.ctx);
-    const file = join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "workers", "31.json");
-    if (scenario === "claude") {
-      const record = JSON.parse(readFileSync(file, "utf8"));
-      record.model.kind = "claude";
-      writeFileSync(file, JSON.stringify(record));
-    }
     if (scenario === "live") {
       f.setStatus(true);
     }
@@ -655,9 +648,6 @@ test.each(["live", "unknown", "claude", "patch-failure", "malformed-metadata"])(
     let patches = 0;
     f.deps.fetch = async (input, init) => {
       const url = new URL(String(input));
-      if (scenario === "claude" && url.origin === "https://opencode.invalid") {
-        throw new Error("Claude must not contact opencode");
-      }
       if (url.pathname === "/api/session/ses_test" && scenario === "unknown") {
         return Response.json({ error: "not found" }, { status: 404 });
       }
@@ -689,11 +679,9 @@ test.each(["live", "unknown", "claude", "patch-failure", "malformed-metadata"])(
       },
     });
     const service = new WorkerService(f.root, getConfig(f.root, {}), f.env, f.deps, hooks);
-    expect(await service.closeSession(31)).toBe(scenario === "claude");
+    expect(await service.closeSession(31)).toBe(false);
     expect(patches).toBe(scenario === "patch-failure" ? 1 : 0);
-    if (scenario !== "claude") {
-      expect(f.deps.report).toHaveBeenCalledWith(expect.stringContaining("session not closed:"));
-    }
+    expect(f.deps.report).toHaveBeenCalledWith(expect.stringContaining("session not closed:"));
     f.done();
   }
 );
@@ -1292,119 +1280,14 @@ test("partial task headers still identify the issue for worker dispatch", async 
   f.done();
 });
 
-function legacyAdoptionFixture(body = legacyRecords.spacerocksPrHeader) {
-  const f = fixture();
-  f.pr.body = body.replaceAll("#342", "#9").replaceAll("346-rogue-looter", "9-task");
-  const configPath = join(f.root, "vmethod.yaml");
-  writeFileSync(
-    configPath,
-    readFileSync(configPath, "utf8") + "\nlegacyWorkers: [spacerocks-orchestrator/workers]\n"
-  );
-  const directory = join(f.env.XDG_STATE_HOME, "spacerocks-orchestrator/workers");
-  mkdirSync(directory, { recursive: true });
-  writeFileSync(join(directory, "31.json"), JSON.stringify({ id: "ses_test" }));
-  f.transport = createGateway(f.root, f.env, f.deps);
-  return {
-    ...f,
-    record: () =>
-      JSON.parse(
-        readFileSync(join(f.env.XDG_STATE_HOME, "vmethod/example-state/workers/31.json"), "utf8")
-      ),
-  };
-}
-
-test.each([
-  legacyRecords.spacerocksPrHeader,
-  "> **Agent task for #342.** Branch `346-rogue-looter`, base `dev`.",
-  "Closes #342.",
-])(
-  "legacy adoption snapshots the linked issue's Estimate and preserves provenance through grade: %s",
-  async (body) => {
-    const f = legacyAdoptionFixture(body);
-    expect(await f.transport.call("worker", { args: ["adopt", "--from-legacy"] }, f.ctx)).toContain(
-      "Adopted ses_test for #31"
-    );
-    expect(f.record()).toMatchObject({
-      issue: 9,
-      points_open: 13,
-      segments: [{ why: "legacy snapshot at adoption" }],
-    });
-    // Later issue edits must not rewrite the opening snapshot or its provenance.
-    f.issue.projectItems = {
-      nodes: [
-        {
-          id: "CARD9",
-          project: { number: 1, owner: { login: "example" } },
-          fieldValues: {
-            nodes: [{ field: { name: "Estimate" }, number: 5 }],
-            pageInfo: { hasNextPage: false },
-          },
-        },
-      ],
-      pageInfo: { hasNextPage: false },
-    };
-    f.pr.state = "MERGED";
-    f.pr.merged = true;
-    await f.transport.call("grade", { ref: "31", points: 20 }, f.ctx);
-    const log = JSON.parse(readFileSync(join(f.root, ".vmethod/model-log.jsonl"), "utf8"));
-    expect(log).toMatchObject({
-      points_open: 13,
-      points_final: 20,
-      segments: [{ why: "legacy snapshot at adoption" }],
-    });
-    f.done();
+test.each([["adopt", "31", "ses_test"]])(
+  "worker role cannot adopt sessions: %j",
+  async (...args) => {
+    const f = fixture();
+    await expect(f.transport.call("worker", { args }, { role: "worker" })).rejects.toThrow();
+    expect(f.requests).toEqual([]);
   }
 );
-
-test("legacy adoption reports a missing linked issue Estimate without saving or reaching opencode", async () => {
-  const f = legacyAdoptionFixture();
-  f.issue.projectItems = { nodes: [], pageInfo: { hasNextPage: false } };
-  expect(await f.transport.call("worker", { args: ["adopt", "--from-legacy"] }, f.ctx)).toContain(
-    "linked issue #9 has no Estimate; estimate it, then rerun"
-  );
-  expect(() => f.record()).toThrow();
-  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
-  expect(f.mutations).toEqual([]);
-  f.done();
-});
-
-test("explicit adoption still requires an opening snapshot even for a legacy relation with a board Estimate", async () => {
-  const f = legacyAdoptionFixture();
-  await expect(
-    f.transport.call("worker", { args: ["adopt", "31", "ses_test"] }, f.ctx)
-  ).rejects.toThrow("opening Estimate");
-  expect(() => f.record()).toThrow();
-  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
-  f.done();
-});
-
-test("legacy adoption retains an existing opening snapshot instead of using the current Estimate", async () => {
-  const f = legacyAdoptionFixture(legacyRecords.spacerocksPrHeader + "\n<!-- points_open: 8 -->\n");
-  expect(await f.transport.call("worker", { args: ["adopt", "--from-legacy"] }, f.ctx)).toContain(
-    "Adopted"
-  );
-  expect(f.record()).toMatchObject({ points_open: 8, segments: [{ why: "adopt" }] });
-  f.done();
-});
-
-test("legacy worker metadata refuses ambiguous fallback issue relations", async () => {
-  const f = legacyAdoptionFixture("Agent task for #9\nCloses #10.\n");
-  expect(await f.transport.call("worker", { args: ["adopt", "--from-legacy"] }, f.ctx)).toContain(
-    "ambiguous linked issues"
-  );
-  expect(() => f.record()).toThrow();
-  expect(f.requests.join("\n")).not.toContain("opencode.invalid");
-  f.done();
-});
-
-test.each([
-  ["adopt", "31", "ses_test"],
-  ["adopt", "--from-legacy"],
-])("worker role cannot adopt sessions: %j", async (...args) => {
-  const f = fixture();
-  await expect(f.transport.call("worker", { args }, { role: "worker" })).rejects.toThrow();
-  expect(f.requests).toEqual([]);
-});
 
 test("recorded worker status is wired into merge guards without an injected worker backend", async () => {
   const f = fixture();

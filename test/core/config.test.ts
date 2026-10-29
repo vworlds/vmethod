@@ -24,7 +24,7 @@ test("project loaders expose typed values without changing overrides or diagnost
   expectTypeOf(loadYaml(root, "people")).toEqualTypeOf<Person[]>();
   expectTypeOf(loadYaml(root, "models")).toEqualTypeOf<ModelEntry[]>();
   expect(() => getConfig(root, { VMETHOD_BOARD_NUMBER: "wrong" })).toThrow(
-    `${join(root, "vmethod.yaml")}:28: /board/number must be integer`
+    `${join(root, "vmethod.yaml")}:24: /board/number must be integer`
   );
 });
 

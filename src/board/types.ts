@@ -66,14 +66,6 @@ export interface BoardState {
     id: string;
     value: string | number | null;
   };
-  /** Legacy restore journal: read for compatibility, discarded on migration resume; never replayed. */
-  optionUpdate?: {
-    position: string;
-    field: string;
-    options: Omit<Option, "id">[];
-    finalOptions?: Omit<Option, "id">[];
-    values: { id: string; value: string | null }[];
-  };
 }
 export interface Snapshot {
   id: string;

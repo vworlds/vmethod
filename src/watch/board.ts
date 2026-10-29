@@ -16,7 +16,7 @@ import {
   WAITING_TURN_REMINDER_MINUTES,
 } from "../core/time.js";
 import { readState } from "../board/readme.js";
-import { ScopeReader, legacyScopeCutoff } from "../evidence/scope.js";
+import { ScopeReader } from "../evidence/scope.js";
 import {
   AutopilotReader,
   autopilotStates,
@@ -253,7 +253,6 @@ export class BoardPoller {
       this.host.github,
       this.host.filter,
       this.host.config,
-      legacyScopeCutoff(cards.readme),
       this.autopilot
     ).read(ownerWaits.map((card) => card.contentId));
     for (const card of ownerWaits) {
@@ -400,7 +399,6 @@ export class BoardPoller {
         card.column !== "Done" &&
         card.estimate === null &&
         !this.deps.marked(this.state.once(`graded-${card.number}`)) &&
-        !this.state.legacyBoard(`graded-${card.number}`).exists() &&
         !this.deps.marked(this.state.once(`grade-${card.number}`))
       ) {
         const now = this.host.deps.now();
@@ -443,7 +441,7 @@ export class BoardPoller {
         this.state.once(name).remove();
       }
     }
-    await this.watchNext(ready, approved, specReview, legacyScopeCutoff(cards.readme));
+    await this.watchNext(ready, approved, specReview);
     // Last step of the poll: absence counters and pruning move only when the
     // whole board poll succeeded, never after a failed or partial one.
     this.pruneBoardBaselines(present);
@@ -878,23 +876,12 @@ export class BoardPoller {
       return;
     }
     const remember = () => marker.write(`${next}\n`);
-    const turn = `.turn-${slug(card.repo)}-${card.number}`;
-    const turns = object(safeJson(this.deps.readMarker(this.state.legacyTurns)));
-    const stamped = turns[turn] === true;
-    if (stamped) {
-      delete turns[turn];
-      this.deps.writeMarker(this.state.legacyTurns, JSON.stringify(turns));
-    }
     const hadOwner = old
       .split(",")
       .filter(Boolean)
       .some((login) => this.owners.has(login.toLowerCase()));
     const hasOwner = card.assignees.some((login) => this.owners.has(login.toLowerCase()));
     if (hasOwner) {
-      remember();
-      return;
-    }
-    if (hadOwner && !this.deps.current().firstRun && stamped) {
       remember();
       return;
     }
@@ -1500,8 +1487,7 @@ export class BoardPoller {
   private async watchNext(
     ready: CardInfo[],
     approved: CardInfo[],
-    specReview: CardInfo[],
-    legacyBefore: number
+    specReview: CardInfo[]
   ): Promise<void> {
     if (this.held()) {
       return;
@@ -1534,7 +1520,6 @@ export class BoardPoller {
       this.host.github,
       this.host.filter,
       this.host.config,
-      legacyBefore,
       this.autopilot
     ).read([...candidates, ...specReview].map((card) => card.contentId));
     const launch = await this.firstUnblocked(

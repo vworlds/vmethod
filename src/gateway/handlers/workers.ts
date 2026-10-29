@@ -2,7 +2,7 @@ import { type WorktreeTask } from "../worktrees.js";
 import { object, type ObjectData } from "../people.js";
 import { repoOf, restActor } from "../../github/diagnostic.js";
 import { workflowLabels } from "../../evidence/autopilot.js";
-import { isTaskPrompt, legacyIssueHeaders, taskHeader } from "../../tasks/markers.js";
+import { isTaskPrompt, taskHeader } from "../../tasks/markers.js";
 import { type TaskMetadata } from "../workers.js";
 import { reference } from "../refs.js";
 import type { GatewayServices } from "../server.js";
@@ -236,11 +236,6 @@ export async function workerMetadata(this: GatewayServices, pr: number): Promise
   const header = taskHeader(body, { anchor: "any line", title: "any text", end: "anywhere" });
   if (header) {
     numbers.add(header.issue);
-  }
-  if (!numbers.size) {
-    for (const issue of legacyIssueHeaders(body)) {
-      numbers.add(issue);
-    }
   }
   if (numbers.size > 1) {
     throw new Error("Task PR has ambiguous linked issues");

@@ -365,8 +365,8 @@ GitHub's API treats options without IDs as new options and clears values referen
 removed IDs. Option updates pass every existing option's ID, including through renames.
 The runner snapshots values before each option-list write and checks every item
 (including archived and unset items) afterwards. Any mismatch fails visibly; it never
-automatically restores values or journals a snapshot for replay. On resume, legacy
-restore journals are discarded and current live values are used, so cards moved since
+automatically restores values or journals a snapshot for replay. On resume,
+current live values are used, so cards moved since
 a failed attempt cannot be reverted. Explicit workflow remaps still write changed
 cards in batches (archived cards use the journaled sequence above); unchanged cards
 are never rewritten. Dry runs list each item to check and

@@ -261,7 +261,7 @@ export class CardState {
   }
 }
 
-/** Loop-owned files, including dynamic once-event keys and legacy import targets. */
+/** Loop-owned files, including dynamic once-event keys. */
 export class LoopState {
   readonly boardDir;
   readonly pending;
@@ -276,10 +276,6 @@ export class LoopState {
   readonly orchestratorTurns;
   readonly quotaRisk;
   readonly lock;
-  readonly legacyImported;
-  readonly legacyCompleted;
-  readonly legacyTurns;
-  readonly actionsMigrated;
   readonly recheckNext;
   readonly holdStartable;
   readonly next;
@@ -304,10 +300,6 @@ export class LoopState {
     this.orchestratorTurns = marker("orchestrator-turns.json");
     this.quotaRisk = marker("quota-risk");
     this.lock = marker("lock");
-    this.legacyImported = marker("legacy-imported");
-    this.legacyCompleted = marker("legacy-completed.json");
-    this.legacyTurns = marker("legacy-turns.json");
-    this.actionsMigrated = marker("actions-migrated");
     this.recheckNext = marker("recheck-next");
     this.holdStartable = new Marker(join(this.boardDir, ".hold-startable"));
     this.next = new Marker(join(this.boardDir, "next"));
@@ -337,9 +329,5 @@ export class LoopState {
       stop: new Marker(join(this.dir, `autopilot-${number}-stop`)),
       step: new Marker(join(this.dir, `autopilot-${number}-step`)),
     };
-  }
-
-  legacyBoard(name: string): Marker {
-    return new Marker(join(this.boardDir, name));
   }
 }

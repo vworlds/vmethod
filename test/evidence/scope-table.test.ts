@@ -1,6 +1,5 @@
 import { expect, test } from "vitest";
-import { writeState } from "../../src/board/readme.js";
-import { bodyHash, legacyScopeCutoff, scopeApproved } from "../../src/evidence/scope.js";
+import { bodyHash, scopeApproved } from "../../src/evidence/scope.js";
 import { autopilotStates } from "../../src/evidence/autopilot.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
@@ -26,7 +25,6 @@ const rows: {
   timeline?: ObjectData[];
   fast?: string[];
   delegated?: boolean;
-  cutoff?: number;
   expected: boolean;
 }[] = [
   { name: "S1 #138 matching review then owner move", expected: true },
@@ -93,21 +91,26 @@ const rows: {
     delegated: false,
     expected: false,
   },
-  {
-    name: "S1 #138 v5 grandfather before cutoff",
-    timeline: [scopeMove({ previousStatus: "Backlog" })],
-    cutoff: Date.parse("2026-01-04T00:00:00Z"),
-    expected: true,
-  },
-  {
-    name: "S1 #138 grandfather excludes cutoff boundary",
-    timeline: [scopeMove({ previousStatus: "Backlog" })],
-    cutoff: Date.parse("2026-01-03T00:00:00Z"),
-    expected: false,
-  },
 ];
 
 test("scope characterization table is non-empty", () => expect(rows.length).toBeGreaterThan(0));
+
+test("historical Approved moves never grant scope approval", () => {
+  const filter = new PeopleFilter(
+    people,
+    "example",
+    new Digest({ XDG_STATE_HOME: fixture() }, "scope-no-grandfather", () => 0)
+  );
+  expect(
+    scopeApproved(
+      scopeIssue(),
+      [review],
+      [scopeMove({ previousStatus: "Backlog", status: "Approved" })],
+      { board: { number: 1 } },
+      filter
+    )
+  ).toBe(false);
+});
 test.each(rows)("$name", (row) => {
   const filter = new PeopleFilter(
     [...people, { ...peer, repos: [...peer.repos] }],
@@ -149,25 +152,7 @@ test.each(rows)("$name", (row) => {
       row.timeline ?? [move],
       { board: { number: 1 }, scope: { fastPath: row.fast ?? [] } },
       filter,
-      row.cutoff ?? 0,
       delegation
     )
   ).toBe(row.expected);
-});
-
-const cutoffRows = [
-  { name: "S1 #138 pre-v6 has no cutoff", version: 5, migrated: undefined, expected: Infinity },
-  {
-    name: "S1 #138 v6 migration records cutoff",
-    version: 6,
-    migrated: "2026-01-04T00:00:00Z by owner",
-    expected: Date.parse("2026-01-04T00:00:00Z"),
-  },
-  { name: "S1 #138 missing migration fails closed", version: 6, migrated: undefined, expected: 0 },
-];
-test("legacy cutoff table is non-empty", () => expect(cutoffRows.length).toBeGreaterThan(0));
-test.each(cutoffRows)("$name", ({ version, migrated, expected }) => {
-  expect(
-    legacyScopeCutoff(writeState("", { version, minCompatible: 0, aliases: {}, migrated }, true))
-  ).toBe(expected);
 });

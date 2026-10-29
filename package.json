@@ -22,7 +22,6 @@
     "board/",
     "schema/",
     "templates/",
-    "legacy/",
     "RELEASE-NOTES.md"
   ],
   "peerDependencies": {

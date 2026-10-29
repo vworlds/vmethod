@@ -12,7 +12,6 @@ import { object, type ObjectData, type Person } from "../../src/gateway/people.j
 import type { Card } from "../../src/board/types.js";
 import { validProject, ghConfig } from "../helpers.js";
 import { actor, people, sha } from "./helpers.js";
-import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
 import closingReferences from "../fixtures/github/task-closing-references.json" with { type: "json" };
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
 import { BoardService } from "../../src/gateway/board.js";
@@ -564,7 +563,15 @@ test.each([
   if (scenario === "fast") {
     f.config.scope = { fastPath: ["bug"] };
   }
-  const timeline = scenario.startsWith("fast") ? [] : [scopeMove()];
+  const timeline = scenario.startsWith("fast")
+    ? []
+    : [
+        scopeMove({
+          previousStatus: ["trivial", "orchestrator question"].includes(scenario)
+            ? "Scoping"
+            : "Spec review",
+        }),
+      ];
   f.host.issueApproved = async () => scopeApproved(issue, comments, timeline, f.config, filter);
   if (proceed) {
     await expect(
@@ -3316,39 +3323,6 @@ test("a PR-numbered branch without a relation reports no linked issue", async ()
   f.done();
 });
 
-test.each(legacyBodies)(
-  "recorded legacy body on $headRefName links only its issue",
-  async (recording) => {
-    const f = fixture();
-    f.set({
-      state: "MERGED",
-      branch: recording.headRefName,
-      body: recording.body,
-      issueNumber: recording.issue,
-    });
-    await f.flow().merge("27");
-    expect(f.events).toContain(`read issue ${recording.issue}`);
-    expect(f.writes.filter((w) => w.body.state === "closed")).toEqual([
-      {
-        path: `/repos/example/project/issues/${recording.issue}`,
-        body: { state: "closed", state_reason: "completed" },
-      },
-    ]);
-    f.done();
-  }
-);
-
-test.each(["Agent task for #344", "> **Agent task for #344.**", "> **Closes #344.**"])(
-  "legacy header %s overrides branch numbering",
-  async (body) => {
-    const f = fixture();
-    f.set({ state: "MERGED", branch: "345-tracks", body, issueNumber: 344 });
-    await f.flow().merge("27");
-    expect(f.events).toContain("read issue 344");
-    f.done();
-  }
-);
-
 test.each(["Part of #344.", "> **Part of #344.**"])(
   "partial legacy header %s suppresses closing references",
   async (body) => {
@@ -4519,12 +4493,11 @@ test("failed install resumes with original trigger delta even though checkout al
   f.done();
 });
 
-test("button merge with bad historical title and only Closes header still finishes legacy follow-up", async () => {
+test("button merge with bad historical title still finishes structured-task follow-up", async () => {
   const f = fixture();
-  f.set({ state: "MERGED", title: "Old task title", body: "Closes #8\n\nLegacy prompt." });
+  f.set({ state: "MERGED", title: "Old task title", body: '<!-- vmethod-task {"issues":[8]} -->' });
   await f.flow().merge("27");
   expect(f.events.some((event) => event.includes("warning: already-merged"))).toBe(true);
-  expect(f.events.some((event) => event.includes("legacy link"))).toBe(true);
   expect(f.touched.some((write) => write.id === "issue" && write.value === "Done")).toBe(true);
   expect(f.writes.some((w) => w.path.endsWith("/merge"))).toBe(false);
   f.done();

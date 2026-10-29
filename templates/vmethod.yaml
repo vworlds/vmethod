@@ -8,10 +8,6 @@ releaseBranch: master
 # of it, with the worker identity from its .claude/settings.local.json.
 workerCheckout: ../example-worker
 stateName: example-state
-# Import only these directories under the OS state root; tracks append -<track>.
-# legacyState: [vecs-watch]
-# Legacy worker records under $XDG_STATE_HOME (default ~/.local/state):
-# legacyWorkers: [vecs-workers]
 vmethod:
   repo: vworlds/vmethod # off disables methodology subscriptions
 watch:

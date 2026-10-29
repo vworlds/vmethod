@@ -85,7 +85,7 @@ test.each(["board", "review", "autopilot"])(
 
 test("scope refusal explains Backlog to Executing", () => {
   const timeline = [scopeMove({ status: "Executing", previousStatus: "Backlog" })];
-  expect(scopeApproved(scopeIssue(), [], timeline, config, filter(), 0)).toBe(false);
+  expect(scopeApproved(scopeIssue(), [], timeline, config, filter())).toBe(false);
   expect(scopeRefusal(scopeIssue(), [], timeline, config, filter())).toBe(
     "Backlog → Executing is not a scope approval; move it Scoping → Executing, or run scope-review"
   );
@@ -100,7 +100,7 @@ test("scope refusal names the latest shortcut-voiding comment over an older Back
       createdAt: "2026-01-04T00:00:00Z",
     }),
   ];
-  expect(scopeApproved(scopeIssue(), comments, timeline, config, filter(), 0)).toBe(false);
+  expect(scopeApproved(scopeIssue(), comments, timeline, config, filter())).toBe(false);
   expect(scopeRefusal(scopeIssue(), comments, timeline, config, filter())).toBe(
     `the trivial shortcut is void: comment ${String(comments[0].url)} by ${actor().login}; run scope-review ${String(scopeIssue().number)} <file>`
   );
@@ -118,7 +118,7 @@ test("scope refusal names the body editor and time after approval", () => {
     }),
   ];
   const timeline = [scopeMove({ status: "Executing", previousStatus: "Spec review" })];
-  expect(scopeApproved(issue, comments, timeline, config, filter(), 0)).toBe(false);
+  expect(scopeApproved(issue, comments, timeline, config, filter())).toBe(false);
   expect(scopeRefusal(issue, comments, timeline, config, filter())).toBe(
     `scope approval is stale: issue body edited by ${actor(2).login} at 2026-01-04T00:00:00Z after approval; run scope-review ${String(issue.number)} <file>`
   );

@@ -7,7 +7,7 @@ import { stateRoot } from "../gateway/digest.js";
 import type { LoopHost } from "../gateway/events.js";
 import { object, type ObjectData, type Person } from "../gateway/people.js";
 import { restActor } from "../github/diagnostic.js";
-import { resolveSession, type ResolvedSession } from "../gateway/watch-scope.js";
+import { type ResolvedSession } from "../gateway/watch-scope.js";
 import type { WriteJournal } from "../gateway/write-journal.js";
 import { taskHeld, taskIssueNumbers } from "../tasks/markers.js";
 import { LoopState, type Marker } from "./state.js";
@@ -80,14 +80,6 @@ function count(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : null;
 }
-function safeJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return {};
-  }
-}
-
 /** Pull listing, detail and lifecycle observation, including the conflict driver. */
 export class PullPoller {
   private readonly state: LoopState;
@@ -406,15 +398,6 @@ export class PullPoller {
       await this.deps.restRead(() => this.host.github.rest(`/repos/${this.own}/pulls/${number}`))
     );
     const person = this.host.filter.identity(restActor(data.user));
-    const shared = stateRoot(
-      this.host.env,
-      resolveSession(this.host.config, { track: this.deps.session.track ?? undefined }).stateName
-    );
-    const sharedLegacy = new LoopState(shared).legacyCompleted.path;
-    const legacy =
-      object(safeJson(this.deps.readMarker(this.state.legacyCompleted)))[String(number)] === true ||
-      (existsSync(sharedLegacy) &&
-        object(JSON.parse(readFileSync(sharedLegacy, "utf8")))[String(number)] === true);
     const mergeFile = join(
       stateRoot(this.host.env, this.host.config.stateName ?? this.own.replace("/", "-")),
       `merge-${number}.json`
@@ -434,7 +417,7 @@ export class PullPoller {
       !complete &&
       (journalActive ||
         (Number.isFinite(mergeTime) && this.host.deps.now() - mergeTime < BUTTON_RETRY_MS));
-    if (data.merged === true && person !== undefined && !legacy && followUpPending) {
+    if (data.merged === true && person !== undefined && followUpPending) {
       for (const issue of taskIssueNumbers(str(data.body)) ?? []) {
         pendingMergedIssues.add(issue);
       }
@@ -445,7 +428,7 @@ export class PullPoller {
       str(data.merged_at)
     );
     const notified = this.deps.marked(this.state.pr(number).mergeNotified);
-    if (data.merged === true && (legacy || (complete && (!self || matched || notified)))) {
+    if (data.merged === true && complete && (!self || matched || notified)) {
       this.clearPrState(number);
       this.deps.queueProgress(number, { state: null, round: null, ci: "ok" });
       return;

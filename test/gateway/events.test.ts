@@ -1,15 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import {
-  mkdirSync,
-  writeFileSync,
-  existsSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-  openSync,
-  copyFileSync,
-  utimesSync,
-} from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, readFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import {
   muteThread,
@@ -2767,20 +2757,29 @@ test("a locked worker is skipped without an event or worker poll error", async (
   ).toBe(false);
 });
 
-test("number-scoped watchers observe shared merge completion without consuming it", async () => {
+test("watch startup leaves obsolete stamps untouched and creates no migration state", async () => {
   const f = setup();
-  f.task();
-  mkdirSync(f.dir, { recursive: true });
-  writeFileSync(join(f.dir, "legacy-completed.json"), JSON.stringify({ 24: true }));
-  const loop = f.loop({ only: [24] });
-  await f.tick(loop);
-  f.advance();
-  f.pulls = [];
-  f.gone = { merged: true, user: user(0), merged_by: { login: "vimescmd" } };
-  const marker = join(f.dir, "legacy-completed.json");
-  expect(await f.tick(loop)).toEqual([]);
-  expect(existsSync(marker)).toBe(true);
-  expect(existsSync(join(`${f.dir}-only-24`, "open-24"))).toBe(false);
+  mkdirSync(join(f.dir, "board"), { recursive: true });
+  for (const name of [
+    "merged-24",
+    "board/.turn-example_project-6",
+    "legacy-completed.json",
+    "legacy-turns.json",
+  ]) {
+    writeFileSync(join(f.dir, name), "obsolete stamp");
+  }
+  await f.loop().nextEvents({ timeoutSeconds: 0 });
+  for (const name of [
+    "merged-24",
+    "board/.turn-example_project-6",
+    "legacy-completed.json",
+    "legacy-turns.json",
+  ]) {
+    expect(readFileSync(join(f.dir, name), "utf8")).toBe("obsolete stamp");
+  }
+  expect(existsSync(join(f.dir, "actions-migrated"))).toBe(false);
+  expect(existsSync(join(f.dir, "legacy-imported"))).toBe(false);
+  expect(f.requests).toEqual([]);
 });
 
 test("a one-card size change with the same cost and interval reports nothing", async () => {
@@ -3020,253 +3019,6 @@ test("track labels inherit to PRs; main excludes tracks, only/skip are separate 
   expect(resolveSession(f.config, { skip: [6] }).stateName).toBe("watch-test-skip-6");
   expect(() => resolveSession(f.config, { track: "x", only: [6] })).toThrow("Choose one");
 });
-
-test("legacy directories do not leak markers into projects without legacyState", async () => {
-  const f = setup();
-  for (const [source, number] of [
-    ["vecs-watch", 24],
-    ["spacerocks-watch", 346],
-  ] as const) {
-    const legacy = join(f.env.XDG_STATE_HOME, source);
-    mkdirSync(join(legacy, "board"), { recursive: true });
-    writeFileSync(join(legacy, `open-${number}`), "");
-    writeFileSync(join(legacy, `head-${number}`), sha);
-    writeFileSync(join(legacy, `board/graded-${number}`), "");
-  }
-  await f.loop().nextEvents({ timeoutSeconds: 0 });
-  for (const number of [24, 346]) {
-    expect(existsSync(join(f.dir, `open-${number}`))).toBe(false);
-    expect(existsSync(join(f.dir, `head-${number}`))).toBe(false);
-    expect(existsSync(join(f.dir, `board/graded-${number}`))).toBe(false);
-  }
-  expect(f.legacyBatches).toEqual([]);
-  expect(f.requests).toEqual([]);
-});
-
-test("legacy state imports board grades and top-level markers without replay", async () => {
-  const f = setup();
-  f.config.legacyState = ["vecs-watch"];
-  const legacy = join(f.env.XDG_STATE_HOME, "vecs-watch");
-  mkdirSync(join(legacy, "board"), { recursive: true });
-  writeFileSync(join(legacy, "board/graded-6"), "");
-  writeFileSync(join(legacy, "head-24"), sha);
-  writeFileSync(join(legacy, "watcher.lock"), "1");
-  const foreign = join(f.env.XDG_STATE_HOME, "spacerocks-watch");
-  mkdirSync(foreign);
-  writeFileSync(join(foreign, "head-346"), sha);
-  f.cards = [f.card(6, "Backlog", "Issue", { estimate: {} })];
-  expect(await f.tick(f.loop())).toEqual([]);
-  expect(f.marker("head-24")).toBe(sha);
-  expect(existsSync(join(f.dir, "watcher.lock"))).toBe(false);
-  expect(existsSync(join(f.dir, "head-346"))).toBe(false);
-  expect(f.legacyBatches).toEqual([[24, 6]]);
-});
-
-test("configured legacy directories are read-only and their locks are never opened", async () => {
-  const f = setup();
-  f.config.legacyState = ["spacerocks-watch", "spacerocks-watch-audit", "rebase-watch"];
-  const sources = (f.config.legacyState as string[]).map((name) =>
-    join(f.env.XDG_STATE_HOME, name)
-  );
-  for (const source of sources) {
-    mkdirSync(join(source, "board"), { recursive: true });
-    writeFileSync(join(source, "head-24"), sha);
-    writeFileSync(join(source, "board/graded-6"), "graded");
-    for (const lock of ["watcher.lock", "lock"]) {
-      writeFileSync(join(source, lock), "live lock");
-    }
-  }
-  const snapshot = () =>
-    sources.map((source) =>
-      readdirSync(source, { recursive: true }).map((entry) => {
-        const path = join(source, String(entry));
-        const stat = statSync(path);
-        return {
-          path,
-          mtime: stat.mtimeMs,
-          content: stat.isFile() ? readFileSync(path, "utf8") : null,
-        };
-      })
-    );
-  const before = snapshot();
-  vi.mocked(openSync).mockClear();
-  vi.mocked(readFileSync).mockClear();
-  vi.mocked(copyFileSync).mockClear();
-  await f.loop().nextEvents({ timeoutSeconds: 0 });
-  expect(
-    vi.mocked(openSync).mock.calls.some(([path]) => String(path) === join(f.dir, "lock"))
-  ).toBe(true);
-  for (const spy of [openSync, readFileSync, copyFileSync]) {
-    expect(
-      vi
-        .mocked(spy)
-        .mock.calls.some(([path]) =>
-          sources.some((source) =>
-            ["lock", "watcher.lock"].some((lock) => String(path) === join(source, lock))
-          )
-        )
-    ).toBe(false);
-  }
-  expect(snapshot()).toEqual(before);
-  expect(f.marker("head-24")).toBe(sha);
-  expect(f.legacyBatches).toHaveLength(1);
-});
-
-test.each(["vecs-watch", "spacerocks-watch", "rebase-watch"])(
-  "track imports only configured %s-<track>",
-  async (name) => {
-    const f = setup();
-    f.config.legacyState = [name];
-    for (const suffix of ["", "-physics", "-other"]) {
-      const source = join(f.env.XDG_STATE_HOME, `${name}${suffix}`);
-      mkdirSync(source, { recursive: true });
-      writeFileSync(join(source, "head-24"), suffix || "base");
-    }
-    await f.loop({ track: "physics" }).nextEvents({ timeoutSeconds: 0 });
-    expect(readFileSync(join(`${f.dir}-physics`, "head-24"), "utf8")).toBe("-physics");
-  }
-);
-
-test("legacy validation drops missing numbers and PR markers for issues before polling", async () => {
-  const f = setup();
-  f.config.legacyState = ["spacerocks-watch"];
-  const source = join(f.env.XDG_STATE_HOME, "spacerocks-watch");
-  mkdirSync(join(source, "board"), { recursive: true });
-  for (const name of ["open-346", "head-346", "open-6", "head-24"]) {
-    writeFileSync(join(source, name), sha);
-  }
-  writeFileSync(join(source, "board/graded-999"), "");
-  writeFileSync(join(source, "board/graded-6"), "");
-  writeFileSync(join(source, "grade-999"), "");
-  writeFileSync(join(source, "board/.turn-other_project-6"), "foreign");
-  writeFileSync(join(source, "board/.turn-example_project-6"), "own");
-  writeFileSync(join(source, "new-other_project#6"), "");
-  const loop = f.loop();
-  await loop.nextEvents({ timeoutSeconds: 0 });
-  for (const name of [
-    "open-346",
-    "head-346",
-    "open-6",
-    "board/graded-999",
-    "grade-999",
-    "board/.turn-other_project-6",
-    "new-other_project#6",
-  ]) {
-    expect(existsSync(join(f.dir, name))).toBe(false);
-  }
-  expect(f.marker("head-24")).toBe(sha);
-  expect(existsSync(join(f.dir, "board/graded-6"))).toBe(true);
-  expect(existsSync(join(f.dir, "board/.turn-example_project-6"))).toBe(false);
-  expect(JSON.parse(f.marker("legacy-turns.json"))).toEqual({ ".turn-example_project-6": true });
-  expect(f.reports).toEqual([
-    "watcher: legacy import dropped 7 markers not belonging to example/project",
-  ]);
-  await f.tick(loop);
-  expect(
-    f.requests.some((request) => /\/(?:pulls|issues)\/(?:346|999)(?:\D|$)/.test(request))
-  ).toBe(false);
-  expect(f.reports).toHaveLength(1);
-});
-
-test("legacy adoption never imports another session's write journal or settling state", async () => {
-  const f = setup();
-  f.config.legacyState = ["old-watch"];
-  const source = join(f.env.XDG_STATE_HOME, "old-watch");
-  mkdirSync(source, { recursive: true });
-  writeFileSync(
-    join(source, "writes.jsonl"),
-    `${JSON.stringify({ at: f.iso(), kind: "comment", repo: "example/project", number: 24 })}\n`
-  );
-  writeFileSync(join(source, "writes.jsonl.lock"), "other writer");
-  writeFileSync(join(source, "actions-migrated"), "");
-  writeFileSync(join(source, "unestimated.json"), JSON.stringify({ PVTI_6: f.clock - 60_000 }));
-  const loop = f.loop();
-  await loop.nextEvents({ timeoutSeconds: 0 });
-  expect(existsSync(join(f.dir, "writes.jsonl"))).toBe(false);
-  expect(existsSync(join(f.dir, "writes.jsonl.lock"))).toBe(false);
-  expect(existsSync(join(f.dir, "unestimated.json"))).toBe(false);
-  expect(JSON.parse(f.marker("legacy-turns.json"))).toEqual({});
-});
-
-test("legacy validation errors copy nothing, release the lock and allow a retry", async () => {
-  const f = setup();
-  f.config.legacyState = ["vecs-watch"];
-  const source = join(f.env.XDG_STATE_HOME, "vecs-watch");
-  mkdirSync(source, { recursive: true });
-  writeFileSync(join(source, "head-24"), sha);
-  f.legacyError = true;
-  const loop = f.loop();
-  await expect(loop.nextEvents({ timeoutSeconds: 0 })).rejects.toThrow("refusing partial data");
-  for (const name of ["head-24", "legacy-imported", "lock"]) {
-    expect(existsSync(join(f.dir, name))).toBe(false);
-  }
-  f.legacyError = false;
-  await loop.nextEvents({ timeoutSeconds: 0 });
-  expect(f.marker("head-24")).toBe(sha);
-});
-
-test("legacy validation batches unique numbers and respects gateway budget resets", async () => {
-  const f = setup();
-  f.config.legacyState = ["vecs-watch"];
-  const source = join(f.env.XDG_STATE_HOME, "vecs-watch");
-  mkdirSync(source, { recursive: true });
-  for (let number = 1; number <= 51; number++) {
-    f.legacyItems.set(number, "PullRequest");
-    writeFileSync(join(source, `head-${number}`), sha);
-    writeFileSync(join(source, `open-${number}`), "");
-  }
-  f.headers = {
-    "x-ratelimit-remaining": "101",
-    "x-ratelimit-reset": String((f.clock + 60_000) / 1000),
-    "x-ratelimit-resource": "graphql",
-  };
-  await f.loop().nextEvents({ timeoutSeconds: 0 });
-  expect(f.legacyBatches.map((batch) => batch.length)).toEqual([50, 1]);
-  expect(f.sleeps).toEqual([60_000]);
-  expect(f.marker("head-51")).toBe(sha);
-});
-
-test.each([
-  { data: { repository: {} } },
-  { data: { repository: null } },
-  {
-    data: {
-      repository: {
-        n24: {
-          __typename: "PullRequest",
-          number: 24,
-          repository: { nameWithOwner: "other/project" },
-        },
-      },
-    },
-  },
-  {
-    data: { repository: { n24: null } },
-    errors: [{ type: "NOT_FOUND", path: ["repository"], message: "Missing repository" }],
-  },
-  { data: { repository: { n24: null } }, errors: "malformed" },
-])(
-  "legacy validation rejects malformed or foreign response %# without importing",
-  async (response) => {
-    const f = setup();
-    f.config.legacyState = ["vecs-watch"];
-    const source = join(f.env.XDG_STATE_HOME, "vecs-watch");
-    mkdirSync(source, { recursive: true });
-    writeFileSync(join(source, "head-24"), sha);
-    const fetch = f.deps.fetch;
-    f.deps.fetch = async (input, init) => {
-      const result = await fetch(input, init);
-      return String(init?.body).includes("WatchLegacy")
-        ? new Response(JSON.stringify(response))
-        : result;
-    };
-    await expect(f.loop().nextEvents({ timeoutSeconds: 0 })).rejects.toThrow(
-      /legacy validation|Legacy validation/
-    );
-    expect(existsSync(join(f.dir, "head-24"))).toBe(false);
-    expect(existsSync(join(f.dir, "legacy-imported"))).toBe(false);
-  }
-);
 
 test.each(["busy recent", "idle", "busy aged", "boundary", "unreachable", "unknown"])(
   "STALE checks task worker activity: %s",

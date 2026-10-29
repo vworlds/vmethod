@@ -24,9 +24,9 @@ const rows: { name: string; pr: Partial<ApprovalPR>; expected: boolean | "unknow
   },
   { name: "S4 #88 owner handover then move", pr: { timeline: [move] }, expected: true },
   {
-    name: "S4 #17 section 7.8 legacy In review",
+    name: "removed In review move is not delivery approval",
     pr: { timeline: [{ ...move, previousStatus: "In review" }] },
-    expected: true,
+    expected: false,
   },
   {
     name: "B4 #19 status presence alone is not approval",

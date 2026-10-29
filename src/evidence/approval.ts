@@ -225,9 +225,7 @@ export function isOwnerApproved(
     }
     const approvals = afterHandover.filter(
       (event) =>
-        event.status === "Approved" &&
-        ["Owner review", "In review"].includes(String(event.previousStatus)) &&
-        owner(event.actor)
+        event.status === "Approved" && event.previousStatus === "Owner review" && owner(event.actor)
     );
     if (!approvals.length) {
       return false;
@@ -269,9 +267,7 @@ export function isOwnerApproved(
   if (!latest.every((event) => owner(event.actor))) {
     return false;
   }
-  if (
-    !latest.every((event) => ["Owner review", "In review"].includes(String(event.previousStatus)))
-  ) {
+  if (!latest.every((event) => event.previousStatus === "Owner review")) {
     return false;
   }
 

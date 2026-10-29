@@ -49,6 +49,8 @@ export function scopeMove(overrides: ObjectData = {}): ObjectData {
     actor: actor(),
     project: { number: 1 },
     createdAt: "2026-01-03T00:00:00Z",
+    status: "Executing",
+    previousStatus: "Spec review",
     ...overrides,
   };
 }
