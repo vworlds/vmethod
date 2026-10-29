@@ -37,11 +37,10 @@ import {
   renameSync,
   rmdirSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Config } from "../config.js";
 import { DEFAULT_MODEL_FAMILY, ModelRegistry, type ModelEntry } from "../core/config.js";
 import {
@@ -53,7 +52,6 @@ import {
 import { object, untrusted } from "./people.js";
 import type { WorkerResult } from "./transport.js";
 import { modelGateError } from "../evidence/model-gate.js";
-import { workerWorktreePrefix } from "./worker-path.js";
 import { workerFirstPrompt } from "./worker-prompt.js";
 import { DirLock } from "../journal/locks.js";
 import { renderPermissions } from "./permission-detail.js";
@@ -65,9 +63,9 @@ import {
   type ProviderLimits,
 } from "./limits.js";
 
+/** Persisted model data is checked at the worker-record boundary. */
 export interface Model extends Omit<ModelEntry, "kind"> {
-  /** "claude" only on records of the removed `claude -p` backend: their session is unknown. */
-  kind: "opencode" | "claude";
+  kind: string;
 }
 
 interface Segment {
@@ -131,7 +129,7 @@ export interface TaskMetadata {
   ownerPaused?: boolean;
   /** Current board Estimate of the linked issue, not a historical opening snapshot. */
   estimate?: number;
-  /** Opening snapshot from the PR; only legacy import may fall back to estimate. */
+  /** Opening snapshot from the PR. */
   pointsOpen?: number;
   model?: string;
   kind: string;
@@ -353,6 +351,11 @@ export class WorkerService {
     ) {
       throw new Error("Invalid worker session record");
     }
+    if (record.model?.kind !== "opencode") {
+      throw new Error(
+        `Unsupported worker model kind: ${String(record.model?.kind)}; move ${this.file(pr)} out of workers/ and recreate it with worker start ${pr}`
+      );
+    }
     return record;
   }
   private save(record: Session) {
@@ -449,9 +452,6 @@ export class WorkerService {
     deadline?: number,
     drainWake = true
   ): Promise<WorkerSessionStatus> {
-    if (record.model.kind !== "opencode") {
-      return { reason: "session unknown", active: false };
-    }
     const status = await this.client().status(
       record.directory,
       record.id,
@@ -704,11 +704,7 @@ export class WorkerService {
       return record ? this.render(record, await this.status(record)) : `#${pr} session unknown`;
     });
   }
-  /** Execute worker management. Legacy adoption reads only configured state-root
-   * directories, verifies existing opencode sessions and reports every skipped
-   * entry; Claude records of the removed backend are reported with a relaunch route.
-   * Only --from-legacy may snapshot a missing opening Estimate from the linked
-   * issue, recording "legacy snapshot at adoption" in the persisted segment.
+  /** Execute worker management.
    * `reopen <pr>` restores only OpenChamber list visibility, without restarting
    * the worker or recreating a removed worktree.
    */
@@ -767,12 +763,6 @@ export class WorkerService {
         }
       }
       return failed ? { text: lines.join("\n"), code: 1 } : lines.join("\n");
-    }
-    if (verb === "adopt" && ref === "--from-legacy") {
-      if (rest.length) {
-        throw new Error("Usage: worker adopt --from-legacy");
-      }
-      return this.adoptLegacy();
     }
     if (!/^[1-9]\d*$/.test(ref ?? "") || !Number.isSafeInteger(Number(ref))) {
       throw new Error("Worker requires a positive PR number");
@@ -1100,10 +1090,6 @@ export class WorkerService {
         if (!record) {
           throw new Error("session unknown");
         }
-        if (record.model.kind !== "opencode") {
-          // A record of the removed Claude backend has no OpenChamber session to close.
-          return true;
-        }
         const status = await this.status(record, false);
         if (status.active || ["session unknown", "permission-wait"].includes(status.reason)) {
           throw new Error("worker session live or unknown; stop it first");
@@ -1362,7 +1348,7 @@ export class WorkerService {
       `${heading("NOTE")}: model switched to ${model.family} (${why.replace(/\s+/g, " ").trim()}); reason: ${reason}`
     );
   }
-  private async adopt(pr: number, id: string, legacy?: { key?: string }): Promise<string> {
+  private async adopt(pr: number, id: string): Promise<string> {
     if (this.read(pr)) {
       throw new Error(`Session already recorded for PR #${pr}; refusing to overwrite history`);
     }
@@ -1373,14 +1359,9 @@ export class WorkerService {
     if (meta.pr !== pr || !meta.issue) {
       throw new Error("Adopt requires an open task PR with linked issue and opening Estimate");
     }
-    const legacySnapshot = !!legacy && meta.pointsOpen === undefined;
-    const points = meta.pointsOpen ?? (legacySnapshot ? meta.estimate : undefined);
+    const points = meta.pointsOpen;
     if (points === undefined) {
-      throw new Error(
-        legacySnapshot
-          ? `linked issue #${meta.issue} has no Estimate; estimate it, then rerun`
-          : "Adopt requires an open task PR with linked issue and opening Estimate"
-      );
+      throw new Error("Adopt requires an open task PR with linked issue and opening Estimate");
     }
     // Adoption never creates a worktree: the session must already run in the PR's one.
     const directory = await this.hooks.locate(pr).catch((error: unknown) => {
@@ -1388,9 +1369,6 @@ export class WorkerService {
         cause: error,
       });
     });
-    if (legacy?.key && legacy.key !== directory.replaceAll("/", "_")) {
-      throw new Error("Legacy key does not belong to the PR worktree");
-    }
     const session = object(
       object(
         await this.client()
@@ -1446,7 +1424,7 @@ export class WorkerService {
           family: model.family,
           model: model.model,
           rounds: [this.round(meta)],
-          why: legacySnapshot ? "legacy snapshot at adoption" : "adopt",
+          why: "adopt",
           pointsOpen: points,
           at: new Date(this.deps.now()).toISOString(),
           startOid: meta.headOid ?? meta.baseOid,
@@ -1457,80 +1435,7 @@ export class WorkerService {
     await this.hooks.setModel(pr, model.family);
     await this.setOpenCodeTitle(record);
     await this.prompt(record, this.firstPrompt(record, meta), "queue");
-    return `Adopted ${id} for #${pr} on ${model.family}${legacySnapshot ? ` (legacy snapshot at adoption: ${points})` : ""}`;
-  }
-  private async adoptLegacy(): Promise<string> {
-    const lines: string[] = [];
-    const stateRoot = this.env.XDG_STATE_HOME ?? join(this.env.HOME ?? homedir(), ".local/state");
-    for (const name of this.config.legacyWorkers ?? []) {
-      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/.test(name)) {
-        throw new Error("Invalid legacyWorkers relative directory path");
-      }
-      const directory = join(
-        stateRoot,
-        `${name}${this.config.track ? `-${this.config.track}` : ""}`
-      );
-      if (!existsSync(directory)) {
-        lines.push(`Skipped directory ${JSON.stringify(name)}: missing legacy directory`);
-        continue;
-      }
-      this.legacyPath(stateRoot, directory);
-      for (const file of readdirSync(directory).sort()) {
-        const json = /^([1-9]\d*)\.json$/.exec(file);
-        const marker = file.lastIndexOf(".worktrees_");
-        const basename = marker < 0 ? "" : file.slice(marker + ".worktrees_".length);
-        const prefix = workerWorktreePrefix(this.config);
-        const task = basename.startsWith(prefix)
-          ? /^([1-9]\d*)-/.exec(basename.slice(prefix.length))
-          : null;
-        const pr = Number((json ?? task)?.[1]);
-        const label = `${Number.isSafeInteger(pr) && pr > 0 ? `#${pr} ` : ""}${JSON.stringify(file)}`;
-        try {
-          const path = join(directory, file);
-          this.legacyPath(stateRoot, path);
-          if (!statSync(path).isFile()) {
-            throw new Error("Not a regular legacy record file");
-          }
-          const content = readFileSync(path, "utf8");
-          if (name.split("/").at(-1) === "claude-workers") {
-            const ids = content.split(/\r?\n/).filter((line) => line.startsWith("id="));
-            const id = ids.length === 1 ? ids[0].slice(3) : "";
-            const taskPr = Number.isSafeInteger(pr) && pr > 0 ? String(pr) : "<pr>";
-            lines.push(
-              `Skipped ${label}: claude worker record ${file}: not adoptable; relaunch with \`worker start ${taskPr} --model <family>\` if the task is still open (id=${JSON.stringify(id || "unavailable")})`
-            );
-            continue;
-          }
-          if (!Number.isSafeInteger(pr) || pr < 1) {
-            throw new Error("Key is not a PR task worktree or <pr>.json record");
-          }
-          const legacy = json ? object(JSON.parse(content)) : {};
-          const id = json ? (legacy.sessionId ?? legacy.id) : content.trim();
-          if (
-            typeof id !== "string" ||
-            !(json ? /^[\w-]+$/ : /^ses_[\w-]+$/).test(id) ||
-            (legacy.pr !== undefined && legacy.pr !== pr) ||
-            (legacy.repo !== undefined && legacy.repo !== this.config.repo)
-          ) {
-            throw new Error("Invalid legacy record");
-          }
-          lines.push(
-            await this.locked(pr, "adopt", () =>
-              this.adopt(pr, id, { key: json ? undefined : file })
-            )
-          );
-        } catch (error) {
-          lines.push(`Skipped ${label}: ${this.redact((error as Error).message)}`);
-        }
-      }
-    }
-    return lines.join("\n") || "No legacy worker records";
-  }
-  private legacyPath(stateRoot: string, path: string): void {
-    const below = relative(realpathSync(stateRoot), realpathSync(path));
-    if (!below || below === ".." || below.startsWith(`..${sep}`)) {
-      throw new Error("Legacy path escapes the state root");
-    }
+    return `Adopted ${id} for #${pr} on ${model.family}`;
   }
   private async start(pr: number, flags: string[], conflictPrompt?: string): Promise<string> {
     let selected: string | undefined,

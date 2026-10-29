@@ -383,9 +383,7 @@ export class LearningsService {
     const log = fresh.map((record) => JSON.stringify(record)).join("\n") + "\n";
     let notesShared = rawNotes !== undefined && pending.notes.includes(rawNotes);
     if (rawNotes !== undefined && !notesShared) {
-      for (const path of paths.filter(
-        (path) => path === `${notesDirectory}.md` || path.startsWith(`${notesDirectory}/`)
-      )) {
+      for (const path of paths.filter((path) => path.startsWith(`${notesDirectory}/`))) {
         if ((await this.requiredContent(central, path, parent)) === rawNotes) {
           notesShared = true;
           break;
@@ -456,9 +454,6 @@ export class LearningsService {
       throw new Error("Multiple open project learning PRs; reconcile before submitting");
     }
     const target = pending.targets[0];
-    if (target && !target.addOnly) {
-      throw new Error("Legacy learning PR is not add-only; reconcile before submitting");
-    }
     learningPaths(
       people,
       viewer,
@@ -708,7 +703,8 @@ export class LearningsService {
       }
       if (
         entry.type === "blob" &&
-        /^learnings\/(?:models|notes)\/(?:[^/]+\/)?[^/]+\.(?:jsonl|md)$/.test(entry.path) &&
+        (/^learnings\/models\/(?:[^/]+\/)?[^/]+\.(?:jsonl|md)$/.test(entry.path) ||
+          /^learnings\/notes\/[^/]+\/[^/]+\.md$/.test(entry.path)) &&
         !entry.path.split("/").some((part) => part === "." || part === "..")
       ) {
         paths.push(entry.path);
@@ -723,12 +719,11 @@ export class LearningsService {
   private async pending(people: Person[], viewer: Record<string, unknown>, repo: string) {
     const github = this.github();
     const author = learningAuthor(people, viewer, repo);
-    const [owner, name] = repo.split("/");
     const texts: string[] = [];
     const notes: string[] = [];
     const annotations = new Map<string, string>();
     const urls: string[] = [];
-    const targets: { number: number; branch: string; head: string; addOnly: boolean }[] = [];
+    const targets: { number: number; branch: string; head: string }[] = [];
     for await (const listed of restPages(
       (page) =>
         github.rest(`/repos/${central}/pulls?state=open&base=${base}&per_page=100&page=${page}`),
@@ -771,27 +766,10 @@ export class LearningsService {
         }
         const ref = sha(object(pr.head).sha);
         const files = await learningFiles(github, number, pr.changed_files);
-        let addOnly = true;
         try {
           learningPaths(people, viewer, repo, files);
         } catch {
-          addOnly = false;
-          // Read-only compatibility for pre-layout submissions such as PR 47. This
-          // does not grant legacy modifications learning-policy/CI authorization.
-          const legacy = new Set([
-            `learnings/models/${owner}-${name}.jsonl`,
-            `learnings/notes/${name}.md`,
-          ]);
-          if (
-            !files.every(
-              (file) =>
-                legacy.has(file.filename) &&
-                ["added", "modified"].includes(file.status) &&
-                file.previous_filename === undefined
-            )
-          ) {
-            continue;
-          }
+          continue;
         }
         for (const file of files) {
           const content = await this.requiredContent(`${author.login}/vmethod`, file.filename, ref);
@@ -829,7 +807,7 @@ export class LearningsService {
         ) {
           throw new Error("Invalid pending learning branch");
         }
-        targets.push({ number, branch, head: ref, addOnly });
+        targets.push({ number, branch, head: ref });
       }
     }
     const records = unionRecords(texts, "write", (message) => this.deps.report(message));
@@ -862,7 +840,7 @@ export class LearningsService {
   private async showData(family?: string): Promise<string[]> {
     const isData = (path: string) =>
       /^learnings\/models\/(?:[^/]+\/)?[^/]+\.jsonl$/.test(path) ||
-      /^learnings\/notes\/(?:[^/]+\/)?[^/]+\.md$/.test(path);
+      /^learnings\/notes\/[^/]+\/[^/]+\.md$/.test(path);
     const texts: [string, string][] = [];
     let origin = `${central}:${base}`;
     try {

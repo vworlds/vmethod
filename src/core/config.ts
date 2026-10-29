@@ -26,8 +26,6 @@ export type Config = {
   track?: string;
   workerCheckout?: string;
   stateName?: string;
-  legacyState?: string[];
-  legacyWorkers?: string[];
   vmethod?: { repo?: string };
   watch?: { preview?: boolean };
   limits?: { enabled?: boolean; atRisk?: number; pollSeconds?: number };

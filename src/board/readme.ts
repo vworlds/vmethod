@@ -56,7 +56,6 @@ export function readState(text: string): BoardState {
     throw new Error("Invalid Progress aliases");
   }
   const completed: unknown = JSON.parse(entries.get("completed") ?? "[]");
-  const optionUpdate: unknown = JSON.parse(entries.get("option_update") ?? "null");
   const archivedMove: unknown = JSON.parse(entries.get("archived_move") ?? "null");
   if (archivedMove !== null) {
     const journal = archivedMove as NonNullable<BoardState["archivedMove"]>;
@@ -82,40 +81,6 @@ export function readState(text: string): BoardState {
   ) {
     throw new Error("Invalid completed migration operations");
   }
-  if (optionUpdate !== null) {
-    const journal = optionUpdate as NonNullable<BoardState["optionUpdate"]>;
-    const validOptions = (options: unknown): boolean =>
-      Array.isArray(options) &&
-      options.every((option: unknown) => {
-        if (!option || typeof option !== "object") {
-          return false;
-        }
-        const entry = option as Record<string, unknown>;
-        return (
-          typeof entry.name === "string" &&
-          typeof entry.color === "string" &&
-          typeof entry.description === "string"
-        );
-      });
-    if (
-      !journal ||
-      typeof journal !== "object" ||
-      typeof journal.position !== "string" ||
-      !/^\d+\/\d+$/.test(journal.position) ||
-      typeof journal.field !== "string" ||
-      !validOptions(journal.options) ||
-      (journal.finalOptions !== undefined && !validOptions(journal.finalOptions)) ||
-      !Array.isArray(journal.values) ||
-      journal.values.some(
-        (entry) =>
-          !entry ||
-          typeof entry.id !== "string" ||
-          (entry.value !== null && typeof entry.value !== "string")
-      )
-    ) {
-      throw new Error("Invalid option restore journal");
-    }
-  }
   return {
     version: Number(version),
     minCompatible: Number(minimum),
@@ -125,7 +90,6 @@ export function readState(text: string): BoardState {
     migrating: entries.get("migrating"),
     aliases: aliases as Record<string, string>,
     completed: completed as string[],
-    optionUpdate: (optionUpdate ?? undefined) as BoardState["optionUpdate"],
     archivedMove: (archivedMove ?? undefined) as BoardState["archivedMove"],
   };
 }
@@ -151,10 +115,6 @@ export function writeState(text: string, state: BoardState, firstAppend = false)
   }
   if (state.completed?.length) {
     lines.push(`completed: ${JSON.stringify(state.completed)}`);
-  }
-  if (state.optionUpdate) {
-    // Option names/descriptions are external data, not managed-block delimiters.
-    lines.push(`option_update: ${JSON.stringify(state.optionUpdate).replaceAll("<", "\\u003c")}`);
   }
   if (state.archivedMove) {
     lines.push(`archived_move: ${JSON.stringify(state.archivedMove).replaceAll("<", "\\u003c")}`);

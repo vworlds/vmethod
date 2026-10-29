@@ -182,7 +182,7 @@ test("board approval is bound to the configured project, latest status event, an
     __typename: "ProjectV2ItemStatusChangedEvent",
     field: "Status",
     status: "Approved",
-    previousStatus: "In review",
+    previousStatus: "Owner review",
     actor: actor(),
     project: { number: 1 },
     createdAt: "2026-01-01T02:00:00Z",

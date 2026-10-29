@@ -96,7 +96,7 @@ test("packed README bootstraps a blank consumer and peers install offline withou
   expect(run().status).toBe(2);
 }, 65000);
 
-test("built CLI initializes and checks the verbatim public vecs TSV registry offline", () => {
+test("built CLI initializes and checks the migrated public vecs TSV registry offline", () => {
   const root = validProject();
   rmSync(join(root, "models.yaml"));
   copyFileSync("test/fixtures/models-vecs.tsv", join(root, "models.tsv"));

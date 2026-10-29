@@ -654,21 +654,13 @@ test("scope approval needs delegation at the exact authenticated review and unch
       createdAt: "2026-10-24T17:49:38Z",
       body: `[orchestrator] SCOPE REVIEW\n\nAutopilot: scope approved.\n\nbody sha256: ${bodyHash(String(item.body))}`,
     });
-    expect(scopeApproved(item, [review], [], f.config, f.filter, Infinity, state)).toBe(true);
+    expect(scopeApproved(item, [review], [], f.config, f.filter, state)).toBe(true);
     expect(scopeApproved(item, [review], [], f.config, f.filter)).toBe(false);
     expect(
-      scopeApproved({ ...item, body: "changed" }, [review], [], f.config, f.filter, Infinity, state)
+      scopeApproved({ ...item, body: "changed" }, [review], [], f.config, f.filter, state)
     ).toBe(false);
     expect(
-      scopeApproved(
-        item,
-        [{ ...review, author: actor(1) }],
-        [],
-        f.config,
-        f.filter,
-        Infinity,
-        state
-      )
+      scopeApproved(item, [{ ...review, author: actor(1) }], [], f.config, f.filter, state)
     ).toBe(false);
   } finally {
     rmSync(f.root, { recursive: true, force: true });

@@ -78,11 +78,6 @@ export function init(root: string, templateRoot: string, dryRun = false): string
             ])
           );
           row.tier ??= row.gate === "owner" ? "expensive" : "standard";
-          // Legacy headless-claude rows now run through OpenCode's claude-code provider.
-          if (row.kind === "claude") {
-            row.kind = "opencode";
-            row.model = `claude-code/${row.model}`;
-          }
           return [row];
         })
       );

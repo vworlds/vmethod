@@ -500,7 +500,6 @@ live in `scripts/orchestrator/`. Commands are:
 ```text
 worker start <pr> [--model family|provider/id] [--owner-approved] [--replace]
 worker adopt <pr> <session-id>
-worker adopt --from-legacy
 worker send <pr> <file> [--queue|--now]
 worker status [pr]
 worker log <pr> [n]
@@ -574,22 +573,10 @@ worker checkout; adoption never creates a worktree. The
 actual session model must match a configured opencode model (or the `other` policy).
 Existing records are never overwritten, including their grading history. Adoption
 does not apply launch gates because it does not start or change the existing model.
-`worker adopt --from-legacy` reads bare-id bash records keyed by encoded worktree
-paths and `<pr>.json` files containing `{"sessionId":"ses_…"}` (or
-`{"id":"ses_…"}`) under each safe relative `legacyWorkers` directory in
-`$XDG_STATE_HOME` (default `~/.local/state`). The same `-<track>` suffix convention
-as `legacyState` applies. Optional JSON `repo` and `pr` fields must match but never
-authorize adoption. The importer requires the task's existing worktree in the worker
-checkout; missing worktrees are not created.
-Only this legacy import may snapshot the linked issue's current board Estimate
-when the PR has no opening snapshot. It records `legacy snapshot at adoption` in
-the saved segment, preserved by grading. Missing issue Estimates produce an
-actionable skip; normal explicit adoption still requires the PR snapshot.
-Every skipped record is reported with its reason, including non-task filenames.
-Unconfigured directories are never scanned and source files are unchanged.
-Records of the removed `claude -p` backend are reported as non-adoptable skips,
-never sent to opencode. See [legacy worker transition](adoption.md#legacy-worker-transition)
-for formats, path constraints and the relaunch procedure.
+Worker records require model kind `opencode`. If an old record uses another kind,
+stop its old process, move the record named in the error out of `workers/`, and
+run `worker start <pr>` for the open draft task. In `models.tsv`, use kind
+`opencode` and a full provider/model ID; Claude models use the `claude-code` provider.
 
 Capture `<!-- points_open: 8 -->` **when creating the task PR**, using the issue's
 Estimate then; do not revise this snapshot. Legacy prompts can retain their original
@@ -1064,15 +1051,9 @@ are supported for legacy wrappers. Mutes use the configured session (set
 login lifts a mute. Foreign-board cards can report assignments but are never mutated.
 
 First run records baselines, not historical events; current actionable conditions
-such as GRADE still wake. To import legacy markers once (including board grades),
-set `legacyState: [spacerocks-watch, spacerocks-watch-audit, rebase-watch]` in your
-project's `vmethod.yaml`. Without this key nothing is imported. Names are directories
-under `$XDG_STATE_HOME` (default `~/.local/state`); track sessions import only
-`<name>-<track>`. The sources are read-only and their locks are never opened.
-Numbered PR and issue markers are validated against `repo` in batches through the
-gateway before copying; missing items and PR markers naming issues are dropped,
-with one dropped-count log line. Validation respects gateway budget resets and
-fails closed on other API errors, leaving the import retryable.
+such as GRADE still wake. Bash watcher state and obsolete completion/turn stamps
+are not imported; stop the bash watcher, remove its import configuration, and start
+`vmethod watch` with fresh state. Existing current-format watcher state remains supported.
 The exclusive lock holds PID **and**
 Linux `/proc/<pid>/stat` start time, preventing reused PIDs (including container
 PID 1) from blocking adoption. Another live watcher for that state fails clearly.
@@ -1720,11 +1701,10 @@ checkout fast-forward. Installation remains last. Watcher merge events name
 `merged_by` and suggest `run merge-task`; the watcher never performs follow-up.
 Issue resolution prefers the structured task header, including its partial flag,
 then the existing task marker. Without either, a legacy `Part of #n` line prevents
-issue completion; otherwise same-repository GitHub closing references take
-precedence over legacy `Closes #n` and `Agent task for #n` lines. Legacy lines
-accept a leading blockquote, bold markers and a trailing period. Branch numbers
-are never issue relations and no sibling-PR scan is performed. Explicit legacy
-relations emit a `legacy link` notice; absent relations report `no linked issue`
+issue completion; otherwise same-repository GitHub closing references supply the
+relation. `Closes #n` and `Agent task for #n` prose headers are not decoded. Branch
+numbers are never issue relations and no sibling-PR scan is performed. Native
+closing-reference fallbacks retain the `legacy link` notice; absent relations report `no linked issue`
 and leave issues unchanged. Old empty journals reconcile newly discoverable issues.
 Completed follow-up is checkpointed as `follow-up` in `merge-<pr>.json` before any
 reinstall; failed follow-up does not mark completion. For same-account merges,

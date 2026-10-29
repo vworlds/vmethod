@@ -6,18 +6,7 @@ import { repoOf } from "../github/diagnostic.js";
 import { identityFields, actorFields } from "../github/selections.js";
 import { batchPages, pageCursor } from "../github/pages.js";
 import type { GitHubClient } from "../gateway/client.js";
-import { readState } from "../board/readme.js";
 import { AutopilotReader, type AutopilotState } from "./autopilot.js";
-
-/** Grandfather v5 owner approvals only before the recorded v6 migration. */
-export function legacyScopeCutoff(readme: string): number {
-  const state = readState(readme);
-  if (state.version < 6) {
-    return Infinity;
-  }
-  const cutoff = Date.parse(state.migrated?.split(" by ")[0] ?? "");
-  return Number.isFinite(cutoff) ? cutoff : 0;
-}
 
 /** Hash the exact GitHub body; the review comment, never the body, carries the digest. */
 export function bodyHash(body: string): string {
@@ -37,7 +26,6 @@ export function scopeApproved(
   timeline: ObjectData[],
   config: Config,
   filter: PeopleFilter,
-  legacyBefore = Infinity,
   delegation?: AutopilotState
 ): boolean {
   if (typeof issue.body !== "string") {
@@ -84,13 +72,7 @@ export function scopeApproved(
   } else if (!trusted(issue) || comments.some((comment) => !trusted(comment))) {
     return false;
   }
-  const latest = ownerApprovalAt(
-    timeline,
-    config,
-    filter,
-    review ? "Spec review" : "Scoping",
-    legacyBefore
-  );
+  const latest = ownerApprovalAt(timeline, config, filter, review ? "Spec review" : "Scoping");
   const since = review ? time(review) : time(issue);
   return latest !== null && Number.isFinite(since) && latest > since;
 }
@@ -99,8 +81,7 @@ function ownerApprovalAt(
   timeline: ObjectData[],
   config: Config,
   filter: PeopleFilter,
-  from?: "Spec review" | "Scoping",
-  legacyBefore = Infinity
+  from?: "Spec review" | "Scoping"
 ): number | null {
   const time = (item: ObjectData) => Date.parse(String(item.createdAt));
   const events = timeline.filter(
@@ -123,13 +104,10 @@ function ownerApprovalAt(
       (event) =>
         time(event) === latest &&
         !(
-          (event.status === "Executing" &&
-            (from
-              ? event.previousStatus === from
-              : ["Spec review", "Scoping"].includes(String(event.previousStatus)))) ||
-          // Migration changes position, not the owner's historical decision. The
-          // migration timestamp prevents new issue Approved moves becoming scope go.
-          (event.status === "Approved" && time(event) < legacyBefore)
+          event.status === "Executing" &&
+          (from
+            ? event.previousStatus === from
+            : ["Spec review", "Scoping"].includes(String(event.previousStatus)))
         )
     )
   ) {
@@ -216,8 +194,7 @@ function reviewPending(
   comments: ObjectData[],
   timeline: ObjectData[],
   config: Config,
-  filter: PeopleFilter,
-  legacyBefore: number
+  filter: PeopleFilter
 ): boolean {
   const time = (item: ObjectData) => Date.parse(String(item.lastEditedAt ?? item.createdAt));
   const repo = repoOf(issue).repo;
@@ -239,7 +216,7 @@ function reviewPending(
   if (!matchesBody(review, issue.body)) {
     return false;
   }
-  const ownerAt = ownerApprovalAt(timeline, config, filter, undefined, legacyBefore);
+  const ownerAt = ownerApprovalAt(timeline, config, filter);
   return (
     (ownerAt === null || ownerAt <= time(review)) &&
     !comments.some((comment) => time(comment) > time(review))
@@ -254,7 +231,6 @@ export class ScopeReader {
     private github: GitHubClient,
     private filter: PeopleFilter,
     private config: Config,
-    private legacyBefore = Infinity,
     private delegations?: Map<string, AutopilotState>
   ) {}
 
@@ -348,20 +324,10 @@ export class ScopeReader {
         refusal: scopeRefusal(issue, discussion, events, this.config, this.filter),
         approved:
           complete &&
-          scopeApproved(
-            issue,
-            discussion,
-            events,
-            this.config,
-            this.filter,
-            this.legacyBefore,
-            delegations.get(id)
-          ),
-        ownerApproved:
-          ownerApprovalAt(events, this.config, this.filter, undefined, this.legacyBefore) !== null,
+          scopeApproved(issue, discussion, events, this.config, this.filter, delegations.get(id)),
+        ownerApproved: ownerApprovalAt(events, this.config, this.filter) !== null,
         reviewPending:
-          complete &&
-          reviewPending(issue, discussion, events, this.config, this.filter, this.legacyBefore),
+          complete && reviewPending(issue, discussion, events, this.config, this.filter),
       });
     }
     return result;

@@ -105,10 +105,6 @@ test("old card and loop files keep their exact locations and line semantics", ()
     [state.orchestratorTurns, "orchestrator-turns.json", "{}\n"],
     [state.quotaRisk, "quota-risk", "[]\n"],
     [state.lock, "lock", '{"pid":1}\n'],
-    [state.legacyImported, "legacy-imported", "old\n"],
-    [state.legacyCompleted, "legacy-completed.json", "{}\n"],
-    [state.legacyTurns, "legacy-turns.json", "{}\n"],
-    [state.actionsMigrated, "actions-migrated", ""],
     [state.recheckNext, "recheck-next", ""],
     [state.holdStartable, "board/.hold-startable", ""],
     [state.next, "board/next", "{}\n"],
@@ -121,7 +117,6 @@ test("old card and loop files keep their exact locations and line semantics", ()
     [state.autopilot(24).active, "autopilot-24", "on\n"],
     [state.autopilot(24).stop, "autopilot-24-stop", ""],
     [state.autopilot(24).step, "autopilot-24-step", "on:Executing:\n"],
-    [state.legacyBoard("graded-6"), "board/graded-6", ""],
   ];
   for (const [marker, name, bytes] of values) {
     writeFileSync(join(dir, name), bytes);

@@ -1,12 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { stringify } from "yaml";
@@ -2009,310 +2001,6 @@ test("self-hosted worker start points the worker at the checkout's own guide", a
   f.done();
 });
 
-test("bulk adoption reads only configured legacy records and reports verified PRs", async () => {
-  const f = fixture();
-  f.config.legacyWorkers = ["old-workers"];
-  const legacy = join(f.env.XDG_STATE_HOME, "old-workers");
-  mkdirSync(legacy, { recursive: true });
-  writeFileSync(join(legacy, "31.json"), JSON.stringify({ sessionId: "ses_existing" }));
-  writeFileSync(join(legacy, "32.json"), JSON.stringify({ sessionId: "ses_wrong" }));
-  f.deps.fetch = vi.fn(async (input) =>
-    Response.json({
-      data: {
-        id: String(input).endsWith("ses_existing") ? "ses_existing" : "ses_wrong",
-        directory: String(input).endsWith("ses_existing") ? f.directory : "/another/repo",
-        model: { providerID: "fake", id: "glm" },
-      },
-    })
-  );
-  const output = await f.service.command(["adopt", "--from-legacy"]);
-  expect(output).toContain("Adopted ses_existing for #31");
-  expect(output).toContain("Skipped #32");
-  expect(f.record().id).toBe("ses_existing");
-});
-const legacyFiles = JSON.parse(
-  readFileSync(new URL("../fixtures/legacy-workers/records.json", import.meta.url), "utf8")
-) as {
-  spacerocks: { key: string; content: string }[];
-  vecs: { key: string; content: string };
-  claude: { key: string; content: string };
-};
-
-function legacyFixture(record = legacyFiles.vecs, prefix = "auto-") {
-  const f = fixture();
-  const recordedBasename = record.key.slice(
-    record.key.lastIndexOf(".worktrees_") + ".worktrees_".length
-  );
-  const pr = Number(/^auto-([1-9]\d*)-/.exec(recordedBasename)?.[1]);
-  const basename = prefix + recordedBasename.slice("auto-".length);
-  const directory = join(f.root, ".worktrees", basename);
-  renameSync(f.directory, directory);
-  f.meta.pr = pr;
-  f.meta.branch = basename.slice(prefix.length);
-  (f.config.branches as Record<string, unknown>).worktreePrefix = prefix;
-  vi.mocked(f.hooks.locate).mockResolvedValue(directory);
-  const legacy = join(f.env.XDG_STATE_HOME, "vecs-orchestrator/workers");
-  mkdirSync(legacy, { recursive: true });
-  f.config.legacyWorkers = ["vecs-orchestrator/workers"];
-  const key = directory.replaceAll("/", "_");
-  writeFileSync(join(legacy, key), record.content);
-  const id = record.content.trim();
-  return {
-    ...f,
-    directory,
-    legacy,
-    key,
-    id,
-    pr,
-    session: { id, directory, model: { providerID: "fake", id: "glm" } },
-    saved: () =>
-      JSON.parse(
-        readFileSync(join(f.env.XDG_STATE_HOME, `vmethod/example-state/workers/${pr}.json`), "utf8")
-      ),
-  };
-}
-
-test.each([legacyFiles.vecs, ...legacyFiles.spacerocks.slice(1)])(
-  "imports captured/projected bare-id legacy record $key",
-  async (record) => {
-    const f = legacyFixture(record);
-    f.deps.fetch = vi.fn(async (url, init) => {
-      if (new URL(String(url)).pathname === `/api/session/${f.id}/prompt`) {
-        expect(init?.method).toBe("POST");
-        expect(JSON.parse(String(init?.body))).toEqual({
-          text: expect.stringContaining(`read pr ${f.pr}`),
-          delivery: "queue",
-        });
-        return Response.json({ data: {} });
-      }
-      expect(new URL(String(url)).pathname).toBe(`/api/session/${f.id}`);
-      if (init?.method === "PATCH") {
-        expect(JSON.parse(String(init.body))).toEqual({ title: `project#${f.pr}` });
-        return Response.json({ data: {} });
-      }
-      expect(init?.method).toBe("GET");
-      return Response.json({ data: f.session });
-    });
-    expect(await f.service.command(["adopt", "--from-legacy"])).toContain(
-      `Adopted ${f.id} for #${f.pr}`
-    );
-    expect(f.saved()).toMatchObject({
-      id: f.id,
-      pr: f.pr,
-      directory: f.directory,
-      model: { model: "fake/glm" },
-    });
-    expect(readFileSync(join(f.legacy, f.key), "utf8")).toBe(record.content);
-    expect(f.deps.fetch).toHaveBeenCalledTimes(3);
-    expect(await f.service.command(["adopt", "--from-legacy"])).toContain("already recorded");
-    expect(f.deps.fetch).toHaveBeenCalledTimes(3);
-  }
-);
-
-test.each(["", "task.+"])("legacy keys respect configured literal prefix %j", async (prefix) => {
-  const f = legacyFixture(legacyFiles.vecs, prefix);
-  f.deps.fetch = vi.fn(async () => Response.json({ data: f.session }));
-  expect(await f.service.command(["adopt", "--from-legacy"])).toContain(`Adopted ${f.id}`);
-});
-
-test.each([
-  "merged",
-  "closed",
-  "missing worktree",
-  "unknown session",
-  "wrong id",
-  "wrong directory",
-  "wrong model",
-  "wrong key",
-])("legacy adoption reports %s without saving or launching", async (reason) => {
-  const f = legacyFixture();
-  let requests = 0;
-  if (reason === "merged") {
-    f.meta.merged = true;
-  }
-  if (reason === "closed") {
-    f.meta.state = "CLOSED";
-  }
-  if (reason === "missing worktree") {
-    vi.mocked(f.hooks.locate).mockRejectedValue(new Error("no such worktree"));
-  }
-  if (reason === "wrong directory") {
-    f.session.directory = "/another/worktree";
-  }
-  if (reason === "wrong id") {
-    f.session.id = "ses_another";
-  }
-  if (reason === "wrong model") {
-    f.session.model = { providerID: "", id: "" };
-  }
-  if (reason === "wrong key") {
-    renameSync(join(f.legacy, f.key), join(f.legacy, `_foreign_.worktrees_auto-${f.pr}-different`));
-  }
-  f.deps.fetch = vi.fn(async (url, init) => {
-    requests++;
-    expect(new URL(String(url)).pathname).toBe(`/api/session/${f.id}`);
-    expect(init?.method).toBe("GET");
-    return reason === "unknown session"
-      ? new Response("{}", { status: 404 })
-      : Response.json({ data: f.session });
-  });
-  const output = await f.service.command(["adopt", "--from-legacy"]);
-  expect(output).toContain(`Skipped #${f.pr}`);
-  expect(output).toMatch(
-    reason === "merged"
-      ? /merged/
-      : reason === "closed"
-        ? /closed/
-        : reason === "missing worktree"
-          ? /Missing.*worktree/
-          : reason === "unknown session"
-            ? /Unknown session/
-            : reason === "wrong id"
-              ? /id mismatch/
-              : reason === "wrong model"
-                ? /model/
-                : /worktree/
-  );
-  expect(() => f.saved()).toThrow();
-  expect(f.hooks.setModel).not.toHaveBeenCalled();
-  expect(requests).toBe(
-    ["unknown session", "wrong id", "wrong directory", "wrong model"].includes(reason) ? 1 : 0
-  );
-  if (reason === "missing worktree") {
-    expect(output).toContain(
-      "Missing PR worktree in the worker checkout; adoption never creates one"
-    );
-  }
-  expect(f.hooks.prepare).not.toHaveBeenCalled();
-});
-
-test("reports probe, malformed and non-file records instead of silently ignoring them", async () => {
-  const f = fixture();
-  f.config.legacyWorkers = ["spacerocks-orchestrator/workers"];
-  const directory = join(f.env.XDG_STATE_HOME, "spacerocks-orchestrator/workers");
-  mkdirSync(join(directory, "subdirectory"), { recursive: true });
-  const probe = legacyFiles.spacerocks[0];
-  writeFileSync(join(directory, probe.key), probe.content);
-  writeFileSync(join(directory, "31.json"), "{bad json");
-  writeFileSync(join(directory, "32.json"), JSON.stringify({ id: "bad id" }));
-  const output = (await f.service.command(["adopt", "--from-legacy"])) as string;
-  for (const key of [probe.key, "31.json", "32.json", "subdirectory"]) {
-    expect(output).toContain(key);
-  }
-  expect(output.split("\n")).toHaveLength(4);
-  expect(f.hooks.prepare).not.toHaveBeenCalled();
-  f.done();
-});
-
-test("Claude key=value records report id, PR and relaunch transition without contacting opencode", async () => {
-  const f = fixture();
-  f.config.legacyWorkers = ["spacerocks-orchestrator/claude-workers"];
-  const directory = join(f.env.XDG_STATE_HOME, "spacerocks-orchestrator/claude-workers");
-  mkdirSync(directory, { recursive: true });
-  writeFileSync(join(directory, legacyFiles.claude.key), legacyFiles.claude.content);
-  const output = await f.service.command(["adopt", "--from-legacy"]);
-  expect(output).toContain("Skipped #290");
-  expect(output).toContain(`claude worker record ${legacyFiles.claude.key}: not adoptable`);
-  expect(output).toContain("00000000-0000-4000-8000-000000000001");
-  expect(output).toContain("worker start 290 --model <family>");
-  expect(f.hooks.metadata).not.toHaveBeenCalled();
-  expect(f.hooks.prepare).not.toHaveBeenCalled();
-  f.done();
-});
-
-test.each(["../escape", "/absolute", "a/../escape", "a//workers", "a/", "a\\workers"])(
-  "runtime rejects unsafe legacyWorkers path %s",
-  async (path) => {
-    const f = fixture();
-    f.config.legacyWorkers = [path];
-    await expect(f.service.command(["adopt", "--from-legacy"])).rejects.toThrow(
-      "Invalid legacyWorkers"
-    );
-    f.done();
-  }
-);
-
-test("refuses configured symlink escape and reports record symlink escape without reading it", async () => {
-  const f = fixture();
-  mkdirSync(f.env.XDG_STATE_HOME, { recursive: true });
-  symlinkSync(f.root, join(f.env.XDG_STATE_HOME, "escape"));
-  f.config.legacyWorkers = ["escape"];
-  await expect(f.service.command(["adopt", "--from-legacy"])).rejects.toThrow(
-    /escapes.*state root/
-  );
-  const directory = join(f.env.XDG_STATE_HOME, "workers");
-  mkdirSync(directory);
-  writeFileSync(join(f.root, "outside.json"), '{"id":"ses_outside"}');
-  symlinkSync(join(f.root, "outside.json"), join(directory, "31.json"));
-  f.config.legacyWorkers = ["workers"];
-  const output = await f.service.command(["adopt", "--from-legacy"]);
-  expect(output).toContain("Skipped #31");
-  expect(output).toMatch(/escapes.*state root/);
-  expect(f.hooks.metadata).not.toHaveBeenCalled();
-  f.done();
-});
-
-test("nested legacy paths retain the track suffix and allow symlinks confined below the state root", async () => {
-  const f = legacyFixture();
-  f.config.track = "audit";
-  renameSync(f.legacy, `${f.legacy}-audit`);
-  symlinkSync(`${f.legacy}-audit`, join(f.env.XDG_STATE_HOME, "alias-audit"));
-  f.config.legacyWorkers = ["alias"];
-  f.deps.fetch = vi.fn(async () => Response.json({ data: f.session }));
-  expect(await f.service.command(["adopt", "--from-legacy"])).toContain(`Adopted ${f.id}`);
-  expect(f.saved().directory).toBe(f.directory);
-});
-
-test.each(["ses_one\nses_two\n", "not-a-session\n", "", "id=ses_untrusted\n"])(
-  "rejects malformed bare-id records %j",
-  async (content) => {
-    const f = legacyFixture({ ...legacyFiles.vecs, content });
-    expect(await f.service.command(["adopt", "--from-legacy"])).toContain("Invalid legacy record");
-    expect(f.hooks.metadata).not.toHaveBeenCalled();
-    f.done();
-  }
-);
-
-test("JSON imports only the verified session model and rejects conflicting legacy PR/repo hints", async () => {
-  const f = legacyFixture();
-  rmSync(join(f.legacy, f.key));
-  const path = join(f.legacy, `${f.pr}.json`);
-  for (const hints of [{ pr: 999 }, { repo: "foreign/repo" }]) {
-    writeFileSync(path, JSON.stringify({ id: f.id, ...hints }));
-    expect(await f.service.command(["adopt", "--from-legacy"])).toContain("Invalid legacy record");
-  }
-  writeFileSync(
-    path,
-    JSON.stringify({
-      id: f.id,
-      pr: f.pr,
-      repo: f.config.repo,
-      model: "untrusted",
-      directory: "/untrusted",
-    })
-  );
-  f.deps.fetch = vi.fn(async () => Response.json({ data: f.session }));
-  expect(await f.service.command(["adopt", "--from-legacy"])).toContain("Adopted");
-  expect(f.saved()).toMatchObject({ directory: f.directory, model: { model: "fake/glm" } });
-});
-
-test.each([0, 0.5, 13])(
-  "legacy-only Estimate fallback preserves the exact board value %s",
-  async (estimate) => {
-    const f = legacyFixture();
-    f.meta.pointsOpen = undefined;
-    f.meta.estimate = estimate;
-    f.deps.fetch = vi.fn(async () => Response.json({ data: f.session }));
-    expect(await f.service.command(["adopt", "--from-legacy"])).toContain(
-      "legacy snapshot at adoption"
-    );
-    expect(f.saved()).toMatchObject({
-      points_open: estimate,
-      segments: [{ why: "legacy snapshot at adoption" }],
-    });
-  }
-);
-
 function status(active = false, messages: unknown[] = [], permissions: unknown[] = []): Request[] {
   return [
     { path: "/api/session/active", data: active ? { ses_fake: {} } : {} },
@@ -2339,6 +2027,23 @@ test("status flags an OpenCode session title that differs from the project and P
 
 const wake = "[orchestrator] ANSWER is on your PR; read it with vmethod read pr 31 and act.";
 
+test.each(["claude", "other", null])(
+  "unsupported worker kind %j fails with a re-creation route",
+  async (kind) => {
+    const f = fixture([...start]);
+    await f.service.command(["start", "31"]);
+    const record = f.record();
+    record.model.kind = kind;
+    const file = join(f.root, "state/vmethod/example-state/workers/31.json");
+    writeFileSync(file, JSON.stringify(record));
+    const error = `Unsupported worker model kind: ${String(kind)}; move ${file} out of workers/ and recreate it with worker start 31`;
+    await expect(f.service.command(["status", "31"])).rejects.toThrow(error);
+    await expect(f.service.mergeStatus(31, true)).rejects.toThrow(error);
+    expect(await f.service.closeSession(31)).toBe(false);
+    f.done();
+  }
+);
+
 test("merge status treats only missing records as stopped, not unknown recorded sessions", async () => {
   const f = fixture([
     ...start,
@@ -2349,25 +2054,6 @@ test("merge status treats only missing records as stopped, not unknown recorded 
   expect(await f.service.mergeStatus(31, true)).toBe("stopped");
   await f.service.command(["start", "31"]);
   expect(await f.service.mergeStatus(31, true)).toBe("unknown");
-  f.done();
-});
-
-test("a legacy Claude record reports session unknown without contacting opencode", async () => {
-  const f = fixture([...start]);
-  await f.service.command(["start", "31"]);
-  const legacy = f.record();
-  legacy.model = { ...legacy.model, family: "sonnet", model: "claude-test", kind: "claude" };
-  writeFileSync(
-    join(f.root, "state/vmethod/example-state/workers/31.json"),
-    JSON.stringify(legacy)
-  );
-  expect(await f.service.command(["status", "31"])).toContain("#31 ses_fake session unknown");
-  expect(await f.service.watchStatus(31)).toMatchObject({
-    reason: "session unknown",
-    active: false,
-  });
-  expect(await f.service.mergeStatus(31, true)).toBe("unknown");
-  expect(await f.service.resume(31, wake)).toBe("no worker session for #31; nothing sent");
   f.done();
 });
 

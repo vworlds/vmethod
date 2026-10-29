@@ -11,9 +11,9 @@ import {
 } from "../core/time.js";
 import { OwnedLock } from "../journal/locks.js";
 import type { ProviderLimits } from "./limits.js";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import manifest from "../../package.json" with { type: "json" };
 import { WatchDelivery } from "./watch-delivery.js";
 import { WatchPacing } from "./watch-pacing.js";
@@ -169,14 +169,6 @@ function parseThreadRef(config: Config, ref: string): ThreadRef {
     repo: match[2] ? `${match[2]}/${match[3]}` : (config.repo ?? "undefined"),
     number: parsed,
   };
-}
-
-function safeJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return {};
-  }
 }
 
 function closingRefs(body: string): number[] {
@@ -833,226 +825,14 @@ export class EventLoop {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     mkdirSync(this.state.boardDir, { recursive: true, mode: 0o700 });
     this.acquireLock();
-    try {
-      await this.importLegacy();
-      this.migrateActions();
-    } catch (error) {
-      this.close();
-      throw error;
-    }
     this.loadTracksCache();
     this.started = true;
-  }
-
-  /** Import obsolete writer stamps once; future writers only use the gateway journal. */
-  private migrateActions(): void {
-    if (this.marked(this.state.actionsMigrated)) {
-      return;
-    }
-    const completed = object(safeJson(this.readMarker(this.state.legacyCompleted)));
-    const turns = object(safeJson(this.readMarker(this.state.legacyTurns)));
-    const obsolete: string[] = [];
-    const shared = stateRoot(
-      this.host.env,
-      resolveSession(this.host.config, { track: this.session.track ?? undefined }).stateName
-    );
-    if (shared !== this.dir && existsSync(shared)) {
-      for (const name of readdirSync(shared)) {
-        const match = /^merged-(\d+)$/.exec(name);
-        if (match) {
-          completed[match[1]] = true;
-        }
-      }
-    }
-    for (const name of readdirSync(this.dir)) {
-      const match = /^merged-(\d+)$/.exec(name);
-      if (match) {
-        completed[match[1]] = true;
-        obsolete.push(this.state.once(name).path);
-      }
-    }
-    for (const name of readdirSync(this.state.boardDir)) {
-      if (name.startsWith(".turn-")) {
-        turns[name] = true;
-        obsolete.push(this.state.legacyBoard(name).path);
-      }
-    }
-    this.writeMarker(this.state.legacyCompleted, JSON.stringify(completed));
-    this.writeMarker(this.state.legacyTurns, JSON.stringify(turns));
-    for (const file of obsolete) {
-      new Marker(file).remove();
-    }
-    this.mark(this.state.actionsMigrated);
   }
 
   private acquireLock(): void {
     // A graceful exit clears our own lock; a crash leaves it to the staleness check.
     this.releaseLock = new OwnedLock(this.state.lock.path, this.host.deps).watch(this.dir);
     process.once("exit", this.releaseLock);
-  }
-
-  private async importLegacy(): Promise<void> {
-    const names = this.host.config.legacyState ?? [];
-    if (!names.length) {
-      return;
-    }
-    const marker = this.state.legacyImported;
-    if (marker.exists()) {
-      return;
-    }
-    const root = dirname(dirname(this.dir));
-    const sources = names
-      .map((name) =>
-        join(root, `${name}${this.session.track !== null ? `-${this.session.track}` : ""}`)
-      )
-      .filter((source) => existsSync(source));
-    const files: {
-      source: string;
-      target: string;
-      number: number | null;
-      pr: boolean;
-      own: boolean;
-    }[] = [];
-    const collect = (source: string, target: string, name: string): void => {
-      const match =
-        /^(open|head|branch|ci|conflict|merge-attempt|merge-error|activity|review|seeded|merged|picked|closed|graded|grade|pending-progress|worker-stop|q|w|button)-(\d+)(?:[-@].*)?$/.exec(
-          name
-        );
-      const scoped = /^(?:new-(.+)#|\.turn-(.+)-)(\d+)$/.exec(name);
-      files.push({
-        source,
-        target,
-        number: match ? count(match[2]) : scoped ? count(scoped[3]) : null,
-        pr: match !== null && !["graded", "grade"].includes(match[1]),
-        own: !scoped || (scoped[1] ?? scoped[2]) === slug(this.own),
-      });
-    };
-    const skipTop = new Set([
-      "watcher.lock",
-      "quiet.log",
-      "tracks",
-      "lock",
-      "cursor",
-      "pending.json",
-      "quiet",
-      "mutes",
-      "legacy-imported",
-      "writes.jsonl",
-      "writes.jsonl.lock",
-      "writes.jsonl.tmp",
-      "actions-migrated",
-      "legacy-completed.json",
-      "legacy-turns.json",
-      "unestimated.json",
-    ]);
-    const skipBoard = new Set([".next", ".launch", ".hold-startable", ".seen", "next", "launch"]);
-    for (const source of sources) {
-      for (const entry of readdirSync(source, { withFileTypes: true })) {
-        // Top-level once keys and the imported markers; never vecs' working files.
-        if (
-          entry.isFile() &&
-          !entry.name.startsWith(".") &&
-          !skipTop.has(entry.name) &&
-          !/^(?:mine-|theirs-|merge-(?:attempt|error)-)/.test(entry.name)
-        ) {
-          collect(join(source, entry.name), this.state.once(entry.name).path, entry.name);
-        }
-      }
-      const board = join(source, "board");
-      if (!existsSync(board)) {
-        continue;
-      }
-      for (const entry of readdirSync(board, { withFileTypes: true })) {
-        if (
-          entry.isFile() &&
-          (entry.name.startsWith(".turn-") ||
-            (!entry.name.startsWith(".") && !skipBoard.has(entry.name)))
-        ) {
-          collect(join(board, entry.name), this.state.legacyBoard(entry.name).path, entry.name);
-        }
-      }
-    }
-    // Validate every numbered marker before copying anything. Failure leaves the import retryable.
-    const numbers = [
-      ...new Set(files.flatMap((file) => (file.number === null || !file.own ? [] : [file.number]))),
-    ];
-    const valid = await this.validateLegacy(numbers);
-    let dropped = 0;
-    for (const file of files) {
-      if (
-        file.number !== null &&
-        (!file.own ||
-          !valid.has(file.number) ||
-          (file.pr && valid.get(file.number) !== "PullRequest"))
-      ) {
-        dropped++;
-        continue;
-      }
-      copyFileSync(file.source, file.target);
-    }
-    if (sources.length) {
-      this.host.deps.report(
-        `watcher: legacy import dropped ${dropped} markers not belonging to ${this.own}`
-      );
-    }
-    marker.write(`${sources.join("\n")}\n`);
-  }
-
-  private async validateLegacy(numbers: number[]): Promise<Map<number, string>> {
-    const valid = new Map<number, string>();
-    const [owner, name] = this.own.split("/");
-    for (let offset = 0; offset < numbers.length; offset += 50) {
-      const batch = numbers.slice(offset, offset + 50);
-      // Use the gateway's header-driven pacing, including between batches. Missing items
-      // produce NOT_FOUND field errors; all other partial/error responses fail closed.
-      const result = object(
-        await this.host.github.rest("/graphql", "POST", {
-          query: `query WatchLegacy($owner: String!, $name: String!) {
-          repository(owner: $owner, name: $name) {
-            ${batch.map((number) => `n${number}: issueOrPullRequest(number: ${number}) { __typename ... on Issue { number repository { nameWithOwner } } ... on PullRequest { number repository { nameWithOwner } } }`).join("\n")}
-          }
-        }`,
-          variables: { owner, name },
-        })
-      );
-      const repository = object(object(result.data).repository);
-      if (
-        !result.data ||
-        !object(result.data).repository ||
-        (result.errors !== undefined && !Array.isArray(result.errors))
-      ) {
-        throw new Error("Invalid legacy validation response");
-      }
-      for (const error of this.list(result.errors)) {
-        const path = error.path;
-        if (
-          error.type !== "NOT_FOUND" ||
-          !Array.isArray(path) ||
-          path.length !== 2 ||
-          path[0] !== "repository" ||
-          !batch.some((number) => path[1] === `n${number}`) ||
-          repository[String(path[1])] !== null
-        ) {
-          throw new Error("Legacy validation failed; refusing partial data");
-        }
-      }
-      for (const number of batch) {
-        const value = repository[`n${number}`];
-        if (value === null) {
-          continue;
-        }
-        const item = object(value);
-        if (
-          item.number !== number ||
-          !["Issue", "PullRequest"].includes(str(item.__typename)) ||
-          str(object(item.repository).nameWithOwner).toLowerCase() !== this.own.toLowerCase()
-        ) {
-          throw new Error("Invalid legacy validation item");
-        }
-        valid.set(number, str(item.__typename));
-      }
-    }
-    return valid;
   }
 
   private loadTracksCache(): void {

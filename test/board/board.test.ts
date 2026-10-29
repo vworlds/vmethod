@@ -198,31 +198,6 @@ test("rename carries the source ID to the destination and checks renamed values 
   expect(board.mutations).not.toContain("BoardSetCards");
 });
 
-test("stale restore journal is discarded, never replayed over live or archived values", async () => {
-  const board = setup();
-  board.stamp(1);
-  const card = board.card();
-  card.values.Status = "Done";
-  card.archived = true;
-  const state = readState(board.readme);
-  state.migrating = "1→2";
-  state.optionUpdate = {
-    position: "2/1",
-    field: "Status",
-    options: [],
-    values: [{ id: card.id, value: "Backlog" }],
-  };
-  board.readme = writeState(board.readme, state);
-  const dry = await board.service([baseline, expand]).migrate({ dryRun: true });
-  expect(dry.message).toContain("Discard legacy option restore journal");
-  expect(dry.message).not.toContain("resume restore");
-  await board.service([baseline, expand]).migrate({});
-  expect(card.values.Status).toBe("Done");
-  expect(readState(board.readme).optionUpdate).toBeUndefined();
-  expect(readState(board.readme).version).toBe(2);
-  expect(board.mutations).not.toContain("BoardSetCards");
-});
-
 test("dead process identity permits immediate takeover, while live/remote/legacy holders stay protected", async () => {
   const board = setup();
   board.stamp(0);
@@ -281,17 +256,6 @@ test.each([5, 7])(
     });
     board.card("unset").values[fieldName] = null;
     const before = structuredClone(board.cards.map(({ id, values }) => ({ id, values })));
-    if (version === 7) {
-      const state = readState(board.readme);
-      state.migrating = "6→7";
-      state.optionUpdate = {
-        position: "7/1",
-        field: "Status",
-        options: [],
-        values: before.map(({ id }) => ({ id, value: "Backlog" })),
-      };
-      board.readme = writeState(board.readme, state);
-    }
     const dry = await board.service(migrations).migrate({ dryRun: true });
     for (const card of before) {
       expect(dry.message).toContain(`check ${fieldName} on ${card.id}`);
@@ -307,7 +271,6 @@ test.each([5, 7])(
     await board.service(migrations).migrate({});
     expect(board.cards.map(({ id, values }) => ({ id, values }))).toEqual(before);
     expect(readState(board.readme).version).toBe(version);
-    expect(readState(board.readme).optionUpdate).toBeUndefined();
     expect(board.mutations).toContain("BoardOptions");
     expect(board.mutations).not.toContain("BoardSetCards");
     if (version === 7) {
@@ -332,7 +295,6 @@ test("option check fails loudly without restoring or journaling values", async (
   expect(readState(board.readme)).toMatchObject({
     version: 1,
   });
-  expect(readState(board.readme).optionUpdate).toBeUndefined();
   expect(board.mutations).not.toContain("BoardSetCards");
 });
 
@@ -348,7 +310,6 @@ test.each(["lost-response", "partial-batch"])(
     board.failBatch = failure === "partial-batch" ? 2 : 0;
     await expect(board.service([baseline, expand]).migrate({})).rejects.toThrow();
     expect(readState(board.readme).version).toBe(1);
-    expect(readState(board.readme).optionUpdate).toBeUndefined();
     const writes = board.mutations.filter((name) => name === "BoardOptions").length;
     const dry = await board.service([baseline, expand]).migrate({ dryRun: true });
     expect(dry.message).not.toContain("resume restore");
@@ -401,30 +362,6 @@ test("option objects carry metadata into new fields and expect checks metadata",
   board.stamp(1);
   await expect(board.service([baseline, migration]).migrate({})).rejects.toThrow("expect failed");
   expect(readState(board.readme).version).toBe(1);
-});
-
-test("restore journal round-trips option text without interpreting README markers", () => {
-  const state = {
-    version: 1,
-    minCompatible: 0,
-    aliases: {},
-    completed: ["2/1"],
-    optionUpdate: {
-      position: "2/2",
-      field: "Model",
-      options: [
-        {
-          name: "special",
-          color: "GREEN",
-          description: "<!-- vmethod-board -->\n<!-- /vmethod-board -->",
-        },
-      ],
-      values: [{ id: "card", value: "special" }],
-    },
-  };
-  expect(readState(writeState("Human notes\n", state, true))).toMatchObject(state);
-  const malformed = writeState("", state, true).replace('"value":"special"', '"value":42');
-  expect(() => readState(malformed)).toThrow("Invalid option restore journal");
 });
 
 test("fake rejects both field updates and clears on archived cards", async () => {
@@ -874,7 +811,6 @@ test.each(["none", "failure", "contract", "budget"])(
       board.dropOptions = true;
       await expect(service.migrate({})).rejects.toThrow();
       expect(readState(board.readme).version).toBe(5);
-      expect(readState(board.readme).optionUpdate).toBeUndefined();
       expect(board.cards.map((card) => card.values.Status)).toEqual(cases.map((entry) => entry[1]));
       board.clock += 61 * 60_000;
     }

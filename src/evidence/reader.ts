@@ -12,7 +12,7 @@ import { approvalRefusal, isOwnerApproved } from "./approval.js";
 import { AutopilotReader, type AutopilotState } from "./autopilot.js";
 import { isModelApproved } from "./model-gate.js";
 import { ownerAgreement } from "./owner-agreement.js";
-import { ScopeReader, legacyScopeCutoff } from "./scope.js";
+import { ScopeReader } from "./scope.js";
 
 /** Shared gateway reads retain their existing request shapes and identity checks. */
 export interface EvidenceHost {
@@ -335,15 +335,13 @@ export class EvidenceReader {
   /** The batched scope read for one issue; open-task and merge-task's approval checks
    * share it, so the edit-time warning and the merge gate see the same evidence. */
   async scopeState(item: ObjectData) {
+    // Preserve the board preflight (including its validation failures); scope
+    // approval itself no longer depends on the board's migration timestamp.
+    if (this.config.board?.enabled !== false) {
+      await this.host.board().snapshot();
+    }
     return (
-      await new ScopeReader(
-        this.github,
-        this.filter,
-        this.config,
-        this.config.board?.enabled === false
-          ? Infinity
-          : legacyScopeCutoff((await this.host.board().snapshot()).readme)
-      ).read([String(item.id)])
+      await new ScopeReader(this.github, this.filter, this.config).read([String(item.id)])
     ).get(String(item.id));
   }
 

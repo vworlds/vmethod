@@ -364,7 +364,6 @@ export class MigrationRunner {
     await this.update((current) => {
       current.migrating = `${from}→${this.boardVersion} by ${login} since ${new Date(this.io.now()).toISOString()}`;
       current.paused = undefined;
-      current.optionUpdate = undefined;
     });
     await this.io.announce(`[vmethod] board migration ${from}→${this.boardVersion}`);
     try {
@@ -393,7 +392,6 @@ export class MigrationRunner {
           await this.apply(op);
           await this.update((current) => {
             current.completed = [...(current.completed ?? []), this.position];
-            current.optionUpdate = undefined;
           });
         }
         if (this.io.budgetStopped()) {
@@ -819,9 +817,6 @@ export class MigrationRunner {
     const cards = await this.io.allCards(snapshot.id);
     const output: string[] = [];
     const state = readState(snapshot.readme);
-    if (state.optionUpdate) {
-      output.push("Discard legacy option restore journal; use current live values");
-    }
     if (state.archivedMove) {
       const intent = state.archivedMove;
       const card = cards.find(({ id }) => id === intent.id);

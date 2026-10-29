@@ -217,17 +217,6 @@ export function taskHeld(title: string, body: string): boolean {
   return titlePrefix.test(title) || bannerLine.test(body);
 }
 
-/** Decode pre-adoption Agent task for / Closes header relations, never branch numbers. */
-export function legacyIssueHeaders(body: string): number[] {
-  const numbers = [
-    ...body.matchAll(/^[\t ]*(?:>[\t ]*)?(?:\*\*)?(?:Closes|Agent task for)\s+#([1-9]\d*)\b/gim),
-  ].map((match) => Number(match[1]));
-  if (numbers.some((number) => !Number.isSafeInteger(number))) {
-    throw new Error("Invalid legacy issue link");
-  }
-  return numbers;
-}
-
 /** Native closing references of a task PR: the connection must be complete, every
  * node valid, and foreign-repository nodes are excluded, not errors. */
 export function closingIssueNumbers(item: ObjectData, repo: string): Set<number> {
@@ -254,7 +243,7 @@ export function closingIssueNumbers(item: ObjectData, repo: string): Set<number>
 
 /** The issue relation a merge completes, in order: the structured relation, a
  * "Part of #n" prose line (which completes nothing, D2), the native closing
- * references, then the pre-adoption headers; `report` names which fallback was
+ * references; `report` names which fallback was
  * used, exactly as the watcher reported it before. */
 export function taskIssues(
   item: ObjectData,
@@ -279,16 +268,15 @@ export function taskIssues(
         .filter((node) => object(node.repository).nameWithOwner === repo)
         .map((node) => Number(node.number))
     : [];
-  const legacy = linked.length ? linked : legacyIssueHeaders(body);
-  if (legacy.some((number) => !Number.isSafeInteger(number))) {
+  if (linked.some((number) => !Number.isSafeInteger(number))) {
     throw new Error("Invalid legacy issue link");
   }
-  if (legacy.length) {
+  if (linked.length) {
     report("legacy link: using pre-adoption issue relation");
   } else {
     report("no linked issue");
   }
-  return [...new Set(legacy)];
+  return [...new Set(linked)];
 }
 
 const relationHeaderRead: TaskHeaderRead = {
