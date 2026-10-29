@@ -264,7 +264,8 @@ stay project scripts.
 src/cli/            the `vmethod` command and its verbs
 src/gateway/        the only code that talks to GitHub and opencode (fetch), with the people filter
 src/board/          board client, migrations runner, lock
-src/...             watch, tasks, review, merge, learnings, config
+src/watch/          typed watcher state, comment stream and board poll
+src/...             tasks, review, merge, learnings, config
 board/migrations/   ordered board migrations (0001-baseline.yaml, …)
 docs/               the methodology
 templates/          AGENTS.md routing template, vmethod.yaml / people.yaml / models.yaml examples,
@@ -272,6 +273,15 @@ templates/          AGENTS.md routing template, vmethod.yaml / people.yaml / mod
 test/               vitest suites, fakes, fixtures (a fixture consumer repo)
 testing/            exported test kit (`@vworlds/vmethod/testing`) for consumers' hooks
 ```
+
+Keep board observation and reconciliation in [`BoardPoller`](../src/watch/board.ts):
+autopilot judgement, closures, blockers, turns, reminders, NEXT/LAUNCH/SCOPE and card
+baselines share one ordered poll. It receives typed state, host services, the write
+journal and explicit loop callbacks. [`EventLoop`](../src/gateway/events.ts) still owns
+step failures, pacing and event delivery, and reads board observations for worker
+polling and budget telemetry. Pull and worker polls remain in the loop pending their
+separate extraction. Preserve the existing marker bytes and prune card absences only
+after the complete board step succeeds.
 
 **The toolchain is the consumers' own**, so any orchestrator or worker can work on vmethod
 without learning anything new:
