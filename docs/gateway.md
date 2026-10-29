@@ -1246,6 +1246,10 @@ and `merge-task` instead.
   `<type>: <subject>` without scope. The body receives the same Markdown and
   closing-keyword checks as posts; task markers are refused. Configured task-pattern
   and pack branches are refused. No worker or task issue relation is created.
+- `vmethod pr edit <n> <body-file>` replaces the body of a same-repository pull
+  request. It is orchestrator-only under the same role rules as `pr open`, applies
+  the same Markdown and closing-keyword checks as posts, and journals the write like
+  `issue edit`, so the watcher stays quiet on your own edit.
 - `vmethod pr merge <n>` squash-merges a same-repository, non-task PR against
   `baseBranch`. It requires Approved board position (when the board is enabled),
   current-head owner approval through `review <n> owner <file>` and the owner's

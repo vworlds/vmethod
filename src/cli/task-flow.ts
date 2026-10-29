@@ -20,7 +20,12 @@ export async function taskFlowVerb(
         ctx
       );
     }
-    throw new Error("Usage: pr open <branch> <title> <body-file> [--draft] or pr merge <n>");
+    if (args[0] === "edit" && args.length === 3 && /^[1-9]\d*$/.test(args[1])) {
+      return transport.call("prEdit", { ref: args[1], file: args[2] }, ctx);
+    }
+    throw new Error(
+      "Usage: pr open <branch> <title> <body-file> [--draft] or pr edit <n> <body-file> or pr merge <n>"
+    );
   }
   if (verb === "resolve-conflicts") {
     if (

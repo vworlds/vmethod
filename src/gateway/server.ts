@@ -120,6 +120,7 @@ export class GatewayServices {
   autopilotInherit = tasks.autopilotInherit.bind(this);
   openTask = tasks.openTask.bind(this);
   prOpen = tasks.prOpen.bind(this);
+  prEdit = tasks.prEdit.bind(this);
   prMerge = tasks.prMerge.bind(this);
   reviewTask = tasks.reviewTask.bind(this);
   askIssue = tasks.askIssue.bind(this);
@@ -464,6 +465,7 @@ export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Depend
     limits: server.limits,
     openTask: server.openTask,
     prOpen: server.prOpen,
+    prEdit: server.prEdit,
     prMerge: server.prMerge,
     reviewTask: server.reviewTask,
     askIssue: server.askIssue,

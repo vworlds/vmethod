@@ -1,4 +1,6 @@
 import { heading } from "../../core/protocol.js";
+import { readFileSync } from "node:fs";
+import { checkMarkdown, guardClosingKeywords } from "../markdown.js";
 import { object, type ObjectData } from "../people.js";
 import { repoOf, restActor } from "../../github/diagnostic.js";
 import { inheritAutopilot } from "../../evidence/autopilot.js";
@@ -65,6 +67,20 @@ export const openTask: Handler<"openTask"> = async function (input) {
 
 export const prOpen: Handler<"prOpen"> = async function (input) {
   return this.flow.openPr(input);
+};
+
+/** Replace a same-repository PR's body (#442). `pr open` is orchestrator-only and so is
+ * this sibling; the body receives the post checks, and the operation record keeps the
+ * watcher quiet on this checkout's own write, like `issue edit`. */
+export const prEdit: Handler<"prEdit"> = async function ({ ref, file }) {
+  const number = this.localNumber(ref);
+  const body = readFileSync(file, "utf8");
+  await checkMarkdown(this.root, body);
+  guardClosingKeywords(body);
+  await this.flowThread(String(number), "pr");
+  this.github.writes.beginOperation("pr edit", [{ repo: this.config.repo, number }]);
+  await this.github.rest(`/repos/${this.config.repo}/pulls/${number}`, "PATCH", { body }, false);
+  return `Updated pull request #${number}`;
 };
 
 export const prMerge: Handler<"prMerge"> = async function (input) {

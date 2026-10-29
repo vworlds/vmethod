@@ -67,6 +67,8 @@ export interface Operations {
     input: { branch: string; title: string; file: string; draft?: boolean };
     output: string;
   };
+  /** Replace the body of a same-repository PR with checked Markdown; orchestrator only. */
+  prEdit: { input: { ref: string; file: string }; output: string };
   /** Squash a non-task PR with exact-head owner or delegated review and normal CI/base gates. */
   prMerge: { input: { ref: string }; output: string };
   reviewTask: { input: ReviewInput; output: string };

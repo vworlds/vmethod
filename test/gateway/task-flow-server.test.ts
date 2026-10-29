@@ -64,6 +64,67 @@ test.each(["prOpen", "prMerge"] as const)(
   }
 );
 
+test("pr edit replaces the body and journals the operation", async () => {
+  const pr = item({
+    __typename: "PullRequest",
+    number: 27,
+    body: "Old body",
+    labels: { nodes: [], pageInfo: { hasNextPage: false } },
+  });
+  const f = fixtureServer([
+    graph({ repository: { pullRequest: item({ number: 27 }) } }),
+    graph({ node: pr }),
+    {
+      path: "/repos/example/project/pulls/27",
+      method: "PATCH",
+      body: { body: "New body\n" },
+      json: {},
+    },
+  ]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "New body\n");
+  await expect(
+    taskFlowVerb(f.transport, "pr", ["edit", "27", file], { VMETHOD_ROLE: "orchestrator" })
+  ).resolves.toBe("Updated pull request #27");
+  const entries = readFileSync(
+    join(f.env.XDG_STATE_HOME, "vmethod", "example-state", "writes.jsonl"),
+    "utf8"
+  )
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(entries).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: "operation",
+        op: "pr edit",
+        repo: "example/project",
+        number: 27,
+      }),
+      expect.objectContaining({ kind: "PATCH pulls/27", repo: "example/project", number: 27 }),
+    ])
+  );
+  f.done();
+});
+
+test.each([27, 28])("pr edit refuses a worker editing PR %i", async (taskPr) => {
+  const f = fixtureServer([]);
+  await expect(
+    f.transport.call("prEdit", { ref: "27", file: "body.md" }, { role: "worker", taskPr })
+  ).rejects.toThrow("denied for client role");
+  f.done();
+});
+
+test("pr edit refuses a closing keyword before any API access", async () => {
+  const f = fixtureServer([]);
+  const file = join(f.root, "body.md");
+  writeFileSync(file, "Tracks the rollout.\nFixes #12\n");
+  await expect(f.transport.call("prEdit", { ref: "27", file })).rejects.toThrow(
+    "forbidden closing keyword"
+  );
+  f.done();
+});
+
 test.each(["issue", "pr"] as const)(
   "orchestrator can stop but not grant autopilot on an accepted %s",
   async (kind) => {

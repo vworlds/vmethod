@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { taskFlowVerb } from "../src/cli/task-flow.js";
 import type { Transport } from "../src/gateway/transport.js";
 
-test("pr routes open and merge with strict positional arguments", async () => {
+test("pr routes open, edit and merge with strict positional arguments", async () => {
   const calls: unknown[] = [];
   const transport: Transport = {
     call: async (operation, input, ctx) => {
@@ -33,6 +33,9 @@ test("pr routes open and merge with strict positional arguments", async () => {
     ["merge", "https://github.com/other/repo/pull/27"],
     ["open", "adoption", "title"],
     ["open", "adoption", "title", "body.md", "--unknown"],
+    ["edit"],
+    ["edit", "0", "body.md"],
+    ["edit", "27"],
   ]) {
     await expect(taskFlowVerb(transport, "pr", args, env)).rejects.toThrow("Usage: pr");
   }
