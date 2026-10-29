@@ -174,7 +174,9 @@ describe("historical protocol reader acceptance", () => {
           expect(parsed.role).toBe(options.role);
           const originalTag = /^\[(?:worker|orchestrator)\] (.+)/i.exec(body)![1];
           expect(originalTag.toUpperCase().startsWith(parsed.tag.toUpperCase())).toBe(true);
-          if (options.round) expect(parsed.round).toBe(Number(match[1]));
+          if (options.round) {
+            expect(parsed.round).toBe(Number(match[1]));
+          }
         }
       }
     }
