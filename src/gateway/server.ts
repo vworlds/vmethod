@@ -23,7 +23,7 @@ import {
   repoOf,
   restActor,
 } from "../github/diagnostic.js";
-import { actorFields, identityFields } from "../github/selections.js";
+import { identityFields } from "../github/selections.js";
 import { pages } from "../github/pages.js";
 import {
   checkMarkdown,
