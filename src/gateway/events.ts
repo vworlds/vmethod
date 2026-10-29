@@ -24,6 +24,7 @@ import {
   progressGuards,
   mayReplace,
   reconciledTurn,
+  hasOrchestratorProgress,
 } from "../core/progress.js";
 import { readState } from "../board/readme.js";
 import type { BoardService } from "./board.js";
@@ -2814,7 +2815,7 @@ export class EventLoop {
       if (
         card.state !== "OPEN" ||
         card.column === "Done" ||
-        (!card.progress.startsWith("🧭") &&
+        (!hasOrchestratorProgress(card.progress) &&
           !(
             (card.column === "Executing" || card.column === "Spec review" || unanswered) &&
             assigned
@@ -3701,7 +3702,7 @@ export class EventLoop {
   private ownerTurn(card: CardInfo): boolean {
     return (
       card.assignees.some((login) => this.owners.has(login.toLowerCase())) ||
-      ["owner-review", "owner-question"].includes(parseProgress(card.progress).state ?? "")
+      reconciledTurn(parseProgress(card.progress).state) === "owner"
     );
   }
 

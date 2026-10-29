@@ -11,6 +11,7 @@ import {
   progressGuards,
   ownerReplyProgress,
   revivedProgressStates,
+  hasOrchestratorProgress,
 } from "../../src/core/progress.js";
 import { workflowColumns } from "../../src/board/runner.js";
 import { writeState } from "../../src/board/readme.js";
@@ -47,7 +48,13 @@ const roleLogin = (role: Role) =>
   role === "owner" ? "owner" : role === "orchestrator" ? "peer" : null;
 
 function watcher() {
-  const rest = vi.fn(async () => ({}));
+  const rest = vi.fn(async (path: string, method: string, body: { assignees: string[] }) => {
+    expect(path).toBe("/repos/example/project/issues/27/assignees");
+    expect(["POST", "DELETE"]).toContain(method);
+    expect(body.assignees.length).toBeGreaterThan(0);
+    expect(body.assignees.every((login) => ["owner", "peer", "worker"].includes(login))).toBe(true);
+    return {};
+  });
   const loop = Object.assign(Object.create(EventLoop.prototype), {
     host: {
       filter: { people },
@@ -82,6 +89,7 @@ test.each(states.flatMap((state) => workflowColumns.map((column) => ({ state, co
     expect(ownerReplyProgress(text(state), column)).toBe(
       state === "verifying" && ["Executing", "Owner review"].includes(column)
     );
+    expect(hasOrchestratorProgress(text(state))).toBe(state === "verifying");
     const { loop } = watcher();
     // Start on a different role, so preserving a turn is observable too.
     const card = {
@@ -102,7 +110,8 @@ test.each(states.flatMap((state) => workflowColumns.map((column) => ({ state, co
           : ["worker"]
     );
 
-    const rest = vi.fn(async (_path: string, method?: string) => {
+    const rest = vi.fn(async (path: string, method?: string) => {
+      expect(path).toBe("/repos/example/project/issues/27");
       if (method) {
         throw new Error("Unexpected assignment write: already matching turn");
       }

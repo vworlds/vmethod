@@ -61,7 +61,13 @@ export function reconciledTurn(state: string | null): ManagementTurn | undefined
  * Preserve its raw prefix check (including unknown 🧭 words); callers also accept
  * an actual orchestrator assignee independently of Progress. */
 export function ownerReplyProgress(progress: unknown, column: string): boolean {
-  return ["Owner review", "Executing"].includes(column) && String(progress ?? "").startsWith("🧭");
+  return ["Owner review", "Executing"].includes(column) && hasOrchestratorProgress(progress);
+}
+
+/** Legacy reminder/owner-reply signal: raw leading compass, not every state that
+ * holds an orchestrator turn. Do not trim or narrow this to known emoji words. */
+export function hasOrchestratorProgress(progress: unknown): boolean {
+  return String(progress ?? "").startsWith("🧭");
 }
 
 /** Guarded arrows queued by the watcher. Unguarded protocol/owner/lifecycle changes
