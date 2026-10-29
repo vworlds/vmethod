@@ -40,7 +40,7 @@ export const ghRead: Handler<"ghRead"> = async function ({ source }) {
   if (source.endsWith(".graphql")) {
     const query = readQuery(readFileSync(source, "utf8"));
     const data = await this.github.graphql(query);
-    const repo = String(this.config.repo);
+    const repo = this.config.repo ?? "undefined";
     const output = untrusted(
       JSON.stringify(
         filterData(data, this.filter, repo, `https://github.com/${repo}`, counts, query),
@@ -66,7 +66,7 @@ export const ghRead: Handler<"ghRead"> = async function ({ source }) {
     match[1].includes("..") ||
     match[2].includes("..") ||
     (match[4] ?? "").includes("..") ||
-    match[1].toLowerCase() !== String(this.config.org).toLowerCase()
+    match[1].toLowerCase() !== (this.config.org ?? "undefined").toLowerCase()
   ) {
     throw new Error(
       "gh-read permits scoped repository GET endpoints or a query .graphql file only"

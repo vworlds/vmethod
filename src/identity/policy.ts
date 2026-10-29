@@ -107,7 +107,7 @@ export function authorizeGateway(
         !Number.isSafeInteger(ctx.taskPr) ||
         Number(ctx.taskPr) < 1 ||
         target.number !== ctx.taskPr ||
-        target.repo.toLowerCase() !== String(config.repo).toLowerCase()
+        target.repo.toLowerCase() !== (config.repo ?? "undefined").toLowerCase()
       ) {
         throw new Error(
           "Worker may post only to its own taskPr in the configured repository; run vmethod in your task worktree, whose .vmethod/.env sets VMETHOD_ROLE=worker and VMETHOD_TASK_PR"

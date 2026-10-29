@@ -1,6 +1,5 @@
 import { heading as protocolHeading } from "../core/protocol.js";
 import { renderProgress } from "../core/progress.js";
-import { object } from "../gateway/people.js";
 import type { ConflictPrior } from "../gateway/task-flow-types.js";
 import { taskHeld, taskIssueNumbers } from "../tasks/markers.js";
 import { setTurn } from "../gateway/turn.js";
@@ -12,7 +11,7 @@ export class ConflictCards extends TaskCommon {
   async cardPrior(ref: string): Promise<ConflictPrior> {
     const item = await this.pr(ref);
     const assignees = await this.assigned(ref);
-    if (object(this.config.board).enabled === false) {
+    if (this.config.board?.enabled === false) {
       return { status: null, progress: null, assignees };
     }
     const board = this.host.board();
@@ -44,7 +43,7 @@ export class ConflictCards extends TaskCommon {
    * and reports the kept approval; otherwise it returns the stored prior turn. */
   async cardRestore(ref: string, prior: ConflictPrior): Promise<void | "approval-kept"> {
     const item = await this.pr(ref);
-    if (object(this.config.board).enabled !== false) {
+    if (this.config.board?.enabled !== false) {
       const card = await this.boardCard(item);
       if (card?.values.Status === "Approved") {
         await this.card(
@@ -95,7 +94,7 @@ export class ConflictCards extends TaskCommon {
     // Re-read the live card before writing: an owner approval found between dispatch
     // and escalation is kept, and the note reports it instead of overwriting Approved.
     const approved =
-      object(this.config.board).enabled !== false &&
+      this.config.board?.enabled !== false &&
       (await this.boardCard(item))?.values.Status === "Approved";
     // A Status write would move an Approved card out of the owner's decision; on an
     // approved card only the blocked Progress rides the escalation write.
@@ -107,7 +106,7 @@ export class ConflictCards extends TaskCommon {
     await this.turn(ref, "orchestrator");
     // Report only after the card/turn writes succeed, using the live resulting card.
     const kept =
-      object(this.config.board).enabled !== false &&
+      this.config.board?.enabled !== false &&
       (await this.boardCard(item))?.values.Status === "Approved";
     await this.post(
       ref,

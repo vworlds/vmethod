@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { getConfig, loadYaml, type Config } from "../../config.js";
 import { stateRoot } from "../digest.js";
-import { PeopleFilter, object, type Person } from "../people.js";
+import { PeopleFilter } from "../people.js";
 import { type Handlers } from "../transport.js";
 import { resolve } from "node:path";
 import {
@@ -62,10 +62,10 @@ export function eventLoop(
   const name = session.stateName;
   let loop = this.loops.get(name);
   if (!loop) {
-    const methodology = String(object(this.config.vmethod).repo ?? "vworlds/vmethod");
+    const methodology = this.config.vmethod?.repo ?? "vworlds/vmethod";
     const filter = new PeopleFilter(
       this.filter.people,
-      String(this.config.org),
+      this.config.org ?? "undefined",
       this.digest,
       methodology === "off" ? [] : [methodology]
     );
@@ -114,7 +114,7 @@ export function reloadWatchFiles(this: GatewayServices): void {
   if (peopleMtime !== this.peopleMtime) {
     this.peopleMtime = peopleMtime;
     try {
-      this.filter.reload(loadYaml(this.root, "people") as Person[]);
+      this.filter.reload(loadYaml(this.root, "people"));
       const owners = this.filter.people.filter((p) => p.role === "owner").map((p) => p.login);
       this.deps.report(`people.yaml reloaded (owners: ${owners.join(", ")})`);
     } catch (error) {

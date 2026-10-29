@@ -281,7 +281,7 @@ export class LearningsService {
   }
 
   private async submit(input: LearningReadInput): Promise<string> {
-    if (!["public", "private"].includes(String(this.config.learningsPrivacy))) {
+    if (!["public", "private"].includes(this.config.learningsPrivacy ?? "undefined")) {
       throw new Error("Set learningsPrivacy explicitly before submitting");
     }
     if (this.config.learningsPrivacy === "private" && input.notes !== undefined) {
@@ -289,7 +289,7 @@ export class LearningsService {
         "Private distilled notes cannot be cleared per record; use record notes with --include-text <pr>"
       );
     }
-    const repo = String(this.config.repo).toLowerCase();
+    const repo = (this.config.repo ?? "undefined").toLowerCase();
     const logFile = join(this.root, ".vmethod/model-log.jsonl");
     const annotationsDirectory = join(this.root, "learnings/models", repo.replace("/", "-"));
     const annotationOnly =
@@ -311,7 +311,7 @@ export class LearningsService {
     ) {
       throw new Error("--include-text must name an existing delivery PR");
     }
-    const directory = stateRoot(this.env, String(this.config.stateName ?? repo.replace("/", "-")));
+    const directory = stateRoot(this.env, this.config.stateName ?? repo.replace("/", "-"));
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const lock = new DirLock(join(directory, "learnings.lock"));
     try {
@@ -345,7 +345,7 @@ export class LearningsService {
     if (registry === undefined) {
       throw new Error("Missing central learning authorization registry");
     }
-    const people = validateYaml(registry, "people", `${central}:people.yaml`) as Person[];
+    const people = validateYaml(registry, "people", `${central}:people.yaml`);
     const viewer = object(await github.rest("/user"));
     const person = learningAuthor(people, viewer, repo);
     const rawNotes = input.notes === undefined ? undefined : readFileSync(input.notes, "utf8");

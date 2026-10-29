@@ -11,7 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { loadYaml, type Config } from "../config.js";
+import type { Config } from "../config.js";
+import { ModelRegistry } from "../core/config.js";
 import type { ModelRecord } from "../learnings.js";
 import type { ExactMetrics, ThreadEvent } from "../learning-metrics.js";
 import { OpencodeClient, type Dependencies } from "./client.js";
@@ -190,7 +191,8 @@ export class LearningAnnotations {
     private env: NodeJS.ProcessEnv,
     private deps: Dependencies,
     private records: () => ModelRecord[],
-    private bundle: (pr: number) => Promise<LearningBundle>
+    private bundle: (pr: number) => Promise<LearningBundle>,
+    private models = new ModelRegistry(root)
   ) {}
 
   async command(input: AnnotationInput): Promise<string> {
@@ -207,12 +209,12 @@ export class LearningAnnotations {
     if (input.pr && input.since) {
       throw new Error("Choose --pr or --since");
     }
-    if (!["public", "private"].includes(String(this.config.learningsPrivacy))) {
+    if (!["public", "private"].includes(this.config.learningsPrivacy ?? "undefined")) {
       throw new Error("Set learningsPrivacy explicitly");
     }
     const state = stateRoot(
       this.env,
-      String(this.config.stateName ?? String(this.config.repo).replace("/", "-"))
+      this.config.stateName ?? (this.config.repo ?? "undefined").replace("/", "-")
     );
     mkdirSync(state, { recursive: true });
     const lock = new DirLock(join(state, "learning-generation.lock"));
@@ -234,7 +236,7 @@ export class LearningAnnotations {
   private async annotate(input: AnnotationInput): Promise<string> {
     const records = this.records().filter(
       (r) =>
-        r.repo.toLowerCase() === String(this.config.repo).toLowerCase() &&
+        r.repo.toLowerCase() === (this.config.repo ?? "undefined").toLowerCase() &&
         (!input.pr || r.pr === input.pr)
     );
     if (input.pr && !records.length) {
@@ -539,7 +541,10 @@ export class LearningAnnotations {
           .map((line) => {
             try {
               const a = annotation(JSON.parse(line));
-              if (!all && a.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+              if (
+                !all &&
+                a.repo.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()
+              ) {
                 throw new Error("Foreign annotation in project directory");
               }
               return a;
@@ -556,17 +561,11 @@ export class LearningAnnotations {
     return join(
       this.root,
       "learnings/models",
-      String(this.config.repo).toLowerCase().replace("/", "-")
+      (this.config.repo ?? "undefined").toLowerCase().replace("/", "-")
     );
   }
   private model(input: AnnotationInput): { model: string } {
-    const models = loadYaml(this.root, "models") as {
-      family: string;
-      model: string;
-      kind: string;
-      gate: string;
-      price?: { input: number; output: number };
-    }[];
+    const models = this.models.entries();
     const selected =
       input.model ??
       this.config.learningsModel ??

@@ -27,7 +27,7 @@ export function limitsConfig(config: Config): {
   atRisk: number;
   pollSeconds: number;
 } {
-  return { enabled: true, atRisk: 15, pollSeconds: 300, ...object(config.limits) };
+  return { enabled: true, atRisk: 15, pollSeconds: 300, ...config.limits };
 }
 
 export function modelProvider(model: Pick<LimitModel, "model" | "provider">): string {

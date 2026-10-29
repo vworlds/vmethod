@@ -165,7 +165,10 @@ function parseThreadRef(config: Config, ref: string): ThreadRef {
   if (!match || parsed === null) {
     throw new Error("Expected <number> or <org/repo#number>");
   }
-  return { repo: match[2] ? `${match[2]}/${match[3]}` : String(config.repo), number: parsed };
+  return {
+    repo: match[2] ? `${match[2]}/${match[3]}` : (config.repo ?? "undefined"),
+    number: parsed,
+  };
 }
 
 function safeJson(text: string): unknown {
@@ -311,22 +314,22 @@ export class EventLoop {
     this.dir = stateRoot(host.env, this.session.stateName);
     this.state = new LoopState(this.dir);
     this.writes = new WriteJournal(config, host.env, host.deps.now, this.session.stateName);
-    this.own = String(config.repo);
-    this.org = String(config.org);
-    const methodology = str(object(config.vmethod).repo) || "vworlds/vmethod";
+    this.own = config.repo ?? "undefined";
+    this.org = config.org ?? "undefined";
+    const methodology = config.vmethod?.repo || "vworlds/vmethod";
     this.subscriptions =
       methodology !== "off" && methodology.toLowerCase() !== this.own.toLowerCase()
         ? [this.own, methodology]
         : [this.own];
-    const branches = object(config.branches);
+    const branches = config.branches ?? {};
     const pattern = str(branches.taskPattern) || "<number>-<slug>";
     const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     this.taskBranch = new RegExp(
       `^(?:${escaped.replace(/<number>/g, "\\d+").replace(/<slug>/g, "[A-Za-z0-9._-]+")}|${(str(branches.packPrefix) || "pack/").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`
     );
-    const reserve = object(config.gateway).reserve;
+    const reserve = config.gateway?.reserve;
     this.reserve = typeof reserve === "number" ? reserve : 100;
-    this.preview = object(config.watch).preview === true;
+    this.preview = config.watch?.preview === true;
     this.boardPoller = new BoardPoller({
       state: this.state,
       host,
@@ -889,7 +892,7 @@ export class EventLoop {
   }
 
   private async importLegacy(): Promise<void> {
-    const names = (this.host.config.legacyState ?? []) as string[];
+    const names = this.host.config.legacyState ?? [];
     if (!names.length) {
       return;
     }

@@ -1,5 +1,4 @@
 import { assertEstimate } from "../../board/estimate.js";
-import { object } from "../people.js";
 import { workflowColumns } from "../../board/runner.js";
 import type { Handler } from "./types.js";
 
@@ -61,7 +60,7 @@ export const boardAdd: Handler<"boardAdd"> = async function ({ ref, estimate, st
   if (status !== undefined && (typeof status !== "string" || !status.trim())) {
     throw new Error("Invalid issue status");
   }
-  if (object(this.config.board).enabled === false) {
+  if (this.config.board?.enabled === false) {
     throw new Error("Board is disabled; board add requires a configured board");
   }
   const number = this.localNumber(ref);
@@ -82,7 +81,9 @@ export const boardAdd: Handler<"boardAdd"> = async function ({ ref, estimate, st
   ];
   // One operation for the board writes (#199), exactly as issue create's
   // follow-up: the membership add, then the fields in a single ordered mutation.
-  this.github.writes.beginOperation("board add", [{ repo: String(this.config.repo), number }]);
+  this.github.writes.beginOperation("board add", [
+    { repo: this.config.repo ?? "undefined", number },
+  ]);
   const membership = await this.board.ensureCard(contentId);
   if (entries.length) {
     await this.board.setIssueFields(contentId, entries, membership);

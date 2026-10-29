@@ -132,7 +132,7 @@ export class TaskMerge extends TaskCommon {
     const head = sha(item.headRefOid),
       base = String(item.baseRefName),
       branch = String(item.headRefName);
-    const pack = branch.startsWith(String(object(this.config.branches).packPrefix ?? "pack/"));
+    const pack = branch.startsWith(this.config.branches?.packPrefix ?? "pack/");
     if (pack && !mergeCommit && item.state === "OPEN") {
       throw new Error("Pack branches require --merge-commit");
     }
@@ -147,7 +147,7 @@ export class TaskMerge extends TaskCommon {
     const git = this.git();
     if (item.state === "OPEN") {
       if (
-        object(this.config.board).enabled !== false &&
+        this.config.board?.enabled !== false &&
         (await this.boardCard(item))?.values.Status !== "Approved"
       ) {
         throw new Error("merge-task requires an Approved PR");
@@ -197,7 +197,7 @@ export class TaskMerge extends TaskCommon {
           if (files === null) {
             continue;
           }
-          const escalate = object(this.config.conflicts).escalatePaths;
+          const escalate = this.config.conflicts?.escalatePaths;
           if (
             Array.isArray(escalate) &&
             files.some((file) => escalate.some((pattern) => matchesGlob(file, String(pattern))))
@@ -244,7 +244,7 @@ export class TaskMerge extends TaskCommon {
           .trim()
           .split("\n");
         if (
-          base === String(this.config.releaseBranch) ||
+          base === (this.config.releaseBranch ?? "undefined") ||
           files.some((file) =>
             /(?:^|\/)people\.ya?ml$|(?:^|\/)CODEOWNERS$|^(?:\.claude\/|\.opencode\/|opencode\.jsonc?$|vmethod\.yaml$)/.test(
               file
@@ -260,7 +260,7 @@ export class TaskMerge extends TaskCommon {
       if (item.mergeable !== "MERGEABLE") {
         throw new Error("PR is conflicting or mergeability is unknown");
       }
-      if (object(this.config.merge).requireCurrentBase !== false) {
+      if (this.config.merge?.requireCurrentBase !== false) {
         try {
           await git.run("merge-base", "--is-ancestor", liveBase, head);
         } catch {
@@ -474,7 +474,7 @@ export class TaskMerge extends TaskCommon {
       await this.turn(ref, null);
     });
     await step("done-cap", async () => {
-      if (object(this.config.board).enabled !== false) {
+      if (this.config.board?.enabled !== false) {
         await this.host.board().capDone();
       }
     });
@@ -493,7 +493,7 @@ export class TaskMerge extends TaskCommon {
     }
     if (base === this.mainBase) {
       await step("checkout", async () => {
-        const main = resolve(String(object(this.config.branches).mainCheckout ?? this.root));
+        const main = resolve(this.config.branches?.mainCheckout ?? this.root);
         const local = this.git(main);
         if (
           (await local.run("rev-parse", "--abbrev-ref", "HEAD")).trim() !== base ||
@@ -512,7 +512,7 @@ export class TaskMerge extends TaskCommon {
           journal.checkout = {
             old: sha((await local.run("rev-parse", "HEAD")).trim()),
             target: sha((await local.run("rev-parse", `refs/remotes/origin/${base}`)).trim()),
-            trigger: String(object(this.config.postMerge).trigger ?? "package-lock.json"),
+            trigger: this.config.postMerge?.trigger ?? "package-lock.json",
           };
           this.save(file, journal);
         }
@@ -567,7 +567,7 @@ export class TaskMerge extends TaskCommon {
     });
     const output = `Merged #${ref}`;
     if (journal.install) {
-      const install = String(object(this.config.postMerge).install ?? "npm ci");
+      const install = this.config.postMerge?.install ?? "npm ci";
       const installEnv: NodeJS.ProcessEnv = { HUSKY: "0" };
       for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"]) {
         if (this.env[key]) {
@@ -576,7 +576,7 @@ export class TaskMerge extends TaskCommon {
       }
       // Intentionally nothing follows this await: old-version code never loads new code.
       await this.deps.exec("sh", ["-c", install], {
-        cwd: resolve(String(object(this.config.branches).mainCheckout ?? this.root)),
+        cwd: resolve(this.config.branches?.mainCheckout ?? this.root),
         env: installEnv,
       });
     }
@@ -619,7 +619,7 @@ export class TaskMerge extends TaskCommon {
       }
     }
     const runs = [...latest.values()];
-    const required = object(this.config.checks).ci;
+    const required = this.config.checks?.ci;
     if (
       !runs.length ||
       runs.some(
@@ -653,7 +653,7 @@ export class TaskMerge extends TaskCommon {
   }
 
   private stateFile(ref: string): string {
-    const name = String(this.config.stateName ?? this.repo.replace("/", "-"));
+    const name = this.config.stateName ?? this.repo.replace("/", "-");
     if (!/^[A-Za-z0-9_.-]+$/.test(name) || [".", ".."].includes(name)) {
       throw new Error("Invalid stateName");
     }

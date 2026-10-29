@@ -56,7 +56,7 @@ export class TokenAuthentication {
     const person = tokenIdentity(viewer, this.filter, actionsLearningCheck);
     // Authority is per repository (#186): a peer project's orchestrator holds no
     // gateway orchestration role for this configuration's repository.
-    const role = this.filter.roleIn(person, String(this.config().repo));
+    const role = this.filter.roleIn(person, this.config().repo ?? "undefined");
     // The CI-only learning validator retains its pinned-base registry and write gates.
     // Neither an environment flag alone nor a system identity grants any other verb.
     if (person.role === "system" && actionsLearningCheck) {

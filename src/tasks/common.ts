@@ -1,4 +1,5 @@
 import { type Config } from "../config.js";
+import { ModelRegistry } from "../core/config.js";
 import { type Dependencies, type GitHubClient } from "../gateway/client.js";
 import { type BoardOperation, type BoardService } from "../gateway/board.js";
 import { object, type ObjectData, type Person } from "../gateway/people.js";
@@ -77,7 +78,8 @@ export class TaskCommon {
     protected env: NodeJS.ProcessEnv,
     protected config: Config,
     protected deps: Dependencies,
-    protected host: TaskHost
+    protected host: TaskHost,
+    protected models = new ModelRegistry(root)
   ) {}
 
   async status(ref: string, forMerge = false): Promise<"live" | "stopped" | "unknown"> {
@@ -93,7 +95,7 @@ export class TaskCommon {
   }
 
   protected get repo(): string {
-    return String(this.config.repo);
+    return this.config.repo ?? "undefined";
   }
 
   protected path(ref: string, kind = "issues"): string {
@@ -125,7 +127,7 @@ export class TaskCommon {
     const tracks = labels
       .map((label) => String(object(label).name))
       .filter((name) => name.startsWith("track:"));
-    const expected = this.config.track ? [`track:${String(this.config.track)}`] : [];
+    const expected = this.config.track ? [`track:${this.config.track}`] : [];
     if (JSON.stringify(tracks.sort()) !== JSON.stringify(expected)) {
       throw new Error("Task belongs to another track");
     }
@@ -143,7 +145,7 @@ export class TaskCommon {
     progress: string | null,
     model?: string
   ): Promise<void> {
-    if (object(this.config.board).enabled === false) {
+    if (this.config.board?.enabled === false) {
       return;
     }
     const board = this.host.board();
@@ -160,7 +162,7 @@ export class TaskCommon {
   }
 
   protected async boardCard(item: ObjectData) {
-    if (object(this.config.board).enabled === false) {
+    if (this.config.board?.enabled === false) {
       return undefined;
     }
     const board = this.host.board();
@@ -211,15 +213,15 @@ export class TaskCommon {
 
   protected nonTaskBranch(branch: string): void {
     taskBranch(branch, this.config);
-    const branches = object(this.config.branches);
-    const pattern = String(branches.taskPattern ?? "<number>-<slug>")
+    const branches = this.config.branches ?? {};
+    const pattern = (branches.taskPattern ?? "<number>-<slug>")
       .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
       // Issue-less open-task deliveries use an eight-character title hash.
       .replaceAll("<number>", "(?:\\d+|[a-f\\d]{8})")
       .replaceAll("<slug>", "[A-Za-z0-9._-]+");
     if (
       new RegExp(`^${pattern}$`).test(branch) ||
-      branch.startsWith(String(branches.packPrefix ?? "pack/"))
+      branch.startsWith(branches.packPrefix ?? "pack/")
     ) {
       throw new Error("Task branches use open-task and merge-task");
     }

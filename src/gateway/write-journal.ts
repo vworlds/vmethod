@@ -41,7 +41,7 @@ export class WriteJournal {
     stateName = writeSession(config, env).stateName
   ) {
     this.path = join(stateRoot(env, stateName), "writes.jsonl");
-    this.repo = String(config.repo).toLowerCase();
+    this.repo = (config.repo ?? "undefined").toLowerCase();
   }
 
   /** Match comment response IDs first, with server time only for id-less writes.

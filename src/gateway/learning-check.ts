@@ -1,7 +1,7 @@
 import { validateYaml } from "../config.js";
 import type { GitHubClient } from "./client.js";
 import { learningPaths } from "./learning-policy.js";
-import { object, type Person } from "./people.js";
+import { object } from "./people.js";
 
 /** Read metadata only; this operation never reads or executes a fork's files or configuration. */
 export async function checkLearningPr(
@@ -61,7 +61,7 @@ export async function validateLearningPr(
     Buffer.from(content.content, "base64").toString("utf8"),
     "people",
     `${repo}:people.yaml`
-  ) as Person[];
+  );
   const author = people.find(
     (person) =>
       person.id === user.id &&

@@ -66,7 +66,7 @@ export async function worktreeTaskFor(
   const tasks: number[] = [];
   for (let page = 1; ; page++) {
     const data = await this.github.rest(
-      `/repos/${String(this.config.repo)}/pulls?state=all&head=${encodeURIComponent(`${String(this.config.repo).split("/")[0]}:${branch}`)}&per_page=100&page=${page}`
+      `/repos/${this.config.repo}/pulls?state=all&head=${encodeURIComponent(`${(this.config.repo ?? "undefined").split("/")[0]}:${branch}`)}&per_page=100&page=${page}`
     );
     if (!Array.isArray(data)) {
       throw new Error("Missing worktree PR listing");
@@ -98,7 +98,7 @@ export async function worktreeTaskFor(
 
 export function localNumber(this: GatewayServices, ref: string): number {
   const target = reference(ref, this.config);
-  if (target.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+  if (target.repo.toLowerCase() !== (this.config.repo ?? "undefined").toLowerCase()) {
     throw new Error("Worker operations require configured repository");
   }
   return target.number;
@@ -112,9 +112,9 @@ export function projectCard(this: GatewayServices, item: ObjectData): ObjectData
   return object(
     nodes.find(
       (value) =>
-        object(object(value).project).number === object(this.config.board).number &&
+        object(object(value).project).number === this.config.board?.number &&
         String(object(object(object(value).project).owner).login).toLowerCase() ===
-          String(object(this.config.board).owner).toLowerCase()
+          (this.config.board?.owner ?? "undefined").toLowerCase()
     )
   );
 }
@@ -276,7 +276,7 @@ export async function workerMetadata(this: GatewayServices, pr: number): Promise
       !this.filter.accept(
         meta,
         repoOf(meta).owner,
-        `https://github.com/${String(this.config.repo)}/pull/${pr}`
+        `https://github.com/${this.config.repo}/pull/${pr}`
       )
     ) {
       continue;
@@ -285,7 +285,7 @@ export async function workerMetadata(this: GatewayServices, pr: number): Promise
     const author = this.filter.accept(
       comment,
       repoOf(comment).owner,
-      `https://github.com/${String(this.config.repo)}/pull/${pr}`
+      `https://github.com/${this.config.repo}/pull/${pr}`
     );
     if (!author || this.filter.identity(comment.author)?.role !== author.role) {
       continue;

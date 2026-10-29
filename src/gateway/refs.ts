@@ -14,9 +14,9 @@ export function reference(value: string, config: Config): ThreadRef {
   if (!match || !Number.isSafeInteger(Number(match[2]))) {
     throw new Error("Expected <number> or <org/repo#number>");
   }
-  const repo = match[1] ?? String(config.repo);
+  const repo = match[1] ?? config.repo ?? "undefined";
   const [owner, name] = repo.split("/");
-  if (owner.toLowerCase() !== String(config.org).toLowerCase()) {
+  if (owner.toLowerCase() !== (config.org ?? "undefined").toLowerCase()) {
     throw new Error("Repository is outside configured org");
   }
   return {
@@ -41,7 +41,7 @@ export function parentReference(value: string, config: Config): ThreadRef {
 
 /** Same-repository blockers read as `#n`; cross-repository blockers keep their `org/repo#n`. */
 export function blockerLabel(ref: ThreadRef, config: Config): string {
-  return ref.repo.toLowerCase() === String(config.repo).toLowerCase()
+  return ref.repo.toLowerCase() === (config.repo ?? "undefined").toLowerCase()
     ? `#${ref.number}`
     : `${ref.repo}#${ref.number}`;
 }

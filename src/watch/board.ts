@@ -197,7 +197,7 @@ export class BoardPoller {
     this.own = deps.own;
     this.dir = deps.state.dir;
     this.boardReader = new WatchBoard(deps.host.github);
-    this.boardEnabled = object(deps.host.config.board).enabled !== false;
+    this.boardEnabled = deps.host.config.board?.enabled !== false;
   }
 
   /** Live board output consumed by the worker poll and the loop's pacing report. */
@@ -234,7 +234,7 @@ export class BoardPoller {
       this.state.unestimated.remove();
       return;
     }
-    const settings = object(this.host.config.board);
+    const settings = this.host.config.board ?? {};
     const owner = str(settings.owner);
     const number = count(settings.number);
     if (!owner || number === null) {
@@ -708,7 +708,7 @@ export class BoardPoller {
         (number) => !this.writes.recentlyWrote(card.repo, number)
       )
     );
-    let states = autopilotStates(records, this.host.filter, String(this.host.config.repo));
+    let states = autopilotStates(records, this.host.filter, this.host.config.repo ?? "undefined");
     for (const card of targets) {
       if (!states.get(card.contentId)?.unauthorized) {
         continue;
@@ -744,7 +744,7 @@ export class BoardPoller {
           );
         }
       }
-      states = autopilotStates(records, this.host.filter, String(this.host.config.repo));
+      states = autopilotStates(records, this.host.filter, this.host.config.repo ?? "undefined");
     }
     this.autopilot = states;
     for (const card of targets) {
@@ -979,7 +979,7 @@ export class BoardPoller {
       const moves = events.filter(
         (event) =>
           event.__typename === "ProjectV2ItemStatusChangedEvent" &&
-          object(event.project).number === Number(object(this.host.config.board).number)
+          object(event.project).number === (this.host.config.board?.number ?? NaN)
       );
       const latest = Math.max(...moves.map((event) => Date.parse(str(event.createdAt))));
       const matched = moves.filter((event) => Date.parse(str(event.createdAt)) === latest);
@@ -1198,7 +1198,7 @@ export class BoardPoller {
     const moves = events.filter(
       (event) =>
         event.__typename === "ProjectV2ItemStatusChangedEvent" &&
-        object(event.project).number === Number(object(this.host.config.board).number)
+        object(event.project).number === (this.host.config.board?.number ?? NaN)
     );
     const time = (event: ObjectData) => Date.parse(str(event.createdAt));
     if (moves.some((event) => !Number.isFinite(time(event)))) {

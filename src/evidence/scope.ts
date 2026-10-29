@@ -73,11 +73,11 @@ export function scopeApproved(
       return true;
     }
     const labels = object(issue.labels).nodes;
-    const fast = object(config.scope).fastPath;
+    const fast = config.scope?.fastPath;
     if (
       Array.isArray(labels) &&
       Array.isArray(fast) &&
-      labels.some((label) => fast.includes(object(label).name))
+      labels.some((label) => fast.some((name) => name === object(label).name))
     ) {
       return true;
     }
@@ -106,7 +106,7 @@ function ownerApprovalAt(
   const events = timeline.filter(
     (event) =>
       event.__typename === "ProjectV2ItemStatusChangedEvent" &&
-      object(event.project).number === Number(object(config.board).number)
+      object(event.project).number === (config.board?.number ?? NaN)
   );
   // Missing actors or ordering cannot certify approval. Orchestrator moves between parts
   // do not revoke an owner's decision; a later owner decision does.
@@ -156,7 +156,7 @@ export function scopeRefusal(
 ): string {
   const reasons: { at: number; text: string }[] = [];
   const time = (item: ObjectData) => Date.parse(String(item.lastEditedAt ?? item.createdAt));
-  const repo = repoOf(issue).repo || String(config.repo);
+  const repo = repoOf(issue).repo || (config.repo ?? "undefined");
   const trusted = (item: ObjectData) =>
     orchestrates(filter, filter.identity(item.author), repo) &&
     (item.lastEditedAt == null || orchestrates(filter, filter.identity(item.editor), repo));
@@ -175,7 +175,7 @@ export function scopeRefusal(
   const events = timeline.filter(
     (event) =>
       event.__typename === "ProjectV2ItemStatusChangedEvent" &&
-      object(event.project).number === Number(object(config.board).number)
+      object(event.project).number === (config.board?.number ?? NaN)
   );
   const approvalAt = ownerApprovalAt(timeline, config, filter, review ? "Spec review" : "Scoping");
   if (
@@ -302,7 +302,8 @@ export class ScopeReader {
       const person = this.filter.identity(item.author);
       return (
         !!person &&
-        this.filter.roleIn(person, repoOf(item).repo || String(this.config.repo)) === "orchestrator"
+        this.filter.roleIn(person, repoOf(item).repo || (this.config.repo ?? "undefined")) ===
+          "orchestrator"
       );
     };
     const trusted = metas.filter((item) => this.accept(item) && binds(item));
@@ -367,11 +368,7 @@ export class ScopeReader {
   }
 
   private accept(item: ObjectData): boolean {
-    return !!this.filter.accept(
-      item,
-      repoOf(item).owner,
-      `https://github.com/${String(this.config.repo)}`
-    );
+    return !!this.filter.accept(item, repoOf(item).owner, `https://github.com/${this.config.repo}`);
   }
 
   private async connections(
