@@ -245,7 +245,7 @@ resolve contradictions before launch. Never delegate an unsettled owner decision
 as worker discretion. Execution instructions belong in the pinned
 [worker guide](worker-guide.md), not repeated PR boilerplate.
 
-Use `open-task` (vmethod 1.0, #8) and `start-worker` (vmethod 1.0, #9).
+Use `open-task` (vmethod 1.0, #8) and `worker start` (vmethod 1.0, #9).
 When the agreed work already exists on another branch — for example the owner's —
 do not merge it into the task by hand: open the task with `open-task <issue>
 --from <branch>` instead. It merges that branch into the task branch with a merge

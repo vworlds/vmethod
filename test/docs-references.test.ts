@@ -15,7 +15,6 @@ const verbIssues = new Map<string, number | null>([
   ["mute", 6],
   ["mutes", 6],
   ["unmute", 6],
-  ["start-task", 7],
   ["read-pr", 7],
   ["pr-comment", 7],
   ["push", 7],
@@ -26,8 +25,6 @@ const verbIssues = new Map<string, number | null>([
   ["close-task", 288],
   ["release-hold", 8],
   ["worker", 9],
-  ["claude-worker", 9],
-  ["start-worker", 9],
   ["suggest-model", 9],
   ["grade", 9],
   ["wait-checks", 10],
@@ -81,8 +78,8 @@ test("reference validation accepts the full table and rejects wrong, unknown and
   expect(() => validateReferences("Gateway remains planned (vmethod 1.0, #4).")).toThrow(
     "must immediately follow"
   );
-  expect(() => validateReferences("Use `open-task` and `start-worker` (vmethod 1.0, #8).")).toThrow(
-    "start-worker"
+  expect(() => validateReferences("Use `open-task` and `worker start` (vmethod 1.0, #8).")).toThrow(
+    "worker start"
   );
   expect(validateReferences("Use `mute`, `mutes` and `unmute` (vmethod 1.0,\n#6).")).toBe(3);
   expect(validateReferences("Use `open-task --direct` (vmethod 1.0, #8).")).toBe(1);
