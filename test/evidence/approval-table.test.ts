@@ -1,10 +1,10 @@
 import { expect, test } from "vitest";
-import { isOwnerApproved, type ApprovalPR } from "../../src/gateway/approval.js";
+import { isOwnerApproved, type ApprovalPR } from "../../src/evidence/approval.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { fixture } from "../helpers.js";
-import { actor, people, sha } from "./helpers.js";
-import { scopeComment, scopeMove } from "./scope-fixture.js";
+import { actor, people, sha } from "../gateway/helpers.js";
+import { scopeComment, scopeMove } from "../gateway/scope-fixture.js";
 
 const handover = scopeComment({ body: `[orchestrator] OWNER REVIEW\nHead: ${sha}` });
 const move = scopeMove({ field: "Status", previousStatus: "Owner review", status: "Approved" });

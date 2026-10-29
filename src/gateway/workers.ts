@@ -45,7 +45,7 @@ import {
 } from "./client.js";
 import { object, untrusted } from "./people.js";
 import type { WorkerResult } from "./transport.js";
-import { modelGateError } from "./model-gate.js";
+import { modelGateError } from "../evidence/model-gate.js";
 import { workerWorktreePrefix } from "./worker-path.js";
 import { workerFirstPrompt } from "./worker-prompt.js";
 import { DirLock } from "../journal/locks.js";

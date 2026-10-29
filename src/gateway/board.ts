@@ -17,7 +17,7 @@ import type {
 import { GitHubClient, GitHubHttpError, type Dependencies } from "./client.js";
 import { object, type ObjectData, type PeopleFilter } from "./people.js";
 import { ownerForTurn, sameAssignees, setTurn, turnAssignees } from "./turn.js";
-import { ScopeReader } from "./scope.js";
+import { ScopeReader } from "../evidence/scope.js";
 import { migrationIdentity, migrationHolderDead } from "./process-identity.js";
 import packageInfo from "../../package.json" with { type: "json" };
 import { batchPages, pages, pageCursor } from "../github/pages.js";

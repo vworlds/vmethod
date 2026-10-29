@@ -31,13 +31,13 @@ import { actorFields, reviewCommentFields } from "../github/selections.js";
 import { WriteJournal } from "./write-journal.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
-import { ScopeReader, legacyScopeCutoff } from "./scope.js";
+import { ScopeReader, legacyScopeCutoff } from "../evidence/scope.js";
 import {
   AutopilotReader,
   autopilotStates,
   taskGroupNumbers,
   type AutopilotState,
-} from "./autopilot.js";
+} from "../evidence/autopilot.js";
 import {
   ownerActivityFields,
   ownerForTurn,

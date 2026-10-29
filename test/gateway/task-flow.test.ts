@@ -21,7 +21,7 @@ import { writeState } from "../../src/board/readme.js";
 import { taskFlowVerb } from "../../src/cli/task-flow.js";
 import type { Operations, Transport } from "../../src/gateway/transport.js";
 import { WorkerService } from "../../src/gateway/workers.js";
-import { bodyHash, scopeApproved } from "../../src/gateway/scope.js";
+import { bodyHash, scopeApproved } from "../../src/evidence/scope.js";
 import { taskModelOverride } from "../../src/gateway/task-flow-types.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";

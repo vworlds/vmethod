@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { bodyHash } from "./scope.js";
+import { bodyHash } from "../evidence/scope.js";
 import { object, untrusted, type ObjectData } from "./people.js";
 import type { ThreadRef } from "./refs.js";
 

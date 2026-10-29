@@ -4,7 +4,7 @@ import { expect, test } from "vitest";
 import type { Operations } from "../../src/gateway/transport.js";
 import type { ObjectData } from "../../src/gateway/people.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
-import { bodyHash } from "../../src/gateway/scope.js";
+import { bodyHash } from "../../src/evidence/scope.js";
 import { fixtureServer, graph, item, workerFixtureServer, type Request } from "./helpers.js";
 
 // #292: `read issue` reuses #284's thread machinery (the shared diff cases stay
