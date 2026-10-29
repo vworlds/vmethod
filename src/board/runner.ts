@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { MIGRATION_LOCK_MAX_AGE_MS } from "../core/time.js";
 import { compatibility, readState, writeState } from "./readme.js";
 import { validateMigrations } from "./migrations.js";
 import type {
@@ -228,7 +229,7 @@ export class MigrationRunner {
       const since = holderTime(state.lock);
       const identity = state.lock?.split(" identity ")[1];
       const dead = identity !== undefined && this.io.lockDead?.(identity) === true;
-      if (!dead && Number.isFinite(since) && this.io.now() - since <= 60 * minute) {
+      if (!dead && Number.isFinite(since) && this.io.now() - since <= MIGRATION_LOCK_MAX_AGE_MS) {
         throw new Error("Migration lock held; stale locks require --steal");
       }
       // No holder line (or a stale one): only the field's own age can tell a

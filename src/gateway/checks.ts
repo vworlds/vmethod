@@ -1,4 +1,5 @@
 import type { Config } from "../config.js";
+import { CHECKS_WAIT_MINUTES } from "../core/time.js";
 import { restPages } from "../github/pages.js";
 import { stripVTControlCharacters } from "node:util";
 import { GitHubClient, type Dependencies } from "./client.js";
@@ -31,7 +32,7 @@ export class ChecksService {
   ) {}
 
   async wait(input: Operations["waitChecks"]["input"]): Promise<Verdict> {
-    const minutes = input.maxMinutes ?? 30;
+    const minutes = input.maxMinutes ?? CHECKS_WAIT_MINUTES;
     const grace = input.graceSeconds ?? 120;
     if (
       ![minutes, grace].every((n) => Number.isFinite(n) && n >= 0) ||

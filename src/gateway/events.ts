@@ -6,6 +6,19 @@ import {
   roundText,
 } from "../core/protocol.js";
 import { LoopState, Marker } from "../watch/state.js";
+import {
+  BUTTON_RETRY_MS,
+  CHAT_REMINDER_EVERY_MS,
+  CURSOR_OVERLAP_MS,
+  FAILURE_REMINDER_MS,
+  HOLD_MAX_AGE_MS,
+  MARKER_MARGIN_MS,
+  MIGRATION_WINDOW_MS,
+  TURN_WAIT_MS,
+  UNHANDLED_TURN_REMINDER_MINUTES,
+  WAITING_TURN_REMINDER_MINUTES,
+  WORKER_STALE_MS,
+} from "../core/time.js";
 import { OwnedLock } from "../journal/locks.js";
 import { renderPermissions } from "./permission-detail.js";
 import { QuotaCrossings, limitsConfig, type ProviderLimits } from "./limits.js";
@@ -57,18 +70,10 @@ export { resolveSession, type ResolvedSession, type SessionInput } from "./watch
 
 const INTERVAL_MS = 10_000;
 const WORKER_EVERY = 6;
-const STALE_MS = 30 * 60_000;
 const SILENT_MS = 40 * 60_000;
-const BUTTON_RETRY_MS = 10 * 60_000;
 const TRACKS_TTL_MS = 30_000;
 const NEXT_RECHECK_MS = 60_000;
-const CURSOR_OVERLAP_MS = 10 * 60_000;
-const MARKER_MARGIN_MS = 2 * 60_000;
-const MIGRATION_WINDOW_MS = 60 * 60_000;
-const HOLD_MAX_AGE_MS = 120_000;
 const GRADE_SETTLE_MS = 60_000;
-/** A delivery carries the chat-rule reminder at most once per interval. */
-const CHAT_REMINDER_EVERY_MS = 30 * 60_000;
 /** The reminder's state file stores the last show time; empty delivery stays silent. */
 const CHAT_REMINDER =
   "REMINDER (owner rule): chat = #n pointers only or warnings; discuss on GitHub. Don't explain here what you will put in an issue/PR. Evidence, plans and summaries go on the issue/PR, never in chat.";
@@ -1216,7 +1221,7 @@ export class EventLoop {
         });
         this.host.deps.report(`watcher: ${name} failed: ${message}`);
       } else {
-        if (now - previous.reminded >= 60 * 60_000) {
+        if (now - previous.reminded >= FAILURE_REMINDER_MS) {
           previous.reminded = now;
           this.host.deps.report(
             `watcher: still failing since ${new Date(previous.since).toISOString()}: ${message}`
@@ -1616,7 +1621,7 @@ export class EventLoop {
       review &&
       activity &&
       activity <= review.at &&
-      Date.parse(review.at) <= this.host.deps.now() - STALE_MS
+      Date.parse(review.at) <= this.host.deps.now() - WORKER_STALE_MS
     ) {
       let unreachable: boolean;
       try {
@@ -1634,7 +1639,7 @@ export class EventLoop {
           worker.active &&
           typeof worker.updated === "number" &&
           Number.isFinite(worker.updated) &&
-          worker.updated >= this.host.deps.now() - STALE_MS
+          worker.updated >= this.host.deps.now() - WORKER_STALE_MS
         ) {
           return;
         }
@@ -2835,8 +2840,11 @@ export class EventLoop {
         ...(reminded === undefined ? {} : { reminded }),
       };
       if (
-        now - since >= (unanswered ? 5 * 60_000 : STALE_MS) &&
-        (reminded === undefined || now - reminded >= (unanswered ? 30 : 60) * 60_000) &&
+        now - since >= (unanswered ? 5 * 60_000 : TURN_WAIT_MS) &&
+        (reminded === undefined ||
+          now - reminded >=
+            (unanswered ? UNHANDLED_TURN_REMINDER_MINUTES : WAITING_TURN_REMINDER_MINUTES) *
+              60_000) &&
         this.emit(
           `orchestrator-turn-${card.number}@${since}-${now}`,
           "orchestrator-turn",
