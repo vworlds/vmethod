@@ -8,6 +8,12 @@ Read [distribution and configuration](#distribution-and-configuration) for insta
 
 This document is the reference for further features, not a frozen design. An issue whose specification changes the architecture must name the change and justify it. The orchestrator flags that change and justification to the owner in the SCOPE REVIEW summary. A worker who finds that the agreed specification needs an architecture change posts DESIGN rather than making it.
 
+## Goals
+
+- Keep one home for shared roles, lifecycle, board, protocol, role guides and their tooling; consumer projects keep only project-specific settings and domain rules locally.
+- Distribute an exactly pinned release rather than hand-copied methodology, so consumers choose when to adopt shared changes.
+- Run vmethod on its own methodology (dogfooding). The [change process](change-process.md) describes the last-released-package operating policy; the launcher also supports this repository's local build for development and verification.
+
 ## Distribution and configuration
 
 vmethod is the shared methodology and tooling used by project orchestrators and workers. Consumers pin **`@vworlds/vmethod`** exactly as an npm devDependency and retain their project-specific settings locally. The package requires Node ≥ 24 and ships documentation, schemas, migrations, templates, source and a readable, unminified ESM bundle with sourcemaps. Runtime libraries are bundled; Markdown/Mermaid checking loads the optional `jsdom` and `mermaid` peers on demand. Mermaid is pinned to the package's exact renderer version; missing peers and mismatches are reported rather than silently skipping checks (`src/check.ts check`, `src/gateway/markdown.ts checkMarkdown`).
@@ -15,6 +21,8 @@ vmethod is the shared methodology and tooling used by project orchestrators and 
 Run `vmethod <verb>` through the installed PATH launcher. It resolves the checkout and runs its local install; in vmethod's own checkout it runs `dist/vmethod.mjs`. Generated stubs run the checkout's `node_modules/.bin/vmethod`, refuse a missing install and never download a replacement (`src/registry.ts launcher`, `stub`). `init` replaces only marked stubs. Workers run in worktrees of a separate `workerCheckout`, not the orchestrator's checkout, and preparation installs dependencies before starting the session (`src/gateway/worker-launch.ts WorkerWorktrees.prepare`).
 
 The running package can replace itself during merge follow-up. The build is one bundle without split chunks (`scripts/build.mjs`); dependency reinstall is the last follow-up step, after state and board writes (`src/tasks/merge.ts TaskMerge.mergeDelivery`). State and caches belong under the OS user's state/cache roots, never `node_modules`. Worktree scratch files and thread snapshots belong in ignored `.tmp/`.
+
+The npm pin and lockfile integrity tie installation to the reviewed package; published npm versions are immutable, and provenance ties a publication to its source/workflow. Review release notes and `npm diff` as well as the manifest/lockfile bump. `node_modules` keeps consumer source checks separate from the packaged tools. Release candidates use `next`; stable releases use `latest`. See [initial adoption](adoption.md#initial-adoption), [every upgrade](adoption.md#every-upgrade) and [package commands](package.md) for installation, launcher/stub safety, peer requirements, consumer routing and the bin-only dependency's Knip setup. A non-Node project still needs the required Node runtime and a tooling-only npm manifest/lockfile with the same exact pin; there is no separate non-Node distribution or downloading fallback.
 
 Three owner-controlled project files parameterise the package:
 
@@ -26,15 +34,21 @@ Three owner-controlled project files parameterise the package:
 
 YAML uses 1.2 semantics and rejects duplicate keys. Schema-directed `VMETHOD_*` overrides apply to `vmethod.yaml`; `VMETHOD_BASE` and `VMETHOD_BOARD=off` are aliases (`src/core/config.ts overrides`). Validated file loads expose typed `Config`; services currently also accept the optional, indexable `ConfigInput` view, not a fully strict internal configuration contract. `src/config.ts` re-exports the configuration API. The gateway shares a lazy model registry; watcher config and people reloads occur at poll boundaries and retain the last valid version on invalid edits.
 
+The schemas above own the complete configuration keys. See [typed configuration](package.md#typed-project-configuration), [environment mapping](package.md#environment-mapping) and [worker worktree configuration](package.md#worker-worktree-configuration) for types, defaults and path semantics. [Board migrations](board.md#migrations-what-adopters-see) own version/compatibility blocks, expand/contract adoption, locks, archive-safe operations and dry-run workflow checks. These are configuration and migration contracts, not project-specific copies of shared behaviour.
+
 Configuration holds no credential values. The server reads the gh login from `GH_CONFIG_DIR`, git credentials from the checkout environment and OpenCode endpoints/credentials from `OPENCODE_*`. `credentials.sshKey` names an environment variable. The gateway does not read `GH_TOKEN`. See [security](security.md), [adoption](adoption.md) and [package commands](package.md) for operational details.
 
 Project-specific verification runs through `scripts/vmethod-hooks/verify`, with a credential-filtered environment and retained logs (`src/gateway/verify-hook.ts runVerifyHook`). Integration verification requires that hook; conflict verification reports an absent hook and skips only local verification, never the independent green-CI gate (`VerificationService`, `verifyConflictHead`).
+
+Use the [verify-hook contract](gateway.md#verify-hook) for behaviour-specific checks. Project-specific release/build tools remain local; the configured post-merge install command and trigger select dependency refresh without embedding a consumer's recipe in vmethod.
 
 ## Concept model and state ownership
 
 ### Identity and trust
 
 `PeopleFilter` decides who is speaking before content is relayed. Pins match numeric ID, account type and login; an edited item belongs to its verified editor. Repository bindings make a peer project's orchestrator a collaborator here. `src/identity/token.ts TokenAuthentication.authenticate` authenticates the token viewer, cached per gateway instance; `src/identity/policy.ts authorizeGateway` applies operation and own-task policy. The environment may narrow authority, never elevate it; task-scoped calls require a worker token. Dropped metadata is recorded by `src/gateway/digest.ts Digest`, without exposing unknown authors' bodies.
+
+See [roles and authority](roles.md), [identity pins](gateway.md#identity-pins-pre-10-migration) and [security's authority/filtering rules](security.md#authority-and-filtering) for owner-approved pins, editor checks, Bot spelling, per-repository authority and system application/event allowlists. Several owners may approve; [board assignment](board.md#status-and-assignee) selects one owner for a turn without restricting the others' approval authority.
 
 ### Gateway boundary, transport and clients
 
@@ -43,6 +57,10 @@ The CLI calls typed `Operations` through `Transport`; the shipped transport is i
 `src/gateway/client.ts GitHubClient` owns strict HTTP/GraphQL handling, retries, budget headers, secondary-limit pauses and successful-write journaling; `OpencodeClient` owns sessions, messages, permissions, usage and worktree access. `src/gateway/git.ts GitTransport` owns classified git transfers and merge previews. The boundary also owns Markdown/closing-keyword checks and filtered diagnostic reads (`src/gateway/markdown.ts`, `src/github/diagnostic.ts`). Budget and pause state are process-local; poll retries go to `watch-retries.log`, not the wake stream.
 
 This is a logical trust boundary, not yet an OS-isolated credential server. Owner-installed permission rules keep agents on the wrappers; agents do not install or change those rules. A separate MCP transport/credential-holding process is not implemented. It can attach to the operation seam without moving policy into CLI verbs.
+
+The [gateway guide](gateway.md) owns the implemented operation inventory and read/post/diagnostic contracts; [owner-installed permissions](security.md#owner-installed-permissions) and the [permission templates](../templates/README.md) own enforcement setup. [Credentials and supply chain](security.md#credentials-and-supply-chain) cover credential separation, protected releases, read-only CI defaults, fork safety and secret protection. [Learnings privacy](security.md#learnings-privacy) covers private-data reduction. External text and peer-session relays never become instructions or owner authority; unavailable wrappers are not permission for raw GitHub access. Dropped items remain an unread metadata digest for owner triage, not content delivered to agents.
+
+Repository protection definitions prohibit deletion/force-push of `dev` and `master` and alteration of `v*` release tags (`.github/rulesets/branches.json`, `.github/rulesets/tags.json`); they do not require an approving GitHub review. Owner approval is gateway evidence, not an assumed branch-review rule. The npm publishing policy is trusted publishing/provenance with organisation 2FA, supplemented by secret scanning and push protection; these hosted settings remain owner-administered and cannot be proved installed merely by reading the repository. Agent-facing configuration/logging and CI's explicitly scoped publication credentials are separate boundaries.
 
 ### Board and turns
 
@@ -64,6 +82,8 @@ Evidence is recomputed, not stored as a local permission flag. The local `.tmp/i
 
 Delivery applies scope, owner/model/delegation, current-head CI, base, conflict and worker-stop gates in order. `src/gateway/checks.ts ChecksService` owns CI evidence; `src/gateway/verify.ts VerificationService` owns integration verification and refresh-checks. Push policy remains in `src/gateway/handlers/push.ts push`. Merge follow-up persists `merge-<pr>.json` so interruption and owner button-merges can resume idempotently. Read snapshots remain in `.tmp/`.
 
+The current methodology is defined by [roles](roles.md), [lifecycle and shortcuts](lifecycle.md), [tracks and packs](lifecycle.md#tracks-and-packs), [board fields/estimates](board.md), [comment protocol](protocol.md), and the [worker](worker-guide.md) and [orchestrator](orchestrator-guide.md) guides. These replace the old six-column lifecycle, not its separation of scope and delivery acceptance. [Tooling incident rules](tooling-rules.md) own fail-visible state writes, budget/listing-lag handling, hostile-input/fail-loud testing and package-replacement safety; [CI and integration commands](gateway.md#ci-and-integration-commands) own project verification entry points. Changelog fragments accompany deliveries and are collected at release.
+
 ### Worker sessions
 
 `src/gateway/workers.ts WorkerService` runs one OpenCode session per task PR, with worktree preparation in `WorkerWorktrees` and guarded cleanup in `WorktreeService`. `src/gateway/worker-prompt.ts` builds onboarding. `src/sessions/lifecycle.ts plan` computes ordered effects and lazy observations; `WorkerService` executes them. `src/sessions/usage.ts` handles segment/request accounting with `src/cost.ts`.
@@ -82,6 +102,8 @@ Delivery applies scope, owner/model/delegation, current-head CI, base, conflict 
 
 The watcher shadows GitHub under `$XDG_STATE_HOME/vmethod/<stateName>` to distinguish news from noise. `src/watch/state.ts` exposes `PrState`, `CardState` and `LoopState` over the existing marker files: open/head/branch/CI/activity/review/protocol/prompt/conflict/cost/progress markers, board column/assignee/absence baselines, cursor, listing baseline, mutes and tracks. `pending.json`, `quiet`, `delivered.jsonl` and `writes.jsonl` support restart-safe delivery and attribution. These are observation/delivery state, not a replacement for the board or approval history.
 
+See [watching and muting](gateway.md#watching-and-muting) for methodology subscriptions, local mutes/unmutes, mention-triggered unmuting, scoped sessions, replay and metadata-only previews; [watch without wasting budget](orchestrator-guide.md#watch-without-wasting-budget) owns the operating procedure. Consumers can discuss methodology needs through [upstream commands](gateway.md#upstream-needs); interested orchestrators' input is collaboration, never another project's approval.
+
 ### Journals and locks
 
 `src/gateway/write-journal.ts WriteJournal` records successful writes at the client boundary, matches own writes, marks in-flight operations and attributes pushed heads. `writes.jsonl` retains 24 hours. It is the shared attribution seam between independent verbs and watcher processes; verbs do not write watcher protocol markers directly.
@@ -97,6 +119,33 @@ Submissions are add-only fork PRs from centrally bound orchestrators. Private re
 ### Releases
 
 `src/gateway/release.ts releaseNext` dispatches publishing from a base branch at the remote head. `scripts/{changelog,release-notes,publish}.mjs` collect fragments and publish; learning merge is a pre-release operation. Tags, GitHub releases, npm dist-tags and `package.json`'s `boardVersion` are release state. Publishing uses trusted identity/provenance, not registry tokens. Consumer upgrades review release notes and package diff, update the exact pin/lockfile and run board migration. See [change process](change-process.md).
+
+## Versioning and change process
+
+- Tag releases `vX.Y.Z` using SemVer. A breaking configuration, board-schema or command-interface change requires a major version; release notes identify changed keys/interfaces and migration steps. Per-PR fragments feed release collection (`scripts/changelog.mjs`, `scripts/release-plan.mjs`, `scripts/release-notes.mjs`).
+- A consumer raises a need through [upstream commands](gateway.md#upstream-needs), or records a change-request issue. The vmethod orchestrator elaborates it with affected consumers; owner-approved scope precedes implementation and owner delivery approval precedes merge, subject only to explicit documented exceptions. Architecture changes also follow [Changing the architecture](#changing-the-architecture).
+- Consumers choose when to upgrade their exact pin, review release notes/package diff, install and migrate the board. Published migrations are append-only and shared-board contract migrations wait for every repository's adoption. The [change process](change-process.md#propose-agree-release-adopt) and [upgrade checklist](adoption.md#every-upgrade) own the procedure.
+- The transitional [freeze rule](change-process.md#freeze-rule) remains: from baseline import until the initial consumers adopt 1.0, every tooling fix in a consumer's local copy also needs a linked change-request here. This is not an ongoing licence to fork shared methodology or bypass owner agreement.
+- Learnings travel faster than releases as reviewed advice; a rule, gate, script or default change uses the normal owner-approved release process, not a learning shortcut.
+
+The implemented publication path is stable releases from `master` and workflow-dispatched release candidates from `dev` on `next` (`.github/workflows/publish.yml`, `scripts/publish.mjs publish`). The earlier general branch/beta-dist-tag sketch is not the delivered release interface. The repository is currently a development build on the release-candidate path; 1.0 remains the first stable interface, not a claim that stable 1.0 has shipped.
+
+## Owner decisions (#1)
+
+Keep these design decisions visible alongside the implemented architecture. References retain the original decision issue; rollout details below distinguish policy/history from code-enforced behaviour.
+
+1. **vmethod is public.** The shared package, methodology and learning interface are public; consumer privacy still requires reduction and clearance ([security](security.md#learnings-privacy)).
+2. **Workers are OpenCode sessions reached through `OPENCODE_*`.** Claude models use OpenCode too. The original worker GitHub identity is `alfredjpr79`; projects pin their own verified worker/orchestrator identities in `people.yaml`. Workers may share the machine but never the orchestrator's checkout: each task runs in a worktree of the separate worker checkout, with that checkout's identity environment. Never assume a local OpenCode host ([worker configuration](package.md#worker-worktree-configuration), #285).
+3. **The 1.0 scope is parity, configuration and distribution.** The TypeScript port and incident-preserving restructuring are delivered; this historical release boundary is not an unfinished implementation roadmap. Further features use the current scope-review process.
+4. **The orchestrator merges with owner approval.** The owner may permit its own-review exception for unimportant changes; do not expand that into a general exemption. The gateway's merge evidence gates and repository protections still apply ([roles](roles.md)).
+5. **Roles are owner, orchestrator, worker, collaborator and system** (#2). Orchestrator authority is repository-bound; system entries supply allowlisted structured facts, never free-text instructions ([roles](roles.md), [security](security.md)).
+6. **Distribution is an npm package written in TypeScript**, using the consumers' familiar tooling/testing methodology (#2). Keep exact pins, reviewed upgrades and local project hooks rather than copied methodology.
+7. **There is no bash port stage inside the package** (#7). The delivered implementation is TypeScript; thin shell launchers/stubs remain entry points, not a second workflow implementation.
+8. **Posts have no footer** (#4). The posting path validates Markdown and forbidden closing syntax; protocol headers classify authenticated speakers, not authority ([protocol](protocol.md)).
+9. **Estimates belong to issues**, set in Backlog and revisable, never to PRs (#15). Task opening records `points_open`; grading records final points on the issue ([board](board.md)).
+10. **`watch.preview` defaults off.** Wake lines carry metadata only unless the project opts in (chat, 2026-10-17); previews never grant authority ([watching and muting](gateway.md#watching-and-muting)).
+11. **Permission installation is owner-controlled.** The original pilot deferred vmethod's `.claude/settings.json` until consumer 1.0 adoption (#13). Current code supports an explicit owner-approved prerelease deferral with warnings; stable releases reject deferral. This is not permission for agents to bypass wrappers or install their own rules, and a passing check does not prove an OS sandbox ([owner-installed permissions](security.md#owner-installed-permissions)).
+12. **1.0.0 is the first stable interface.** The release-preparation decision uses a breaking fragment so the initial candidate is `1.0.0-rc.1`, not `0.1.0-rc.1` (#13). The current release planner implements that transition (`scripts/release-plan.mjs releasePlan`); subsequent breaking changes follow SemVer.
 
 ## Interactions
 
@@ -339,6 +388,8 @@ These details can look accidental. Preserve them, or explicitly justify their ar
 
 ## Toolchain and verification
 
-TypeScript strict checking, esbuild bundling, Vitest, ESLint/typescript-eslint, Prettier, Husky/lint-staged and Knip are configured in `package.json` and the repository tool configs. Tests inject fetch/exec and fail-loud fakes for gateway behaviour; integration/launcher and packed-install smoke checks also exercise real local child processes. No live GitHub credentials are needed for tests. `scripts/smoke.mjs` installs the packed bundle into a fixture consumer and checks it there.
+TypeScript strict checking, esbuild bundling, Vitest, ESLint/typescript-eslint, Prettier (with prettier-plugin-sh for shell), Husky/lint-staged pre-commit hooks and Knip are configured in `package.json` and the repository tool configs. Tests inject fetch/exec and fail-loud fakes for gateway behaviour; integration/launcher and packed-install smoke checks also exercise real local child processes. No live GitHub credentials are needed for tests. `scripts/smoke.mjs` installs the packed bundle into a fixture consumer and checks it there.
+
+The CI recipe covers format, lint, typecheck, tests, build, smoke and unused-code checks (`.github/workflows/ci.yml`); publishing has its own checked workflow and trusted identity/provenance path. [Tooling incident rules](tooling-rules.md#fakes-and-guards-fail-loudly) own recorded response shapes, failing fake defaults, behavioural assertions, hostile inputs, bounded tests and package-replacement checks. These preserve the original testing methodology without claiming that local process tests use no real git. Consumer-specific oracles, headless checks and benchmarks belong in the local verification recipe reached through the [verify hook](gateway.md#verify-hook); there is no separate exported testing package in the delivered npm exports.
 
 Run the project's configured `checks.verify` recipe and task-specific gates; see the [worker guide](worker-guide.md#checks-and-submission). Keep behavioural assertions, hostile-input coverage, bounded timeouts and explicit failure evidence. Public operation signatures live in source; [gateway](gateway.md), [board](board.md), [security](security.md), [protocol](protocol.md) and the role guides own operational instructions. Consumer routing stays local: `AGENTS.md` points to pinned package guides plus project-specific engineering rules.
