@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
-import { WatchFake } from "./watch-fake.js";
-import { actor, hostile } from "./helpers.js";
+import { WatchFake } from "../gateway/watch-fake.js";
+import { actor, hostile } from "../gateway/helpers.js";
 import { object, type ObjectData } from "../../src/gateway/people.js";
 import recorded from "../fixtures/github/review-threads.json" with { type: "json" };
 import { WriteJournal } from "../../src/gateway/write-journal.js";
