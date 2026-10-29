@@ -1,3 +1,10 @@
+import {
+  checkInText,
+  hasRolePrefix,
+  heading,
+  parseFirstLine,
+  roundText,
+} from "../core/protocol.js";
 import { LoopState, Marker } from "../watch/state.js";
 import { OwnedLock } from "../journal/locks.js";
 import { renderPermissions } from "./permission-detail.js";
@@ -2129,7 +2136,7 @@ export class EventLoop {
       if (
         own &&
         !this.marked(this.state.once(progressKey)) &&
-        /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)
+        parseFirstLine(firstLine, { role: "orchestrator", tags: ["ANSWER", "GO"] })
       ) {
         this.queueProgress(number, {
           state: taskPr ? "working" : null,
@@ -2141,7 +2148,10 @@ export class EventLoop {
         own &&
         !edited &&
         !this.marked(this.state.once(progressKey)) &&
-        /^\[orchestrator\] OWNER (?:QUESTION|REVIEW)\b/.test(firstLine)
+        parseFirstLine(firstLine, {
+          role: "orchestrator",
+          tags: ["OWNER QUESTION", "OWNER REVIEW"],
+        })
       ) {
         this.queueProgress(number, {
           state: firstLine.includes("QUESTION") ? "owner-question" : "owner-review",
@@ -2169,7 +2179,7 @@ export class EventLoop {
       own &&
       (!edited || inline) &&
       person.role === "owner" &&
-      !/^\[orchestrator\]/.test(firstLine)
+      !hasRolePrefix(firstLine, "orchestrator")
     ) {
       let linked = false;
       for (const [pr, issues] of this.taskIssues) {
@@ -2201,29 +2211,32 @@ export class EventLoop {
     // REST cannot identify the editor. Wake for verification, never execute an edited tag.
     const workerTag = edited
       ? null
-      : /^\[worker\] (READY|QUESTION|DESIGN|BLOCKED|HANDOFF)\b/.exec(firstLine);
-    const round = /round\s+(\d+)/i.exec(firstLine);
+      : parseFirstLine(firstLine, {
+          role: "worker",
+          tags: ["READY", "QUESTION", "DESIGN", "BLOCKED", "HANDOFF"],
+        });
+    const round = roundText(firstLine);
     if (taskPr && person.role === "worker" && workerTag) {
       if (
         this.produceOnce(
           commentKey,
-          inline ? "comment" : workerTag[1].toLowerCase(),
+          inline ? "comment" : workerTag.tag.toLowerCase(),
           inline
             ? commentLine
-            : `PR #${number} (${this.branchOf(number)}): worker ${workerTag[1]}${round ? ` (round ${round[1]})` : ""} from ${login} (${person.role})${preview} ${url}`
+            : `PR #${number} (${this.branchOf(number)}): worker ${workerTag.tag}${round ? ` (round ${round})` : ""} from ${login} (${person.role})${preview} ${url}`
         )
       ) {
         this.touchActivity(number, created);
         // A dispatched fixer's protocol turn must not move the resolution's card.
         if (!this.host.conflictFixing?.(number)) {
-          if (workerTag[1] === "READY") {
+          if (workerTag.tag === "READY") {
             this.queueProgress(number, {
               status: "Executing",
               state: "ready",
-              ...(round ? { round: count(round[1]) } : {}),
+              ...(round ? { round: count(round) } : {}),
             });
           } else {
-            this.queueProgress(number, { state: workerTag[1].toLowerCase() });
+            this.queueProgress(number, { state: workerTag.tag.toLowerCase() });
           }
         }
       }
@@ -2232,7 +2245,7 @@ export class EventLoop {
     if (
       !inline &&
       !edited &&
-      /^\[worker\]/.test(firstLine) &&
+      hasRolePrefix(firstLine, "worker") &&
       person.role === "worker" &&
       !workerTag
     ) {
@@ -2917,7 +2930,7 @@ export class EventLoop {
         `/repos/${this.own}/issues/${card.number}/comments`,
         "POST",
         {
-          body: "[orchestrator] AUTOPILOT\n\nRemoved an unauthorized autopilot label. Only the pinned owner can grant autopilot; open-task may copy an existing owner grant.",
+          body: `${heading("AUTOPILOT")}\n\nRemoved an unauthorized autopilot label. Only the pinned owner can grant autopilot; open-task may copy an existing owner grant.`,
         },
         false
       );
@@ -3879,10 +3892,15 @@ export class EventLoop {
     }
     const first = str(comment.body).split(/\r?\n/)[0];
     const requestTag =
-      role === "worker" ? /^\[worker\] (READY|QUESTION|BLOCKED)\b/.exec(first)?.[1] : undefined;
+      role === "worker"
+        ? parseFirstLine(first, { role: "worker", tags: ["READY", "QUESTION", "BLOCKED"] })?.tag
+        : undefined;
     const reply =
       role === "orchestrator" &&
-      /^\[orchestrator\] (?:REVIEW|OWNER REVIEW|ANSWER|AMENDMENT|GO)\b/.test(first);
+      parseFirstLine(first, {
+        role: "orchestrator",
+        tags: ["REVIEW", "OWNER REVIEW", "ANSWER", "AMENDMENT", "GO"],
+      });
     if (requestTag || reply) {
       const previous = this.state.pr(number).unhandledWorker.read();
       if (at >= str(previous.at)) {
@@ -3895,11 +3913,17 @@ export class EventLoop {
     let active: boolean;
     let workerTag: string | undefined;
     if (role === "worker") {
-      workerTag = /^\[worker\] (READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.exec(first)?.[1];
+      workerTag = parseFirstLine(first, {
+        role: "worker",
+        tags: ["READY", "QUESTION", "BLOCKED", "DESIGN", "HANDOFF"],
+      })?.tag;
       active = !workerTag;
     } else if (
       role === "orchestrator" &&
-      /^\[orchestrator\] (?:REVIEW|CHANGES|ANSWER|AMENDMENT|GO)\b/.test(first)
+      parseFirstLine(first, {
+        role: "orchestrator",
+        tags: ["REVIEW", "CHANGES", "ANSWER", "AMENDMENT", "GO"],
+      })
     ) {
       active = true;
       if (at >= (this.readReview(number)?.at ?? "")) {
@@ -4112,10 +4136,7 @@ export class EventLoop {
         const round = str(prompt.id) || "unknown";
         const count = Number(this.readMarker(this.state.pr(pr.number).checkin.at(key(round))) || 0);
         if (count < 2 && this.host.workerSend) {
-          await this.host.workerSend(
-            pr.number,
-            `[orchestrator] CHECK-IN: your turn ended without a status comment on the PR. Post exactly one of READY, QUESTION, BLOCKED or DESIGN on PR #${pr.number} with \`vmethod pr-comment\`. If you are not done, finish only the remaining acceptance steps first, adding no new scope. If you are unsure or stuck, post QUESTION or BLOCKED and stop.`
-          );
+          await this.host.workerSend(pr.number, checkInText(pr.number));
           this.writeMarker(this.state.pr(pr.number).checkin.at(key(round)), String(count + 1));
           await this.host.workerMetric?.(pr.number, {
             id: `checkin-${metricId}`,

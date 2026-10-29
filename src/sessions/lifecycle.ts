@@ -1,3 +1,4 @@
+import { heading, parseFirstLine, wakeHeading } from "../core/protocol.js";
 import type { WorkerSessionStatus } from "../gateway/client.js";
 import { taskHeld } from "../gateway/task-hold.js";
 import { modelGateError } from "../evidence/model-gate.js";
@@ -157,7 +158,7 @@ export function plan(
           effects.push(
             {
               kind: "model-comment",
-              text: `[orchestrator] NOTE: model switched to ${pending.model.family} (${pending.why.replace(/\s+/g, " ").trim()}); reason: ${pending.reason}`,
+              text: `${heading("NOTE")}: model switched to ${pending.model.family} (${pending.why.replace(/\s+/g, " ").trim()}); reason: ${pending.reason}`,
             },
             { kind: "record", set: { quotaResume: { ...pending, synced: true } } },
             { kind: "save" }
@@ -340,7 +341,7 @@ export function plan(
           ]);
         }
         effects.push({ kind: "record", set: { pendingWake: wakes.keep } });
-        if (wakes.keep.some((text) => !text.startsWith("[orchestrator] CHECK-IN:"))) {
+        if (wakes.keep.some((text) => !text.startsWith(`${heading("CHECK-IN")}:`))) {
           effects.push({ kind: "restore-conflict" });
         }
         effects.push(
@@ -433,13 +434,16 @@ export function filterStaleWakes(
     .filter(
       (comment) =>
         comment.role === "worker" &&
-        /^\[worker\] (?:READY|QUESTION|BLOCKED|DESIGN|HANDOFF)\b/.test(firstLine(comment.body)) &&
+        parseFirstLine(firstLine(comment.body), {
+          role: "worker",
+          tags: ["READY", "QUESTION", "BLOCKED", "DESIGN", "HANDOFF"],
+        }) &&
         !(Date.parse(comment.date) >= conflictSentAt)
     )
     .sort((a, b) => Date.parse(a.date) - Date.parse(b.date))
     .at(-1);
   const kept = queued.filter((text) => {
-    const heading = /^\[orchestrator\] (.+) is on your PR;/.exec(text)?.[1];
+    const heading = wakeHeading(text);
     if (!heading) {
       return true;
     }

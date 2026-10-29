@@ -1,3 +1,4 @@
+import { autopilotHead, heading, parseFirstLine } from "../core/protocol.js";
 import type { Config } from "../config.js";
 import type { BoardService } from "../gateway/board.js";
 import type { GitHubClient } from "../gateway/client.js";
@@ -130,11 +131,7 @@ export class EvidenceReader {
     };
     if (explain) {
       // Delegation must still be current before an old autopilot head is diagnostic evidence.
-      const delegated = comments.filter((comment) =>
-        /^\[orchestrator\] AUTOPILOT APPROVED\n\nCurrent head: [a-f\d]{40}\n/i.test(
-          String(comment.body)
-        )
-      );
+      const delegated = comments.filter((comment) => autopilotHead(String(comment.body)));
       const state = delegated.length
         ? await this.autopilotFor(await this.host.flowThread(ref, "pr"))
         : undefined;
@@ -163,9 +160,7 @@ export class EvidenceReader {
     const pr = await this.host.flowThread(ref, "pr");
     const state = await this.autopilotFor(pr);
     const reviews = (await this.host.flowComments(String(pr.id))).filter((comment) =>
-      String(comment.body).startsWith(
-        `[orchestrator] AUTOPILOT APPROVED\n\nCurrent head: ${head}\n`
-      )
+      String(comment.body).startsWith(`${heading("AUTOPILOT APPROVED")}\n\nCurrent head: ${head}\n`)
     );
     if (reviews.length && !state.active) {
       throw new Error("autopilot delegation is no longer current; ask the owner");
@@ -224,14 +219,17 @@ export class EvidenceReader {
       }
     }
     for (const comment of await this.host.flowComments(String(item.id))) {
-      const delegated =
-        /^\[orchestrator\] AUTOPILOT APPROVED\n\nCurrent head: ([a-f\d]{40})\n/i.exec(
-          String(comment.body)
-        );
+      const delegated = autopilotHead(String(comment.body));
       if (delegated) {
-        candidates.add(delegated[1]);
+        candidates.add(delegated);
       }
-      if (/^\[orchestrator\] OWNER REVIEW(?:\s|$)/.test(String(comment.body))) {
+      if (
+        parseFirstLine(String(comment.body), {
+          role: "orchestrator",
+          tags: ["OWNER REVIEW"],
+          boundary: "whitespace",
+        })
+      ) {
         for (const head of String(comment.body).match(/\b[a-f\d]{40}\b/gi) ?? []) {
           candidates.add(head);
         }

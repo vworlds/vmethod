@@ -1,3 +1,4 @@
+import { parseFirstLine } from "../core/protocol.js";
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "../gateway/people.js";
@@ -49,7 +50,12 @@ export function scopeApproved(
   const time = (item: ObjectData) => Date.parse(String(item.lastEditedAt ?? item.createdAt));
   const reviews = comments.filter(
     (comment) =>
-      trusted(comment) && /^\[orchestrator\] SCOPE REVIEW(?:\r?\n|$)/.test(String(comment.body))
+      trusted(comment) &&
+      parseFirstLine(String(comment.body), {
+        role: "orchestrator",
+        tags: ["SCOPE REVIEW"],
+        boundary: "line",
+      })
   );
   if (reviews.some((review) => !Number.isFinite(time(review)))) {
     return false;
@@ -157,7 +163,12 @@ export function scopeRefusal(
   const reviews = comments
     .filter(
       (comment) =>
-        trusted(comment) && /^\[orchestrator\] SCOPE REVIEW(?:\r?\n|$)/.test(String(comment.body))
+        trusted(comment) &&
+        parseFirstLine(String(comment.body), {
+          role: "orchestrator",
+          tags: ["SCOPE REVIEW"],
+          boundary: "line",
+        })
     )
     .sort((a, b) => time(b) - time(a));
   const review = reviews[0];
@@ -215,7 +226,11 @@ function reviewPending(
       orchestrates(filter, filter.identity(comment.author), repoOf(comment).repo || repo) &&
       (comment.lastEditedAt == null ||
         orchestrates(filter, filter.identity(comment.editor), repoOf(comment).repo || repo)) &&
-      /^\[orchestrator\] SCOPE REVIEW(?:\r?\n|$)/.test(String(comment.body))
+      parseFirstLine(String(comment.body), {
+        role: "orchestrator",
+        tags: ["SCOPE REVIEW"],
+        boundary: "line",
+      })
   );
   const review = reviews.sort((a, b) => time(b) - time(a))[0];
   if (!review || !Number.isFinite(time(review)) || typeof issue.body !== "string") {

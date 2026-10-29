@@ -24,6 +24,12 @@ Use a machine-readable first line and keep the delivery conversation on its card
 APPROVED from an orchestrator accepts worker work, but is not a forged
 owner approval. Only [verified identity and role](security.md) confer authority.
 
+The code vocabulary and renderers live in [`src/core/protocol.ts`](../src/core/protocol.ts).
+When reading protocol text, authenticate the speaker separately and select the
+existing reader's explicit compatibility options: short or full READY, word,
+whitespace or exact-line boundary, and case/spacing rules for round suffixes.
+Do not widen a reader merely to match another reader's accepted spelling.
+
 The scripts keep assignee and Progress together: worker READY (`🤖👍`), QUESTION
 (`🤖❓`) and BLOCKED (`🤖🚫`) hand the turn to the orchestrator. OWNER REVIEW
 (`👤🔍`) and OWNER QUESTION (`👤❓`) hand it to the owner on the PR.
