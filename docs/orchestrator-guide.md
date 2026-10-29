@@ -179,6 +179,10 @@ counts as their approval; see [Security](security.md#authority-and-filtering).
 
 ## Scope review
 
+Use [the architecture](architecture.md) as the reference for further features. If a
+specification changes it, name the architecture change and its justification in
+the issue specification and SCOPE REVIEW summary so the owner sees it.
+
 While an issue is under discussion, leave its body alone. Acknowledge and reason
 about each point (yours, the owner's, other orchestrators') in comments, so the
 thread shows how the ideas fit together. Do not fold each comment into the body as

@@ -6,7 +6,7 @@ project orchestrators and worker agents use. Projects (e.g. `vworlds/spacerocks`
 locally.
 
 > Status: 1.0 release candidates on npm `next` (latest `1.0.0-rc.11`), consumed by vecs,
-> SpaceRocks and Alfie-Labs/NNext. The design lives in `docs/architecture.md`.
+> SpaceRocks and Alfie-Labs/NNext. The current architecture reference lives in `docs/architecture.md`.
 
 ## Roles
 
@@ -51,7 +51,7 @@ tools it ships.
 
 ## Layout
 
-- `docs/architecture.md`: the vmethod design (distribution, config, toolchain, roadmap).
+- `docs/architecture.md`: the current architecture reference (concepts, invariants, distribution, config and toolchain).
 - `docs/`: the methodology guides (roles, lifecycle, protocol, gateway, board, learnings).
 - `vmethod.yaml`, `people.yaml`, `models.yaml`: this repo's own configuration (dogfooding).
   `people.yaml` lists who the agents may hear from (login, numeric id, role); vmethod's copy is

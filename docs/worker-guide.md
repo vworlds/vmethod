@@ -74,6 +74,10 @@ do not kill someone else's process to make a check pass.
 
 ## Implement with evidence
 
+Use [the architecture](architecture.md) as the reference for further features. If
+you find the agreed specification needs an architecture change, post DESIGN
+rather than making it; explain the needed change and its justification.
+
 - Stay in scope. Search existing helpers, configuration and callers before adding
   another abstraction or knob. Identify ownership, lifecycle, ordering, units and
   integration boundaries using local engineering rules. Preserve deliberate behavior;
