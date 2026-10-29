@@ -1,10 +1,5 @@
-import {
-  checkInText,
-  hasRolePrefix,
-  heading,
-  parseFirstLine,
-  roundText,
-} from "../core/protocol.js";
+import { checkInText, heading } from "../core/protocol.js";
+import { CommentStream } from "../watch/comments.js";
 import { LoopState, Marker } from "../watch/state.js";
 import { OwnedLock } from "../journal/locks.js";
 import { renderPermissions } from "./permission-detail.js";
@@ -34,7 +29,7 @@ import { stateRoot, type Digest } from "./digest.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
 import { repoOf, restActor } from "../github/diagnostic.js";
 import { pages, restPages } from "../github/pages.js";
-import { actorFields, reviewCommentFields } from "../github/selections.js";
+import { actorFields } from "../github/selections.js";
 import { WriteJournal } from "./write-journal.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
@@ -138,11 +133,6 @@ interface PendingEvent {
   line: string;
   once: boolean;
   quiet?: string[];
-}
-
-interface InlineComment {
-  comment: ObjectData;
-  inline: { person: Person; id: number; location: string };
 }
 
 interface PrInfo {
@@ -369,7 +359,7 @@ export class EventLoop {
   private readonly known = new Set<number>();
   private readonly cycleStale = new Set<number>();
   private readonly cycleOwnMoves = new Set<string>();
-  private cycleInlineComments: InlineComment[] = [];
+  private readonly comments: CommentStream;
   private inprogress: { number: number; branch: string; working: boolean }[] = [];
   private taskIssues = new Map<number, number[]>();
   private pendingMergedIssues = new Set<number>();
@@ -453,6 +443,45 @@ export class EventLoop {
     this.boardReader = new WatchBoard(host.github);
     this.preview = object(config.watch).preview === true;
     this.boardEnabled = object(config.board).enabled !== false;
+    this.comments = new CommentStream({
+      state: this.state,
+      github: host.github,
+      filter: host.filter,
+      writes: this.writes,
+      own: this.own,
+      subscriptions: this.subscriptions,
+      preview: this.preview,
+      known: this.known,
+      subjectPreviews: this.subjectPreviews,
+      now: () => host.deps.now(),
+      current: () => ({
+        me: this.me,
+        meId: this.meId,
+        firstRun: this.firstRun,
+        taskIssues: this.taskIssues,
+      }),
+      isOwn: (repo) => this.isOwn(repo),
+      inScope: (number) => this.inScope(number),
+      trackOne: (number) => this.trackOne(number),
+      readCursor: () => this.readCursor(),
+      restRead: (action) => this.restRead(action),
+      restPages: (path, collect) => this.restPages(path, collect),
+      marked: (marker) => this.marked(marker),
+      mark: (marker) => this.mark(marker),
+      pending: () => this.pending(),
+      muted: (repo, number) => this.muted(repo, number),
+      mentionsMe: (body) => this.mentionsMe(body),
+      unmuteThread: (repo, number) => this.unmuteThread(repo, number),
+      touchActivity: (number, at) => this.touchActivity(number, at),
+      conflictFixing: (number) => host.conflictFixing?.(number) ?? false,
+      queueProgress: (number, change) => this.queueProgress(number, change),
+      previewText: (person, text) => this.previewText(person, text),
+      ref: (repo, number) => this.ref(repo, number),
+      threadUrl: (repo, number, kind) => this.threadUrl(repo, number, kind),
+      produceOnce: (id, kind, line) => this.produceOnce(id, kind, line),
+      quietOnce: (id, line) => this.quietOnce(id, line),
+      sanitizeLine,
+    });
   }
 
   async nextEvents(input: WatchInput): Promise<{
@@ -821,17 +850,6 @@ export class EventLoop {
       return;
     }
     this.state.pr(number).activity.write(`${at}\n`);
-  }
-
-  private readReview(number: number): { at: string; id: string } | null {
-    const parsed = this.state.pr(number).review.read();
-    return typeof parsed.at === "string" && typeof parsed.id === "string"
-      ? { at: parsed.at, id: parsed.id }
-      : null;
-  }
-
-  private writeReview(number: number, review: { at: string; id: string }): void {
-    this.state.pr(number).review.write(review);
   }
 
   // ---------------------------------------------------------------- start and lock
@@ -1262,7 +1280,7 @@ export class EventLoop {
     this.cycle++;
     this.cycleStale.clear();
     this.cycleOwnMoves.clear();
-    this.cycleInlineComments = [];
+    this.comments.beginPoll();
     this.cycleWorkers.clear();
     let ok = true;
     if (this.me === null) {
@@ -1287,7 +1305,7 @@ export class EventLoop {
       ok = (await this.step("track labels", () => this.refreshTracks())) && ok;
     }
     const pullsOk = await this.step("pull requests", () => this.pollPulls());
-    const commentsOk = await this.step("comments", () => this.pollComments());
+    const commentsOk = await this.step("comments", () => this.comments.pollComments());
     if (commentsOk && pullsOk) {
       for (const pr of this.observedPrs) {
         await this.watchStale(pr);
@@ -1463,7 +1481,7 @@ export class EventLoop {
               : "UNKNOWN",
       };
       await this.processOpenPr(pr);
-      await this.pollReviewThreads(number);
+      await this.comments.pollReviewThreads(number);
       observedPrs.push(pr);
     }
     for (const name of readdirSync(this.dir)) {
@@ -1511,7 +1529,7 @@ export class EventLoop {
       !this.marked(this.state.pr(pr.number).promptsSeeded) ||
       !this.marked(this.state.pr(pr.number).protocolSeeded)
     ) {
-      await this.seedPrComments(pr);
+      await this.comments.seedPrComments(pr.number);
       this.mark(this.state.pr(pr.number).seeded);
       this.mark(this.state.pr(pr.number).promptsSeeded);
       this.mark(this.state.pr(pr.number).protocolSeeded);
@@ -1609,7 +1627,7 @@ export class EventLoop {
 
   private async watchStale(pr: PrInfo): Promise<void> {
     const url = this.threadUrl(this.own, pr.number, "PR");
-    const review = this.readReview(pr.number);
+    const review = this.comments.readReview(pr.number);
     const activity = this.activityAt(pr.number);
     if (
       this.workerExpectedActive(pr.number) &&
@@ -1651,27 +1669,6 @@ export class EventLoop {
         )
       ) {
         this.queueProgress(pr.number, { state: "idle", if: ["working"] });
-      }
-    }
-  }
-
-  /** First run records the current comments of each task PR: activity and my last review. */
-  private async seedPrComments(pr: PrInfo): Promise<void> {
-    const comments = await this.restPages(
-      (page) =>
-        `/repos/${this.own}/issues/${pr.number}/comments?per_page=100&sort=created&direction=desc&page=${page}`,
-      (data) => this.list(data)
-    );
-    for (const comment of comments) {
-      const created = str(comment.created_at);
-      if (!created) {
-        continue;
-      }
-      this.touchActivity(pr.number, created);
-      this.rememberWorkerProtocol(pr.number, comment, this.own);
-      if (this.isSelf(comment)) {
-        const first = str(comment.body).split(/\r?\n/)[0];
-        this.rememberWorkerPrompt(pr.number, first, created, str(comment.html_url));
       }
     }
   }
@@ -1857,421 +1854,6 @@ export class EventLoop {
     marker.write(pending);
   }
 
-  // ---------------------------------------------------------------- comments
-
-  private async pollReviewThreads(number: number): Promise<void> {
-    const [owner, name] = this.own.split("/");
-    const threads: ObjectData[] = [];
-    for await (const connection of pages(
-      async (cursor) => {
-        const data = object(
-          await this.host.github.graphql(
-            `query WatchReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-        repository(owner: $owner, name: $name) { pullRequest(number: $number) {
-          reviewThreads(first: 100, after: $cursor) {
-            pageInfo { hasNextPage endCursor }
-            nodes { id isResolved path line comments(first: 100) {
-              pageInfo { hasNextPage endCursor } nodes { ${reviewCommentFields} }
-            } }
-          }
-        } }
-      }`,
-            { owner, name, number, cursor }
-          )
-        );
-        return object(object(data.repository).pullRequest).reviewThreads;
-      },
-      {
-        connectionError: "Invalid review-thread connection",
-        pageInfoError: "Invalid review-thread connection",
-        cursorError: "Invalid review-thread cursor",
-        nonempty: true,
-        repeats: "previous",
-        validateFirst: true,
-        limit: PAGE_LIMIT,
-        limitError: "Watcher review-thread pagination limit reached",
-      }
-    )) {
-      threads.push(...this.list(connection.nodes));
-    }
-    const observed: string[] = [];
-    const entries: { comment: ObjectData; thread: ObjectData; suppress: boolean }[] = [];
-    for (const thread of threads) {
-      if (
-        !str(thread.id) ||
-        typeof thread.isResolved !== "boolean" ||
-        typeof thread.path !== "string" ||
-        (thread.line !== null && count(thread.line) === null)
-      ) {
-        throw new Error("Invalid review-thread payload");
-      }
-      const comments = await this.reviewThreadComments(thread);
-      const seen = `rt-${key(str(thread.id))}`;
-      const suppress = thread.isResolved && !this.marked(this.state.once(seen));
-      observed.push(seen);
-      entries.push(...comments.map((comment) => ({ comment, thread, suppress })));
-    }
-    // Stage accepted replies; pollComments orders them together with conversation
-    // comments before applying turns, independently of thread connection order.
-    for (const { comment, thread, suppress } of entries) {
-      const id = count(comment.databaseId);
-      if (
-        id === null ||
-        !str(comment.createdAt) ||
-        !Number.isFinite(Date.parse(str(comment.createdAt)))
-      ) {
-        throw new Error("Invalid inline comment payload");
-      }
-      const commentKey = `rc-${id}`;
-      // Unlike cursor-window conversation markers, these IDs persist: the whole
-      // reviewThreads connection is read again on subsequent polls and restarts.
-      if (
-        suppress ||
-        Date.parse(str(comment.createdAt)) <=
-          Date.parse(this.readMarker(this.state.listingBaseline))
-      ) {
-        this.mark(this.state.once(commentKey));
-        continue;
-      }
-      if (
-        this.marked(this.state.once(commentKey)) ||
-        this.pending().some((event) => event.id === commentKey)
-      ) {
-        continue;
-      }
-      const url = `${this.threadUrl(this.own, number, "PR")}#discussion_r${id}`;
-      const person = this.host.filter.accept(
-        {
-          ...comment,
-          repository: {
-            nameWithOwner: this.own,
-            owner: { login: owner },
-          },
-        },
-        owner,
-        url
-      );
-      if (!person) {
-        continue;
-      }
-      this.cycleInlineComments.push({
-        comment: {
-          id,
-          node_id: comment.id,
-          html_url: url,
-          issue_url: `https://api.github.com/repos/${this.own}/issues/${number}`,
-          user: { id: person.id, login: person.login, type: person.type },
-          body: comment.body,
-          created_at: comment.createdAt,
-          updated_at: comment.lastEditedAt ?? comment.createdAt,
-        },
-        inline: {
-          person,
-          id,
-          location: `${sanitizeLine(str(thread.path))}:${String(thread.line)}`,
-        },
-      });
-    }
-    for (const seen of observed) {
-      this.mark(this.state.once(seen));
-    }
-  }
-
-  private async reviewThreadComments(thread: ObjectData): Promise<ObjectData[]> {
-    const comments: ObjectData[] = [];
-    for await (const connection of pages(
-      async (cursor) => {
-        if (cursor === null) {
-          return thread.comments;
-        }
-        const data = object(
-          await this.host.github.graphql(
-            `query WatchReviewThreadComments($id: ID!, $cursor: String!) {
-        node(id: $id) { ... on PullRequestReviewThread { comments(first: 100, after: $cursor) {
-          pageInfo { hasNextPage endCursor } nodes { ${reviewCommentFields} }
-        } } }
-      }`,
-            { id: thread.id, cursor }
-          )
-        );
-        return object(data.node).comments;
-      },
-      {
-        connectionError: "Invalid review-thread connection",
-        pageInfoError: "Invalid review-thread connection",
-        cursorError: "Invalid review-thread cursor",
-        nonempty: true,
-        repeats: "previous",
-        validateFirst: true,
-        limit: PAGE_LIMIT,
-        limitError: "Watcher inline-comment pagination limit reached",
-      }
-    )) {
-      comments.push(...this.list(connection.nodes));
-    }
-    return comments;
-  }
-
-  private async pollComments(): Promise<void> {
-    const cursor = this.readCursor();
-    const since = cursor
-      ? new Date(Date.parse(cursor) - CURSOR_OVERLAP_MS).toISOString()
-      : this.readMarker(this.state.listingBaseline) || new Date(this.host.deps.now()).toISOString();
-    for (const repo of this.subscriptions) {
-      const incoming: { comment: ObjectData; inline?: InlineComment["inline"] }[] = this.isOwn(repo)
-        ? [...this.cycleInlineComments]
-        : [];
-      const comments = await this.restPages(
-        (page) =>
-          `/repos/${repo}/issues/comments?since=${encodeURIComponent(since)}&sort=created&direction=asc&per_page=100&page=${page}`,
-        (data) => this.list(data)
-      );
-      for (const comment of comments) {
-        if (
-          Date.parse(str(comment.created_at)) <=
-          Date.parse(this.readMarker(this.state.listingBaseline) || (this.firstRun ? since : ""))
-        ) {
-          this.mark(this.state.once(`c-${key(str(comment.html_url))}`));
-          continue;
-        }
-        incoming.push({ comment });
-      }
-      // Conversation and inline comments share one chronological turn stream.
-      for (const { comment, inline } of incoming.sort(
-        (a, b) => Date.parse(str(a.comment.created_at)) - Date.parse(str(b.comment.created_at))
-      )) {
-        await this.processComment(repo, comment, inline);
-      }
-    }
-  }
-
-  private isSelf(comment: ObjectData): boolean {
-    const id = count(restActor(comment.user).databaseId);
-    return id !== null && id === this.meId;
-  }
-
-  private async processComment(
-    repo: string,
-    comment: ObjectData,
-    inline?: InlineComment["inline"]
-  ): Promise<void> {
-    const number = count(str(comment.issue_url).split("/").at(-1));
-    const url = str(comment.html_url);
-    const body = str(comment.body);
-    const created = str(comment.created_at);
-    const login = str(object(comment.user).login);
-    if (number === null || !url || !created) {
-      throw new Error("Invalid comment payload");
-    }
-    const own = this.isOwn(repo);
-    if (own && !this.known.has(number)) {
-      await this.trackOne(number);
-    }
-    if (own && !this.inScope(number)) {
-      return;
-    }
-    let person =
-      inline?.person ??
-      this.host.filter.accept(
-        {
-          author: restActor(comment.user),
-          editor: null,
-          lastEditedAt: null,
-          repository: { nameWithOwner: repo, owner: { login: repo.split("/")[0] } },
-        },
-        repo.split("/")[0],
-        url
-      );
-    if (!person && !this.isSelf(comment)) {
-      return;
-    }
-    const commentKey = inline ? `rc-${inline.id}` : `c-${key(url)}`;
-    if (
-      !this.isSelf(comment) &&
-      (this.marked(this.state.once(commentKey)) ||
-        this.pending().some((event) => event.id === commentKey))
-    ) {
-      return;
-    }
-    if (this.muted(repo, number)) {
-      if (this.mentionsMe(body)) {
-        this.unmuteThread(repo, number);
-      } else {
-        return;
-      }
-    }
-    const firstLine = body.split(/\r?\n/)[0];
-    const edited =
-      created !== str(comment.updated_at)
-        ? inline
-          ? " (edited)"
-          : " (edited: verify editor)"
-        : "";
-    const taskPr = own && this.marked(this.state.pr(number).open);
-    if (taskPr) {
-      // Task PRs always belong to the configured repository; the role is per repo (#186).
-      this.rememberWorkerProtocol(number, comment, repo);
-    }
-    const selfWrite =
-      this.isSelf(comment) &&
-      this.writes.matches(
-        {
-          kind: inline ? "review-comment" : "comment",
-          repo,
-          number,
-          ...(count(comment.id) !== null ? { commentId: Number(comment.id) } : {}),
-          ...(typeof comment.node_id === "string" ? { nodeId: comment.node_id } : {}),
-        },
-        created
-      );
-    if (this.isSelf(comment)) {
-      // Only the watching orchestrator's own comments are skipped; matched by id.
-      if (taskPr) {
-        this.touchActivity(number, created);
-        this.rememberWorkerPrompt(number, firstLine, created, url);
-      }
-      // Separate from delivery acknowledgement: even journaled own comments
-      // must apply Progress once, but never replay it over a later human move.
-      const progressKey = inline ? `rc-progress-${inline.id}` : `c-${key(`progress:${url}`)}`;
-      if (
-        own &&
-        !this.marked(this.state.once(progressKey)) &&
-        parseFirstLine(firstLine, { role: "orchestrator", tags: ["ANSWER", "GO"] })
-      ) {
-        this.queueProgress(number, {
-          state: taskPr ? "working" : null,
-          ...(taskPr ? { status: "Executing" } : {}),
-        });
-        this.mark(this.state.once(progressKey));
-      }
-      if (
-        own &&
-        !edited &&
-        !this.marked(this.state.once(progressKey)) &&
-        parseFirstLine(firstLine, {
-          role: "orchestrator",
-          tags: ["OWNER QUESTION", "OWNER REVIEW"],
-        })
-      ) {
-        this.queueProgress(number, {
-          state: firstLine.includes("QUESTION") ? "owner-question" : "owner-review",
-          ...(taskPr
-            ? { status: firstLine.includes("QUESTION") ? "Executing" : "Owner review" }
-            : {}),
-        });
-        this.mark(this.state.once(progressKey));
-      }
-      if (selfWrite) {
-        return;
-      }
-      person ??= {
-        login: this.me ?? login,
-        id: this.meId!,
-        type: "User",
-        role: "orchestrator",
-        repos: [this.own],
-      };
-    }
-    if (!person) {
-      return;
-    }
-    if (
-      own &&
-      (!edited || inline) &&
-      person.role === "owner" &&
-      !hasRolePrefix(firstLine, "orchestrator")
-    ) {
-      let linked = false;
-      for (const [pr, issues] of this.taskIssues) {
-        if (issues.includes(number)) {
-          linked = true;
-          this.queueProgress(pr, { state: "verifying" });
-        }
-      }
-      if (!linked) {
-        this.queueProgress(number, { state: "verifying" });
-      }
-    }
-    if (taskPr && person.role === "worker") {
-      this.touchActivity(number, created);
-      if (!this.host.conflictFixing?.(number)) {
-        this.queueProgress(number, { state: "working", if: revivedProgressStates });
-      }
-    }
-    let subject = this.subjectPreviews.get(`${repo.toLowerCase()}#${number}`);
-    if (this.preview && !subject) {
-      const item = object(
-        await this.restRead(() => this.host.github.rest(`/repos/${repo}/issues/${number}`))
-      );
-      subject = { title: str(item.title), person };
-      this.subjectPreviews.set(`${repo.toLowerCase()}#${number}`, subject);
-    }
-    const preview = edited ? "" : this.previewText(person, `${subject?.title ?? ""} ${firstLine}`);
-    const commentLine = `COMMENT ${this.ref(repo, number)}${inline ? ` ${inline.location}` : ""} from ${login} (${person.role})${this.isSelf(comment) ? " (this account, another session)" : ""}${edited}${preview} ${url}`;
-    // REST cannot identify the editor. Wake for verification, never execute an edited tag.
-    const workerTag = edited
-      ? null
-      : parseFirstLine(firstLine, {
-          role: "worker",
-          tags: ["READY", "QUESTION", "DESIGN", "BLOCKED", "HANDOFF"],
-        });
-    const round = roundText(firstLine);
-    if (taskPr && person.role === "worker" && workerTag) {
-      if (
-        this.produceOnce(
-          commentKey,
-          inline ? "comment" : workerTag.tag.toLowerCase(),
-          inline
-            ? commentLine
-            : `PR #${number} (${this.branchOf(number)}): worker ${workerTag.tag}${round ? ` (round ${round})` : ""} from ${login} (${person.role})${preview} ${url}`
-        )
-      ) {
-        this.touchActivity(number, created);
-        // A dispatched fixer's protocol turn must not move the resolution's card.
-        if (!this.host.conflictFixing?.(number)) {
-          if (workerTag.tag === "READY") {
-            this.queueProgress(number, {
-              status: "Executing",
-              state: "ready",
-              ...(round ? { round: count(round) } : {}),
-            });
-          } else {
-            this.queueProgress(number, { state: workerTag.tag.toLowerCase() });
-          }
-        }
-      }
-      return;
-    }
-    if (
-      !inline &&
-      !edited &&
-      hasRolePrefix(firstLine, "worker") &&
-      person.role === "worker" &&
-      !workerTag
-    ) {
-      this.touchActivity(number, created);
-      if (taskPr) {
-        if (!this.host.conflictFixing?.(number)) {
-          this.queueProgress(number, { state: "working", if: revivedProgressStates });
-        }
-        this.quietOnce(
-          `c-${key(url)}`,
-          `NOTE PR #${number} (${this.branchOf(number)}): worker note from ${login} (${person.role})${preview} ${url}`
-        );
-      } else {
-        this.quietOnce(
-          `c-${key(url)}`,
-          `NOTE ${this.ref(repo, number)}: worker note from ${login} (${person.role})${preview} ${url}`
-        );
-      }
-      return;
-    }
-    // Peer orchestrators wake on our threads too: a peer may ask, never approve.
-    if (this.produceOnce(commentKey, "comment", commentLine) && taskPr) {
-      this.touchActivity(number, created);
-    }
-  }
-
   private branchOf(number: number): string {
     return this.readMarker(this.state.pr(number).branch);
   }
@@ -2321,7 +1903,8 @@ export class EventLoop {
         );
         if (
           !person ||
-          (this.isSelf(item) && this.writes.matches({ kind: "created", repo, number }, created))
+          (this.comments.isSelf(item) &&
+            this.writes.matches({ kind: "created", repo, number }, created))
         ) {
           continue;
         }
@@ -3846,7 +3429,7 @@ export class EventLoop {
       };
     }
     const prompt = this.state.pr(number).prompt.read();
-    const review = this.readReview(number);
+    const review = this.comments.readReview(number);
     const at = str(prompt.at) || review?.at;
     const protocolReply = this.state.pr(number).protocol.read();
     const hasReply =
@@ -3863,84 +3446,6 @@ export class EventLoop {
     return status.state === "other"
       ? ""
       : JSON.stringify([status.state, key(status.detail ?? ""), updated ?? null]);
-  }
-
-  private rememberWorkerPrompt(number: number, firstLine: string, at: string, id: string): void {
-    if (!firstLine.startsWith("[orchestrator] ")) {
-      return;
-    }
-    const previous = this.state.pr(number).prompt.read();
-    if (at >= str(previous.at)) {
-      this.state.pr(number).prompt.write({ at, id });
-    }
-  }
-
-  /** Persist the newest verified worker reply tag, independently of activity/CI. */
-  private rememberWorkerProtocol(number: number, comment: ObjectData, repo: string): void {
-    const at = str(comment.created_at);
-    if (!at) {
-      return;
-    }
-    const person = this.host.filter.identity(restActor(comment.user));
-    const role = this.isSelf(comment)
-      ? "orchestrator"
-      : person
-        ? this.host.filter.roleIn(person, repo)
-        : undefined;
-    if (at !== str(comment.updated_at)) {
-      return;
-    }
-    const first = str(comment.body).split(/\r?\n/)[0];
-    const requestTag =
-      role === "worker"
-        ? parseFirstLine(first, { role: "worker", tags: ["READY", "QUESTION", "BLOCKED"] })?.tag
-        : undefined;
-    const reply =
-      role === "orchestrator" &&
-      parseFirstLine(first, {
-        role: "orchestrator",
-        tags: ["REVIEW", "OWNER REVIEW", "ANSWER", "AMENDMENT", "GO"],
-      });
-    if (requestTag || reply) {
-      const previous = this.state.pr(number).unhandledWorker.read();
-      if (at >= str(previous.at)) {
-        this.state.pr(number).unhandledWorker.write({
-          at,
-          ...(requestTag ? { tag: requestTag } : { handled: true }),
-        });
-      }
-    }
-    let active: boolean;
-    let workerTag: string | undefined;
-    if (role === "worker") {
-      workerTag = parseFirstLine(first, {
-        role: "worker",
-        tags: ["READY", "QUESTION", "BLOCKED", "DESIGN", "HANDOFF"],
-      })?.tag;
-      active = !workerTag;
-    } else if (
-      role === "orchestrator" &&
-      parseFirstLine(first, {
-        role: "orchestrator",
-        tags: ["REVIEW", "CHANGES", "ANSWER", "AMENDMENT", "GO"],
-      })
-    ) {
-      active = true;
-      if (at >= (this.readReview(number)?.at ?? "")) {
-        this.writeReview(number, { at, id: str(comment.html_url) });
-      }
-    } else if (role === "owner") {
-      active = true;
-    } else {
-      return;
-    }
-    const previous = this.state.pr(number).protocol.read();
-    if (at >= str(previous.at)) {
-      this.state
-        .pr(number)
-        .protocol.write({ at, active, role, ...(workerTag ? { tag: workerTag } : {}) });
-      this.touchActivity(number, at);
-    }
   }
 
   private workerExpectedActive(number: number, working = true): boolean {
