@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { loadYaml, type Config } from "../config.js";
 import { type Dependencies, type GitHubClient } from "./client.js";
-import { type BoardService } from "./board.js";
+import { type BoardOperation, type BoardService } from "./board.js";
 import { object, type ObjectData, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords, guardProtocolHeader } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
@@ -194,14 +194,15 @@ export class TaskFlow {
       return;
     }
     const board = this.host.board();
-    const id = await board.ensure(String(item.id));
+    const operation: BoardOperation = {};
+    const id = await board.ensure(String(item.id), operation);
     if (status) {
-      await board.set({ itemId: id, field: "Status", value: status, progress });
+      await board.set({ itemId: id, field: "Status", value: status, progress }, operation);
     } else {
-      await board.set({ itemId: id, field: "Progress", value: progress });
+      await board.set({ itemId: id, field: "Progress", value: progress }, operation);
     }
     if (model) {
-      await board.set({ itemId: id, field: "Model", value: model });
+      await board.set({ itemId: id, field: "Model", value: model }, operation);
     }
   }
   private async boardCard(item: ObjectData) {

@@ -54,6 +54,13 @@ fallback states' existing assignees untouched. Its guarded arrows limit worker
 activity/stall updates, while protocol changes are unguarded; the writer separately
 preserves an Executing owner summons until an explicit release.
 
+Card field writes share `BoardService.setFields` in [the board service](../src/gateway/board.ts):
+each Status carries Progress first in the same ordered mutation. Task-card operations,
+issue creation and board-add repairs reuse operation-local membership metadata from
+the issue side, never a board listing. After an add, the actual card values are still
+read before deciding its position. Archived-card writes retain the journaled
+unarchive, set, re-archive and verify sequence.
+
 The owner moves Backlog → Scoping to start discussion, then Scoping → Spec review
 to agree conclusions. The orchestrator gets `🧭🔍` to rewrite the scope. After
 SCOPE REVIEW the owner gets `👤🔍`; Spec review → Executing approves the exact body.

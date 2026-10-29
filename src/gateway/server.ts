@@ -961,13 +961,17 @@ class GatewayServer {
         this.github.writes.beginOperation("issue create", [
           { repo: String(this.config.repo), number: Number(created.number) },
         ]);
-        await board.ensure(created.node_id);
+        const membership = await board.ensureCard(created.node_id);
         // One ordered board mutation, Status last with its progress companion (#199);
         // the created issue's default Status files it in the first workflow column (#231).
-        await board.setIssueFields(created.node_id, [
-          ...(estimate !== undefined ? [{ name: "Estimate", value: String(estimate) }] : []),
-          { name: "Status", value: status ?? workflowColumns[0] },
-        ]);
+        await board.setIssueFields(
+          created.node_id,
+          [
+            ...(estimate !== undefined ? [{ name: "Estimate", value: String(estimate) }] : []),
+            { name: "Status", value: status ?? workflowColumns[0] },
+          ],
+          membership
+        );
       } catch (error) {
         // The retry hint is the orchestrator's repair path (#287): it passes the
         // created issue's original estimate/status flags to `board add`, which can
@@ -1062,7 +1066,7 @@ class GatewayServer {
   };
 
   /** Orchestrator-only retry of issue create's board follow-up (#287): membership
-   * through `board.ensure` (the issue-side relation), then one `setIssueFields` call
+   * through `board.ensureCard` (the issue-side relation), then one `setIssueFields` call
    * with the effective entries, inside the same journaled operation (#199). Idempotent: an
    * off-board issue gains Status (the --status value or the first workflow column)
    * plus any passed Estimate; a card already on the board keeps its Status unless
@@ -1098,9 +1102,9 @@ class GatewayServer {
     // One operation for the board writes (#199), exactly as issue create's
     // follow-up: the membership add, then the fields in a single ordered mutation.
     this.github.writes.beginOperation("board add", [{ repo: String(this.config.repo), number }]);
-    await this.board.ensure(contentId);
+    const membership = await this.board.ensureCard(contentId);
     if (entries.length) {
-      await this.board.setIssueFields(contentId, entries);
+      await this.board.setIssueFields(contentId, entries, membership);
     }
     return card
       ? entries.length
