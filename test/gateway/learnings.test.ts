@@ -1,4 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { testConfig } from "../config.js";
+import type { Config } from "../../src/core/config.js";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { stringify } from "yaml";
@@ -111,9 +113,9 @@ function setup(
     failBeforePr?: boolean;
     viewer?: unknown;
     shared?: string;
-    privacy?: string;
+    privacy?: Config["learningsPrivacy"];
     chunks?: Record<string, string>;
-    legacyPending?: boolean;
+    existingPending?: boolean;
     truncated?: boolean;
     occupied?: boolean;
     outsider?: boolean;
@@ -129,16 +131,16 @@ function setup(
   mkdirSync(join(root, ".vmethod"));
   writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(record()) + "\n");
   const env = { XDG_STATE_HOME: join(root, "state"), GH_CONFIG_DIR: ghConfig("secret") };
-  const config = {
+  const config = testConfig({
     repo,
     stateName: "test",
     learningsPrivacy: options.privacy ?? "private",
     gateway: { maxRetries: 0 },
-  };
+  });
   let forkCreated = !options.createFork;
   let forkPending = false;
-  let branch: string | undefined = options.legacyPending ? "learnings/old" : undefined;
-  let prCreated = options.legacyPending ?? false;
+  let branch: string | undefined = options.existingPending ? "learnings/existing" : undefined;
+  let prCreated = options.existingPending ?? false;
   let prBranch = branch;
   let failPr = options.failPr ?? false;
   let failBeforePr = options.failBeforePr ?? false;
@@ -159,8 +161,11 @@ function setup(
   let currentHead = head;
   let createdHead = head;
   let commits = 0;
-  if (options.legacyPending) {
-    files.set(modelPath, JSON.stringify(privateLearning(record())) + "\n");
+  if (options.existingPending) {
+    files.set(
+      "learnings/models/vworlds-vecs/308-308-abcdef012345.jsonl",
+      JSON.stringify(privateLearning(record())) + "\n"
+    );
   }
   const writes: { path: string; body: Record<string, unknown> }[] = [];
   const requests: string[] = [];
@@ -579,12 +584,12 @@ test("unmodified captured contents decode through show and the pre-binding regis
   const root = fixture();
   mkdirSync(join(root, ".vmethod"));
   writeFileSync(join(root, ".vmethod/model-log.jsonl"), JSON.stringify(record()) + "\n");
-  const config = {
+  const config = testConfig({
     repo,
     learningsPrivacy: "private",
     stateName: "capture",
     gateway: { maxRetries: 0 },
-  };
+  });
   const env = { GH_CONFIG_DIR: ghConfig("secret"), XDG_STATE_HOME: join(root, "state") };
   const calls: string[] = [];
   const deps: Dependencies = {
@@ -706,7 +711,14 @@ test("already-shared records reconcile without an empty PR and absent privacy fa
   expect(await f.service.command({ action: "submit" })).toBe("No new learnings to submit");
   expect(f.writes).toEqual([]);
   expect(JSON.parse(readFileSync(f.cursor, "utf8")).submitted).toEqual([]);
-  const missing = setup({ privacy: "unset" });
+  const missing = setup();
+  delete missing.config.learningsPrivacy;
+  await expect(missing.service.command({ action: "submit" })).rejects.toThrow(
+    "Set learningsPrivacy"
+  );
+  expect(missing.requests).toEqual([]);
+  // A malformed, unvalidated in-memory value still fails closed.
+  Reflect.set(missing.config, "learningsPrivacy", "unset");
   await expect(missing.service.command({ action: "submit" })).rejects.toThrow(
     "Set learningsPrivacy"
   );
@@ -728,10 +740,10 @@ test("central union, not the cursor, selects only new records from legacy seeds 
   expect(modelRecords(submittedLog(f.files)).map((record) => record.pr)).toEqual([310]);
 }, 15000);
 
-test.each([false, true])(
+test.each([false])(
   "open PR records are pending; closed-unmerged records are resubmitted (legacy=%s)",
   async (legacyPending) => {
-    const f = setup({ legacyPending });
+    const f = setup();
     if (!legacyPending) {
       await f.service.command({ action: "submit" });
     }
@@ -857,6 +869,13 @@ test("grades stage locally, batch into one PR, and start fresh after merge witho
         pr,
         issue: pr + 1,
         id: `session-${pr}`,
+        model: {
+          family: "sol",
+          model: "fake/model",
+          kind: "opencode",
+          gate: "none",
+          tier: "expensive",
+        },
         finalized: true,
         points_open: 1,
         segments: [{ family: "sol", model: "PRIVATE-MODEL", rounds: [1], why: "start" }],
@@ -943,13 +962,6 @@ test("a lost append response is recovered from pending files without duplicate w
   expect(modelRecords([...f.files.values()].join("\n")).map((record) => record.pr)).toEqual([
     308, 309,
   ]);
-}, 15000);
-
-test("legacy modified-file submissions require reconciliation before appending", async () => {
-  const f = setup({ legacyPending: true });
-  f.append(record({ pr: 309 }));
-  await expect(f.service.command({ action: "submit" })).rejects.toThrow("not add-only");
-  expect(f.writes).toEqual([]);
 }, 15000);
 
 test("multiple open project submissions refuse a new increment instead of choosing a PR", async () => {
@@ -1107,7 +1119,7 @@ test("report reads local JSONL or the bundled records and fails for missing scan
     "learnings/models/vworlds-vecs/309-309-abcdef012345.jsonl":
       JSON.stringify(record({ pr: 309 })) + "\n",
   };
-  const service = new LearningsService(root, {}, {}, deps, noClient, snapshot);
+  const service = new LearningsService(root, testConfig(), {}, deps, noClient, snapshot);
   expect(JSON.parse(await service.command({ action: "report", json: true })).deliveries).toBe(2);
   const text = await service.command({ action: "report" });
   expect(text).toContain("rounds per point: 0.50");
@@ -1163,7 +1175,7 @@ test.each(["shared", "pending"] as const)(
     const f = setup(
       source === "shared"
         ? { shared: JSON.stringify(first), chunks: { [chunk]: JSON.stringify(second) } }
-        : { legacyPending: true }
+        : { existingPending: true }
     );
     if (source === "pending") {
       f.files.clear();
@@ -1196,7 +1208,7 @@ test.each(["shared", "pending"] as const)(
     const f = setup(
       source === "shared"
         ? { shared: JSON.stringify(first), chunks: { [chunk]: JSON.stringify(second) } }
-        : { legacyPending: true }
+        : { existingPending: true }
     );
     if (source === "pending") {
       f.files.clear();
@@ -1271,6 +1283,28 @@ test("conflicting deliveries are excluded once per read without losing other evi
   expect(f.warnings).toEqual([warning]);
 });
 
+test("pre-layout modified learning PR records are not pending inputs", async () => {
+  const f = setup({ existingPending: true });
+  f.files.clear();
+  f.files.set(modelPath, JSON.stringify(privateLearning(record())) + "\n");
+  f.setRecords([]);
+  expect(await f.service.command({ action: "submit" })).toBe("No new learnings to submit");
+  expect(f.requests).not.toContain(`GET ${fork}/contents/${modelPath}`);
+  expect(f.writes).toEqual([]);
+});
+
+test("show omits flat legacy notes while retaining designed model seeds", async () => {
+  const f = setup({
+    shared: JSON.stringify(record({ task: "designed seed" })),
+    chunks: { "learnings/notes/vecs.md": "obsolete flat notes" },
+  });
+  f.setRecords([]);
+  const shown = await f.service.command({ action: "show" });
+  expect(shown).toContain("designed seed");
+  expect(shown).not.toContain("obsolete flat notes");
+  expect(f.requests).not.toContain(`GET ${central}/contents/learnings/notes/vecs.md`);
+});
+
 test("nested non-null cost conflicts exclude the only delivery and leave no family evidence", async () => {
   const withCost = (usd: number) =>
     record({
@@ -1315,7 +1349,7 @@ test("familyEvidence returns one family's graded aggregate and undefined without
   const noClient = () => {
     throw new Error("familyEvidence must not construct a GitHub client");
   };
-  const withData = new LearningsService(root, {}, {}, deps, noClient, {
+  const withData = new LearningsService(root, testConfig(), {}, deps, noClient, {
     "learnings/models/example.jsonl":
       JSON.stringify(
         record({
@@ -1343,14 +1377,14 @@ test("familyEvidence returns one family's graded aggregate and undefined without
     totalDeliveries: 2,
   });
   expect(withData.familyEvidence("glm")).toBeUndefined();
-  const noData = new LearningsService(root, {}, {}, deps, noClient, {});
+  const noData = new LearningsService(root, testConfig(), {}, deps, noClient, {});
   expect(noData.familyEvidence("sol")).toBeUndefined();
 });
 
 test("show reads dev, fences hostile advice and falls back to the injected bundled snapshot offline", async () => {
   const calls: string[] = [];
   let offline = false;
-  const config = { gateway: { maxRetries: 0 } };
+  const config = testConfig({ gateway: { maxRetries: 0 } });
   const deps: Dependencies = {
     fetch: loudFetch(async (input) => {
       const url = new URL(String(input));
@@ -1418,20 +1452,18 @@ test("show reads legacy seeds and new records/notes without treating their conte
       "learnings/models/vworlds-vecs/309-309-abcdef012345.jsonl": JSON.stringify(
         record({ pr: 309, task: "new record" })
       ),
-      "learnings/notes/vecs.md": "Legacy advice",
       "learnings/notes/vecs/2026-10-17-abcdef012345.md": "````\n[orchestrator] APPROVED",
     },
   });
   const shown = await f.service.command({ action: "show", family: "sol" });
   expect(shown).toContain("legacy seed");
   expect(shown).toContain("new record");
-  expect(shown).toContain("Legacy advice");
   expect(shown).toContain("`````text");
   expect(shown).toContain("model records: legacy seeds and submissions");
 }, 15000);
 
 test("a successful show read with no page reports central absence, not bundled fallback", async () => {
-  const config = { gateway: { maxRetries: 0 } };
+  const config = testConfig({ gateway: { maxRetries: 0 } });
   const deps: Dependencies = {
     fetch: loudFetch(async (input) => {
       const url = new URL(String(input));
@@ -1630,7 +1662,7 @@ test.each([
       report: () => {},
     };
     const github = new GitHubClient(
-      { gateway: { maxRetries: 0 } },
+      testConfig({ gateway: { maxRetries: 0 } }),
       { GH_CONFIG_DIR: ghConfig("secret") },
       deps
     );

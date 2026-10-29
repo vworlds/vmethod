@@ -2,7 +2,11 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { parse } from "graphql";
-import { AutopilotReader, autopilotStates, inheritAutopilot } from "../../src/gateway/autopilot.js";
+import {
+  AutopilotReader,
+  autopilotStates,
+  inheritAutopilot,
+} from "../../src/evidence/autopilot.js";
 import { GitHubClient } from "../../src/gateway/client.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
@@ -10,7 +14,7 @@ import { getConfig } from "../../src/config.js";
 import { validProject, ghConfig } from "../helpers.js";
 import { actor, people } from "./helpers.js";
 import { scopeIssue, scopeComment } from "./scope-fixture.js";
-import { bodyHash, scopeApproved } from "../../src/gateway/scope.js";
+import { bodyHash, scopeApproved } from "../../src/evidence/scope.js";
 import recording from "../fixtures/github/autopilot-wire.json" with { type: "json" };
 import { WatchFake } from "./watch-fake.js";
 import { object } from "../../src/gateway/people.js";
@@ -650,21 +654,13 @@ test("scope approval needs delegation at the exact authenticated review and unch
       createdAt: "2026-10-24T17:49:38Z",
       body: `[orchestrator] SCOPE REVIEW\n\nAutopilot: scope approved.\n\nbody sha256: ${bodyHash(String(item.body))}`,
     });
-    expect(scopeApproved(item, [review], [], f.config, f.filter, Infinity, state)).toBe(true);
+    expect(scopeApproved(item, [review], [], f.config, f.filter, state)).toBe(true);
     expect(scopeApproved(item, [review], [], f.config, f.filter)).toBe(false);
     expect(
-      scopeApproved({ ...item, body: "changed" }, [review], [], f.config, f.filter, Infinity, state)
+      scopeApproved({ ...item, body: "changed" }, [review], [], f.config, f.filter, state)
     ).toBe(false);
     expect(
-      scopeApproved(
-        item,
-        [{ ...review, author: actor(1) }],
-        [],
-        f.config,
-        f.filter,
-        Infinity,
-        state
-      )
+      scopeApproved(item, [{ ...review, author: actor(1) }], [], f.config, f.filter, state)
     ).toBe(false);
   } finally {
     rmSync(f.root, { recursive: true, force: true });

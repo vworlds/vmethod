@@ -1,763 +1,395 @@
 # vmethod architecture
 
-Status: **agreed design**, a living document. Changes go through PRs; owner decisions are listed
-under [Owner decisions](#owner-decisions-1).
+Use this reference to understand the current architecture: its concepts, boundaries, durable state and incident-tested constraints.
+
+Read [distribution and configuration](#distribution-and-configuration) for installation boundaries, the [concept model](#concept-model-and-state-ownership) for ownership, [interactions](#interactions) for cross-concept flows, the [module map](#delivered-module-structure) for code locations, and [invariants](#invariants-and-their-incident-evidence) and [load-bearing behaviours](#load-bearing-behaviours) before changing a feature.
+
+## Changing the architecture
+
+This document is the reference for further features, not a frozen design. An issue whose specification changes the architecture must name the change and justify it. The orchestrator flags that change and justification to the owner in the SCOPE REVIEW summary. A worker who finds that the agreed specification needs an architecture change posts DESIGN rather than making it.
 
 ## Goals
 
-- One home for the VWorlds development methodology: roles, lifecycle, board, comment protocol,
-  worker and orchestrator guides, and the tooling that runs them.
-- Consumer projects (first `vworlds/vecs` and `vworlds/spacerocks`) pin a release and keep only
-  project-specific settings locally. Nothing is copied by hand, so nothing drifts.
-- vmethod runs on vmethod (dogfooding).
-
-## Distribution: an npm package
-
-vmethod is published as **`@vworlds/vmethod`**, a public npm package, and each consumer adds it as
-an exactly pinned devDependency (`"@vworlds/vmethod": "1.2.0"`). Both current consumers are Node
-≥ 24 projects with npm workspaces, so the package uses the tooling they already run every day.
-
-- **Built from TypeScript** into one **readable, unminified** ESM bundle with sourcemaps, plus the
-  source. Orchestrators and workers debug these tools, so readability matters more than size.
-- **Zero runtime dependencies.** The few libraries needed (e.g. `yaml`) are bundled into the build,
-  so nothing transitive enters the consumer's tree. The Markdown/Mermaid check needs `mermaid` and
-  `jsdom`, which both consumers already have as devDependencies. They are optional
-  `peerDependencies`, loaded on demand, and their absence is a clear "dependency missing" exit (2).
-- **Commands through `bin`:** `vmethod <verb>`, e.g. `watch`, `board migrate`, `open-task`,
-  `read pr`, `post`, `learnings submit`.
-  - **Never `npx vmethod`.** With `node_modules` missing (a fresh worktree, a failed `npm ci`),
-    `npx` silently downloads the *latest* package from the registry, unpinned. That is exactly
-    the hole the pin closes.
-  - Docs say `vmethod <verb>`: the PATH launcher written by `init --launcher` resolves
-    the checkout the same way and runs that checkout's own install — `node_modules/.bin/vmethod`
-    in a consumer, `node <checkout>/dist/vmethod.mjs` in vmethod's own checkout (its
-    `package.json` names `@vworlds/vmethod`). Until a machine has installed it, guides still
-    teach `npm exec --no -- vmethod <verb>`, which refuses to download.
-  - `vmethod init` writes thin stubs (`scripts/agent/<x>.sh`, each marked `# vmethod stub`) that
-    `exec "$(git rev-parse --show-toplevel)/node_modules/.bin/vmethod" <verb> "$@"`, and fail
-    with "run npm ci" if it is absent. The paths in existing prompts, docs and habits keep
-    working.
-  - `init` never overwrites a file without the marker. Renamed verbs keep a one-release alias.
-- **The package replaces itself during a merge.** `merge-task` fast-forwards the main checkout
-  and runs `npm ci`, which rewrites `node_modules/@vworlds/vmethod` while `merge-task` runs from
-  it. The hazard is **version mixing**: a later step of the same run (a lazily imported chunk, a
-  second process spawned from the package) loading the *new* version in the middle of an
-  old-version run. So:
-  - the TS build is a single bundle without code splitting, so there is no dynamic `import()` of
-    chunks, and no verb spawns another copy of the CLI from `node_modules`;
-  - `merge-task` reinstalls dependencies as its **last** step, after archiving and board updates;
-  - a test replaces the package between two steps and checks that every later step ran from the
-    version the run started with.
-- **`mermaid` is pinned to GitHub's renderer version exactly.** The release declares that version,
-  and `vmethod check` fails if the installed peer differs. A peer range would let consumers
-  drift, and the check is only useful if it parses as GitHub does.
-- **State and caches live per OS user**, under `$XDG_STATE_HOME` / `$XDG_CACHE_HOME`, never
-  inside `node_modules`. Workers and the orchestrator each run vmethod from the `node_modules` of
-  their own checkout: workers in worktrees of the **worker checkout**, a separate clone named by
-  `workerCheckout`, never the orchestrator's checkout.
-- **Docs, board migrations and templates ship in the package.** A consumer's `AGENTS.md` routes to
-  `node_modules/@vworlds/vmethod/docs/…`; `vmethod docs <topic>` prints them. The human-readable
-  copy is the vmethod repo at the pinned tag.
-- **Worktrees:** every worktree runs `npm ci` before using `vmethod`. `worker start` does it for
-  each task worktree before the worker's session exists.
-
-**What npm gives us for free** (it replaces the vendored-copy design of earlier drafts):
-
-| Need | How |
-|---|---|
-| Pin a version | exact version in `package.json`; integrity hash in the lockfile |
-| Detect tampering or drift | `npm ci` refuses code that doesn't match the lockfile's `integrity` |
-| Tie a release to its source | **npm provenance**: each version is attested to the vmethod commit and workflow that built it (`npm audit signatures`) |
-| Immutable releases | npm versions can't be overwritten |
-| Release candidates | `1.0.0-rc.N` on the `next` dist-tag; betas on a branch dist-tag, as vecs does |
-| Keep consumer checks off vmethod | `node_modules` is already ignored by prettier, eslint, knip, jscpd, `tsc` |
-| A script changed under itself mid-run | Node loads modules at start, and consumers already run `npm ci` after a fast-forward that changes the lockfile |
-
-**Reviewing an upgrade.** An adoption PR only bumps `package.json` and the lockfile, so the
-adoption checklist adds the evidence:
-- the release notes (from changelog fragments);
-- `npm diff --diff=@vworlds/vmethod@<old> --diff=@vworlds/vmethod@<new>`, linked in the PR;
-- `vmethod board status`, showing the pending board migrations.
-
-**Non-Node consumers** (vworlds has had C++ and Lua repos) can run `npx @vworlds/vmethod@<version>`
-with a minimal tooling-only `package.json`. That is out of scope for 1.0.
-
-**Dogfooding.** The vmethod repo runs its own operations on the **last released** version, pinned as
-a devDependency, like a compiler bootstrapping itself: unreleased code is tested, not used to run
-the project. A release is adopted by vmethod exactly as by any consumer.
-
-## Parameterisation
-
-### `vmethod.yaml` (per project)
-
-YAML at the repo root, validated against a JSON Schema shipped in the package (`vmethod check`).
-The parser follows YAML 1.2, so `no` stays a string and `1.10` stays `1.10`. `VMETHOD_*` environment
-variables override any key (e.g. `VMETHOD_TRACK`, `VMETHOD_BASE`, `VMETHOD_BOARD=off`). There are
-no project prefixes: every orchestrator runs with a private environment, and consumers rename
-`VECS_*` / `SPACEROCKS_*` variables on adoption (owner decision, #14).
-
-| Group | Keys (indicative) |
-|---|---|
-| Identity | `repo`, `org`, `baseBranch`, `releaseBranch`, `workerCheckout` (the workers' own clone) |
-| Board | `board.owner`, `board.number`, `board.repos` (all repos on the board; more than one = shared). The shape comes from the package's board migrations |
-| Branches | task-branch pattern, worktree root, main checkout path, pack and track prefixes |
-| Checks | verify steps, release pre-check steps, docs Markdown glob, CI check names |
-| Post-merge | dependency install command and its trigger file (e.g. `npm ci` / `package-lock.json`) |
-| Changelog | fragment directory (e.g. `architecture/unreleased/`), tag vocabulary |
-| State | `stateName`: watcher state directory name (vecs: `vecs`, SpaceRocks: `spacerocks`), so existing `once` / `graded` / `merged` markers and the lock survive adoption without replaying old events. The merged watcher reads both projects' marker names (vecs `graded-<n>`, SpaceRocks `grade-<n>`) |
-| Credentials | none: each checkout's gitignored `.claude/settings.local.json` sets `GH_CONFIG_DIR` (the identity's gh login), git author and SSH command; `credentials.sshKey` optionally names an SSH key variable |
-| Learnings | `learningsPrivacy`: `public` or `private`; `learningsTimeoutSeconds` generation wait (default 900) |
-
-`models.yaml` stays a project file (today's `models.tsv`): provider/id, kind and `gate` (e.g.
-owner-gated models need `--owner-approved`, enforced by `open-task` and `start-worker`). Its family
-names must come from the board's Model options.
-
-### Board schema and migrations
-
-The board's shape is part of the methodology: Status options, fields (Estimate as a number of
-points, Model options, Progress text), the Progress emoji table, and the "Done keeps the last 6"
-policy. Boards change the way databases do, through **versioned migrations**. Nothing is
-destroyed and rebuilt.
-
-`vmethod.yaml` names the board (`board.owner`, `board.number`) and lists `board.repos`, every repo
-whose cards live on it. One repo means a dedicated board (vmethod: project 5); several mean a
-**shared board** (vecs and SpaceRocks: project 4).
-
-**Board version, stored on the board.** Each board carries its version in its Project README, in
-a machine-readable block that `migrate` owns:
-
-```text
-<!-- vmethod-board -->
-version: 3
-min_compatible: 2
-migrated: 2026-11-02T10:14Z by spacerocks79 (vmethod v1.1.0)
-<!-- /vmethod-board -->
-```
-
-The README is also human-edited (board notes). `migrate` rewrites only the text between the
-markers, re-reads the README just before each write, and refuses to write if the markers are
-missing (except on the first `migrate`, which appends the block) or duplicated.
-
-A board with no block is version 0 (unmanaged). `min_compatible` is the lowest `boardVersion`
-whose scripts still work on this board. Expand migrations leave it alone; a contract migration
-raises it.
-
-**Scripts on a board that is ahead of them.** Every script reads the block once per run, from
-the same poll it already makes.
-- If the package's `boardVersion` < version` but `≥ min_compatible` (the board was only expanded), the script
-  keeps working and prints one `BOARD AHEAD: upgrade @vworlds/vmethod` notice per run.
-- If the package's `boardVersion` < min_compatible` (a contract it doesn't know about), it refuses every board
-  write with `BOARD INCOMPATIBLE: upgrade @vworlds/vmethod to ≥ <version>`. Reads still work.
-
-**Migrations ship with vmethod** as an ordered, append-only list: `board/migrations/0001-baseline.json`,
-`0002-…`. Each one holds:
-- `up`: a list of operations, e.g. `add_field`, `add_option`, `rename_option` (moves cards),
-  `set_option_meta`, `add_progress_alias`, `rewrite_progress`, `remove_option`, `remove_field`;
-- `expect`: the board shape after it;
-- for a destructive step, `requires`: the minimum vmethod version every `board.repos` repo must
-  have adopted.
-
-A published migration is never edited; a fix is a new migration. Each vmethod release declares
-the board version it needs (`boardVersion` in its `package.json`). `board/schema` is the shape after
-the latest migration, generated from the migrations and used by the scripts.
-
-**`vmethod board migrate`**, run after every upgrade of `@vworlds/vmethod` (the adoption checklist
-says so, and `vmethod check --online` fails until it has run):
-
-1. **Read** the board's version N from the README block, and the target version from the release.
-   If the board is already at or above the target, do nothing; it never downgrades.
-2. **Lock.** A Project README has no compare-and-set, and orchestrators get no write access to
-   vmethod. Instead the lock is a **field on the board itself**: field names are unique within a
-   project, and every orchestrator on a board can already create fields there.
-   - **Acquire.** `createProjectV2Field(name: "vmethod-migration-lock", dataType: TEXT)`. Exactly
-     one concurrent caller succeeds. The others get an error ("Name has already been taken", or
-     a generic error under a race), and any error means "not acquired". This was verified live on
-     project 5 on 2026-10-16: 6 rounds of 2–3 concurrent creates, exactly one winner and one
-     field each time.
-   - **Holder.** The winner writes `lock: <run-id> <login> since <time>` into the README block.
-     The field with no fresh README line, or a line older than 1 h, is stale (a crashed run, or
-     a winner whose success response was lost). `migrate --steal` then deletes the field and
-     re-creates it.
-   - **Hold.** Before each migration and each version bump, re-read and confirm both the field
-     and our `run-id`.
-   - **Release.** `deleteProjectV2Field` on success. **A budget stop is not a crash:** it
-     releases the lock and records `paused at <migration>/<op>` in the block, so any adopter
-     resumes without `--steal`.
-   - It costs two mutations per run and nothing on the poll path. While it exists, the field
-     tells humans a migration is in progress. Watchers ignore field-list changes for it.
-   - Offline tests use a fake board: concurrent acquirers, stale lock and steal, budget pause.
-3. **Replay** migrations N+1 … target in order. Every operation is idempotent (it checks before it
-   acts), so a run interrupted by an error or the GraphQL budget resumes where it stopped.
-4. **Verify** the live board against the migration's `expect` after each migration.
-5. **Bump** the version in the README, and only then move on. If a verification fails, it stops
-   at the last verified version, leaves the lock with the error, and exits non-zero.
-
-`vmethod board status` shows the version, the pending migrations and the diff against `expect`.
-`--dry-run` prints the operations without running them. `vmethod check --online` fails while
-the board's version is below the release's `boardVersion`.
-
-**Baseline (version 1)** is the shared board, project 4, exactly as it is on 2026-10-16. It is
-stamped by hand into the README block, as Flyway's baseline is, and `0001-baseline.json` makes no
-changes. Its `expect` lists only the fields vmethod owns, with their exact option order:
-
-- **Status:** Backlog, Ready, In progress, In review, Approved, Done.
-- **Model:** sol, luna, astra, sonnet, opus, glm, big-pickle, glm-flash, other.
-- **Estimate:** a number, by convention 0, 0.5, 1, 2, 3, 5, 8, 13, 20, 40, 100, 999.
-- **Progress:** text. Its states are hold ⛔, working 🤖🔨, question 🤖❓, design 🤖📐,
-  blocked 🤖🚫, ready 🤖👍, verifying 🧭🔍, owner-review 👤🔍, owner-question 👤❓, conflict 💥,
-  silent ⏳, permission 🔑, failed 🪫, idle 💤. A round is `🔁` plus keycap digits, and red CI is
-  🔴. The stuck states are silent, permission, failed, idle and conflict. vecs and SpaceRocks
-  have identical tables today. Owner states and assignment appear only where the
-  action belongs: on the task PR, not its linked issues. Linked issues stay In review
-  without an owner mirror; standalone issue questions still use 👤❓.
-- **Policy:** Done keeps the 6 most recently closed cards across repos; each repo archives only
-  its own cards.
-
-GitHub's built-in fields and unused template fields (Priority, Effort, Start date, Target date)
-are outside `expect`, so adding or removing them is never "drift". Projects 4 and 5 were stamped at version 1 on 2026-10-16.
-
-**Shared boards: expand, then contract.** The projects on one board can be pinned to different
-vmethod versions, and every one of them must keep working. So a breaking change (a rename or
-removal) is always split into two migrations, shipped in different releases:
-
-- **Expand.** Add the new field or option, move the cards (`rename_option` migrates each card
-  before anything is deleted), and add Progress aliases so that both old and new scripts parse
-  every card. Safe for everyone.
-- **Contract.** Remove the old option or alias. It carries `requires`. `migrate` reads each
-  `board.repos` repo's pinned `@vworlds/vmethod` version from the lockfile on that repo's configured base branch, and checks
-  that open track and pack branches have upgraded too. Until all of them qualify, it stops cleanly
-  before the contract ("waiting for vworlds/vecs to adopt ≥ v1.2.0"). In practice, the last
-  project to adopt applies the contract.
-
-On a dedicated board, `requires` is trivially met, so expand and contract run back to back.
-
-**Running migrations safely:**
-- **Quiet watchers.** `migrate` posts `[vmethod] board migration <N>→<M>` on the release issue,
-  and stamps every card move it makes. Watchers stay silent on stamped moves, so the other
-  project's orchestrator is not woken once per card.
-- **GraphQL budget.** Mutations are batched (aliases in one request) and paced on the rate-limit
-  response headers. A run stops above a reserve with "N cards left", and resumes with the next
-  run.
-- **Built-in project workflows.** Projects v2 automations (e.g. "item closed → Done") and Status-driven
-  watchers react to card moves. `--dry-run` of a migration that touches Status lists the
-  active built-in workflows. Review them before a Status contract.
-- **Tests.** A fake board runs every migration from 0 and from each intermediate version, with
-  cards on the old options, two watchers, an interruption mid-migration, two concurrent runs
-  against the lock, and old scripts against an expanded and a contracted board.
-
-**Cross-repo scope rule.** On a shared board, every script acts only on cards from its own
-`REPO_SLUG`: Done capping, archiving, `GRADE`, `NEXT` / `LAUNCH`, and Progress writes. This is one
-generic rule with tests, not a per-copy hard-code. (`migrate` is the one exception: it acts on the
-board as a whole.)
-
-### Hooks (behaviour that differs)
-
-Where behaviour differs, not just data, a generic command calls an optional project hook, an
-executable at `scripts/vmethod-hooks/<name>` (any language). Examples: the verify recipe
-(SpaceRocks' `Dockerfile.verify` stages), release and beta publishing (vecs' npm flow,
-`published-packages.txt`), post-merge. Purely project tools (`drift-report.sh`, `update-vecs`)
-stay project scripts.
-
-## vmethod repository layout and toolchain
-
-```text
-src/cli/            the `vmethod` command and its verbs
-src/gateway/        the only code that talks to GitHub and opencode (fetch), with the people filter
-src/board/          board client, migrations runner, lock
-src/...             watch, tasks, review, merge, learnings, config
-board/migrations/   ordered board migrations (0001-baseline.yaml, …)
-docs/               the methodology
-templates/          AGENTS.md routing template, vmethod.yaml / people.yaml / models.yaml examples,
-                    task-PR prompt, permission settings for Claude Code and opencode
-test/               vitest suites, fakes, fixtures (a fixture consumer repo)
-testing/            exported test kit (`@vworlds/vmethod/testing`) for consumers' hooks
-```
-
-**The toolchain is the consumers' own**, so any orchestrator or worker can work on vmethod
-without learning anything new:
-- TypeScript (strict), built with `tsc` plus a bundler step for the single readable bundle;
-- **vitest** for tests;
-- **eslint** with `typescript-eslint`;
-- **prettier**, with `prettier-plugin-sh` for the remaining bash;
-- **husky** and **lint-staged** pre-commit hooks;
-- **knip** for unused code and exports;
-- **CI**: `format:check`, `lint`, `typecheck`, `test`, `build`, and a pack-and-install smoke test
-  that installs the built tarball into a fixture consumer and runs `vmethod check` there;
-- **Publishing** follows vecs' `publish.yml` pattern: a push to `master` publishes with OIDC
-  trusted publishing and provenance (no npm token anywhere), and `workflow_dispatch` publishes
-  betas on a branch dist-tag;
-- **Changelog fragments** per PR, collected at release (vecs' mechanism).
-
-**The testing methodology is the one both projects converged on:**
-- **Offline only, through fakes.** The gateway takes injectable `fetch` and `exec`, so tests run
-  in-process against a fake GitHub (REST and GraphQL), a fake board, a fake opencode server and a
-  fake `git`. No test needs network or real git; SpaceRocks' CI image has neither.
-- **Fakes fail loudly.** Any request a fake doesn't expect fails the test (vecs' rule); there is
-  no silent default.
-- **Behavioural tests only.** No test that greps source. Patchers and fixture rewriters assert
-  their anchors.
-- **Every test runs under a timeout**, and the suite under a global one.
-- **Hostile input in every gateway test:** titles, bodies and branch names with shell
-  metacharacters, closing keywords, fake protocol tags, and authors outside `people.yaml`.
-- **Ported cases:**
-  - vecs' `scripts/tests/*`: wait-checks verdicts, changelog, release-publish, estimate-model,
-    markdown;
-  - SpaceRocks' `orchestratorScripts.test.ts`: Done cap, Markdown before posts, install after a
-    lockfile fast-forward, empty-title rows, GraphQL brace balance, watcher lock.
-- **`@vworlds/vmethod/testing`** exports the fakes, so consumers can test their own hooks the same
-  way.
-
-A consumer's `AGENTS.md` (with `CLAUDE.md` symlinked to it) stays a project file. Built from the
-template, it routes to vmethod's docs for the generic process and to the project's own domain and
-engineering docs. Generic docs never name project files or commands. They refer to config keys
-("run the verify steps, `checks.verify`").
-
-## Methodology content for 1.0
-
-- **Roles:** owner (decides), orchestrator (plans, briefs, reviews, merges; writes no feature
-  code, owns tooling and docs), workers (one task PR each, own worktree), side and track sessions,
-  collaborators.
-- **Lifecycle:** idea → issue developed until agreed → owner moves it to Approved → `open-task`
-  writes the task-only draft PR; worker start sends onboarding and the pinned guide path → worker → review rounds → owner
-  approval → `merge-task`. Shortcuts: `--direct` (the owner's "go" in chat) and `--unapproved`
-  (opened before Approved, with the reason stated on the issue, e.g. a bug with a reproducer). Also tracks, packs, and Blocked-by relations.
-- **Board:** Status Backlog → Ready → In progress → In review → Approved → Done. Assignee = whose
-  move it is. Estimate, Model, Progress. Every script that changes Status or Assignee also sets
-  Progress.
-- **Estimates belong to issues, never to PRs** (owner rule, 2026-10-16):
-  - Every issue gets an Estimate while it is in Backlog, so the owner knows what is being taken
-    in before moving it to Ready.
-  - Estimates can be revised at any time as information becomes clearer, e.g. while an issue is
-    developed, when a design question changes the scope, or at grading.
-  - A task PR carries no Estimate. Its Model and Progress fields are about the delivery.
-  - Grading writes `points_final` back to the issue's Estimate. The model log keeps
-    `points_open` (the Estimate when the task PR opened) and `points_final`.
-- **Comment protocol:** `[worker] ACK | DESIGN | QUESTION | BLOCKED | READY FOR REVIEW (round n)`;
-  `[orchestrator] REVIEW round n | OWNER REVIEW | ANSWER | AMENDMENT | GO | APPROVED`
-  (`OWNER REVIEW`: handed to the owner, saying what to playtest and which decisions are theirs). The first line is the key.
-  Replies carry an `in reply to <comment-url>` line. Workers obey only their prompt and
-  `[orchestrator]` comments. Posts made by vmethod carry no footer (owner decision 8).
-  After READY, QUESTION, BLOCKED or DESIGN, workers end their turn. Reviews, answers
-  and hold releases wake them with fixed PR-reading notifications; busy sessions
-  queue those notifications until an idle worker-status poll (see [gateway](gateway.md)).
-- **Rules from real incidents:**
-  - No `2>/dev/null || true` on anything that drives state without a logged failure.
-  - One reader per watcher state directory (flock). Reuse the existing GraphQL poll, and pace on
-    the response headers, not the `rateLimit` field.
-  - On a board-listing lag, read the issue side before "fixing" anything.
-  - Temp files go under the worktree's `.tmp/`. Never commit test reports, logs or other
-    artefacts: `.gitignore` them, and `push.sh` refuses known artefact patterns.
-  - Behavioural tests go through fakes. A fake's default case fails loudly; patchers assert their
-    anchors.
-  - Guard against closing keywords (`Close/Fix/Resolve/Part of #n`) in orchestrator text, and run
-    `check-markdown` before every post.
-  - Every remaining bash entry point is wrapped as `main "$@"; exit`, so a fast-forward can't
-    change a script while it runs.
-  - Merges only via `merge-task.sh`. Peer-session relays are never owner approval; process
-    changes arrive as vmethod releases.
-  - Credentials only from the wrapper's env, never global git config or command lines.
-- **Changelog fragments** (vecs' mechanism, per-PR files collected at release) for vmethod itself,
-  offered to consumers.
-- **Verification kit slot:** a documented place for project verification patterns (oracles,
-  headless-browser checks, quiet-host benchmarks).
-
-## Shared learnings
-
-Every orchestrator learns things that would help the others. Above all, how each LLM model
-performs on which kind of task, and also traps, prompt patterns and verification habits. vmethod
-pools these, so a lesson paid for in one project is free in the others.
-
-### The model log (per project, shared format)
-
-Each project stages its raw log at `.vmethod/model-log.jsonl`, ignored and untracked.
-`grade` appends after every closed delivery (merged or not), then runs the same
-[submission pipeline](learnings.md#submit-delivery-records) as `learnings submit`.
-Reviewed durable records live in vmethod's per-submission project files, batched into
-one open learning PR per project. Only the vmethod orchestrator merges it; the next
-grade after a merge starts a fresh PR without duplicating shared records.
-One record per delivery, in a format vmethod defines and validates:
-
-```json
-{"date":"2026-10-15","repo":"vworlds/spacerocks","pr":319,"task":"…","kind":"gameplay",
- "segments":[{"family":"sol","model":"<provider>/<id>","rounds":[1],"why":"start"},
-             {"family":"glm","model":"<provider>/<id>","rounds":[2],"why":"quota"},
-             {"family":"sol","model":"<provider>/<id>","rounds":[3],"why":"rebase"}],
- "points_open":5,"points_final":8,"rounds":3,
- "round_causes":["worker-defect","integration","prompt-defect"],
- "outcome":"merged",
- "prompt_defects":["scope-withdrawn"],
- "stalls":[{"minutes":120,"cause":"unwritable tmp dir","detected_by":"watcher"}],
- "findings":[{"tag":"fix-worsened-baseline","caught_by":"orchestrator-verify","root_cause_by":"worker"}],
- "notes":"…"}
-```
-
-- **`segments`**: one per model that worked on the delivery, with the rounds it did and why it
-  took over (`start`, `quota`, `escalation`, `rebase`, `owner-request`). A switch mid-task is no
-  longer hidden.
-- **`points_open` / `points_final`**: the issue's Estimate when its task PR opened, and the final
-  grade written back to the issue. The gap is the calibration signal.
-- **`round_causes`**: separates worker defects from rounds the worker didn't cause:
-  `worker-defect`, `design-change`, `playtest-design-change`, `owner-question`,
-  `new-requirement`, `integration`, `prompt-defect`. A `prompt-defect` comes with
-  `prompt_defects` sub-causes (`under-specified`, `scope-withdrawn`, `wrong-premise`). The model's
-  record stays fair, and the orchestrator's briefs get graded too.
-- **`stalls`**: periods a worker sat silent, with minutes, cause and `detected_by`
-  (`watcher`, `orchestrator`, `owner`). Silence is a cost in its own right, and this measures how
-  well the watcher's SILENT detection works.
-- **`outcome`**: `merged`, `rejected-in-playtest`, `reassigned`, `abandoned`. A delivery whose
-  metrics pass but which the owner rejects in playtest is among the most valuable records.
-- **`findings`**: each entry has a tag from the shared vocabulary and `caught_by`
-  (`worker-tests`, `ci`, `orchestrator-verify`, `owner-playtest`, `post-merge`), which shows
-  which gate earns its cost, and, for defects, `root_cause_by` (`worker`, `orchestrator`). The
-  latter separates implementing a brief from debugging. The vocabulary includes, among others:
-  - quality: `clean`, `weak-tests`, `test-reads-source`, `silent-patch-harness`, `duplication`,
-    `scope-creep`, `cheap-workaround`, `swallowed-failure`, `budget-regression`,
-    `fix-worsened-baseline`, `metrics-pass-feel-fails`, `missed-root-cause`, `doc-misplaced`,
-    `committed-artefacts`;
-  - conduct: `silent-stall`, `retry-reported-as-blocked`, `ran-full-suite`,
-    `crossed-messages`;
-  - credit: `found-root-cause`, `security-catch`, `good-design-question`, `stop-and-ask`,
-    `could-use-cheaper`.
-
-  New tags are added through `learning` PRs.
-- `points` follow the shared estimate scale.
-
-The model is graded on the outcome, not on the size of the task.
-
-Both existing logs are hand-kept tables: vecs' `.agents/model-log.md` and the "Model log" in
-SpaceRocks' `docs/agents/orchestrator.md`. They are converted once, at adoption. `grade.sh`, which
-today only writes the board's Estimate, gains the log writing.
-
-### Contributing back
-
-- **Mechanical, continuous.** `vmethod learnings submit` sends records absent from central
-  and open submissions (and the project's distilled notes) as new, immutable files in a
-  PR labelled `learning`. The [learning command guide](learnings.md) owns the per-project
-  layout and submission semantics. Orchestrators run it after each grading round, or at
-  least once a week.
-- **Distilled, by the vmethod orchestrator.** After merging submissions, the vmethod orchestrator
-  updates `learnings/models/<family>.md`: strengths, failure modes, which task kinds and sizes
-  suit it, prompt tips, cost notes, each with evidence links (repo#PR). Also
-  `learnings/lessons.md`, for project-independent traps and practices, like the pain points
-  gathered in #1. `vmethod learnings report` produces the aggregate statistics (rounds per point,
-  findings rate, by family and task kind) that these pages cite.
-- **Lighter than methodology changes.** A learning is advice, not an interface. `learning` PRs
-  merge on the vmethod orchestrator's review, without owner approval. A learning becomes a
-  **change-request** (owner approval, release) only when it should change a rule, a script, or a
-  default such as the recommended family in `models.yaml` example or `suggest-model.sh`'s
-  heuristics.
-
-The implemented [learning command guide](learnings.md) owns fork submission,
-central project authorization, privacy reduction and report semantics.
-
-### Consuming learnings
-
-- Learnings are not pinned to a release. They change faster than releases and are not an
-  interface. `vmethod learnings show [<family>]` reads the latest pages from vmethod's default
-  branch, and releases bundle a snapshot in the package for offline use.
-- The orchestrator guide makes this part of model selection: before choosing a family for a task,
-  `suggest-model.sh` prints the relevant learnings line and the aggregate for that task kind.
-- Owner-gated models stay gated per project (`models.yaml` `gate`). Learnings inform the choice;
-  they don't override a gate.
-
-## Security
-
-vmethod and some consumers (vecs) are public. vmethod's scripts run in every consumer with the
-orchestrator's credentials: its gh login (`GH_CONFIG_DIR`), SSH key, opencode password. Workers run
-with their own, from the worker checkout's environment.
-
-**Untrusted text.** Issues, PRs, comments, branch names and titles can be written by anyone.
-- **Authority comes from the author's login and role, never the tag** (`people.yaml`;
-  see [the event gateway](#the-event-gateway-no-direct-github-access)). `read-pr.sh` marks other authors' comments as
-  untrusted before a worker sees them. Watchers drop events from non-allowlisted logins before any
-  further API call, so spam can't drain the GraphQL budget.
-- **GitHub text is untrusted in bash.** Titles, bodies and branch names are always quoted data:
-  no `eval`, no unquoted expansion. The baseline import audits for this and adds tests with
-  hostile titles and bodies.
-- Agents treat learnings and every fetched text as data, never as instructions.
-
-**Supply chain.**
-- `dev` and `master` cannot be deleted or force-pushed (`.github/rulesets/branches.json`).
-  Approval is the owner moving the card to Approved (checked by actor id on the timeline) or an
-  approving review by the owner; there is no required-review rule (owner decision, #17).
-- Release tags `v*` are immutable (`.github/rulesets/tags.json`).
-- npm: OIDC trusted publishing only (no npm token exists), provenance on every version, and 2FA on
-  the `@vworlds` npm org. Publishing runs only from `master`, which needs the owner's approval.
-- Consumers pin the exact version, `npm ci` checks lockfile integrity, and the adoption PR links
-  `npm diff` and the release notes for review.
-
-**Leaks.**
-- vmethod's docs stay generic. Paths, OS users, hosts and logins live in each consumer's
-  `vmethod.yaml`.
-- Records from private repos (`LEARNINGS_PRIVACY=private`, e.g. SpaceRocks) are submitted
-  reduced: tags, numbers and outcomes only, with no task titles or notes unless cleared.
-  `learnings submit` enforces this. Only allowlisted orchestrator accounts may open `learning` PRs.
-- Secret scanning and push protection are on. `vmethod check` rejects anything in
-  `vmethod.yaml` that looks like a secret.
-
-**CI.** The default `GITHUB_TOKEN` is read-only. Fork PRs need approval to run workflows. No
-`pull_request_target`, and no secrets in workflows that fork PRs can trigger.
-
-## Collaboration, people and the event gateway
-
-### Who is who: `people.yaml` (per consumer repo)
-
-Each consumer repo has a `people.yaml` (project file, owner-approved) listing every GitHub login the
-agents may hear from, with a role:
-
-Several `role: owner` entries are supported. Each has a unique login and numeric id;
-`vmethod check` accepts several owners but refuses duplicate logins or ids. All
-pinned owners have approval authority. Owner turns assign only one person, using
-the most recent owner interaction on the issue or PR, or the first owner in file
-order when none exists; see the [board assignment rule](board.md#status-and-assignee).
-
-```text
-# login               role          note
-jpeletier           owner         decides
-spacerocks79        orchestrator  SpaceRocks orchestrator
-VecsMaster          orchestrator  vecs orchestrator
-vimescmd            orchestrator  vmethod orchestrator
-alfredjpr79         worker        workers (opencode sessions)
-github-actions[bot] system        CI and release automation
-```
-
-- Roles (owner-approved in #2):
-  - `owner`: approves;
-  - `orchestrator`: peer input. The role is per repository: the entry's `repos` binding
-    (used for learning submissions, #186) also lists the repositories where the account is
-    the orchestrator; for every other repository's gating it counts like `collaborator`:
-    it can ask, but never approves or moves another project's cards to Approved;
-  - `worker`: its comments drive READY / QUESTION handling;
-  - `collaborator`: proposes and comments;
-  - `system`: automation such as `github-actions[bot]`. The gateway passes only structured facts
-    from it (check conclusions, SHAs, tags). Its free text is never delivered as instructions,
-    because any workflow can relay attacker text under that name.
-
-  Checks and CI runs are not comments and are never filtered.
-- **The agent always knows who it is talking to.** Every event or text the toolset hands an agent
-  is labelled `from <login> (<role>)`. Authority follows the role, never a tag or claim in the
-  text: only an `owner` approves; a `collaborator` proposes, reviews and objects.
-- `people.yaml` also stores each login's numeric GitHub id. `vmethod check` resolves the ids and
-  pins them, and refuses on a mismatch, because a renamed login can be re-registered by someone
-  else. Changes to the file go through the owner (CODEOWNERS).
-- **Filter fields:**
-  - `author.databaseId` and `__typename` (User or Bot) are matched against `people.yaml`;
-  - `editor` / `lastEditedAt`: a comment last edited by someone other than its author counts as
-    the editor's;
-  - `authorAssociation` is a secondary check only;
-  - the repo's owner must equal `ORG`;
-  - check runs are matched by `app.id` (e.g. GitHub Actions = 15368), never by check name. Anyone
-    can create a check called `e2e`;
-  - never the body (a protocol tag only classifies a comment after its author passed the id
-    check), the display name, or git commit author and committer metadata, which are free text.
-- `system` entries in `people.yaml` list the event kinds they may produce (for
-  `github-actions[bot]`: check runs, statuses and workflow-run conclusions). Their comments are
-  dropped, or at most shown as quoted untrusted text.
-- **Approval comes only from an `owner` id:**
-  - an APPROVED review on the current head authored by that id (which the rulesets require for
-    merging anyway); or
-  - a move to Approved whose project-timeline event (`ProjectV2ItemStatusChangedEvent`) has that
-    id as `actor`.
-
-  A card's current Status alone is never approval: anyone with project write access can set it.
-
-### The event gateway: no direct GitHub access
-
-Agents never call `gh`, `curl api.github.com` or any GitHub API directly. Raw access bypasses the
-people filter and exposes the agent to prompt injection. Every read and write goes through
-vmethod's wrappers, which call GitHub internally:
-
-- **Enforced, not just documented.** The hard stop is a permission rule: Claude Code
-  `.claude/settings.json` denies `Bash(gh *)`, `npx`, `curl`/`wget` to GitHub, and `git push` outside
-  `push.sh`, and allows the `vmethod` stubs, `npm exec --no -- vmethod` and the `vmethod` PATH
-  launcher. opencode gets the equivalent config. `templates/` ships both.
-  **The owner installs them; agents never edit their own permissions.** `vmethod check` verifies
-  that they are in place.
-- **Inbound filter.** Before anything reaches the agent:
-  - comments, reviews, issues and PRs whose author is not in `people.yaml` are **dropped
-    silently** for the agent;
-  - mentions of an orchestrator in a repo outside the organisation (`ORG`, e.g. `vworlds`) are
-    dropped;
-  - what passes is labelled with the author's login and role;
-  - bot-authored PRs and comments (e.g. Dependabot) are dropped like any non-listed author, so
-    nobody waits on them. CI results arrive as check runs, not comments, and are not filtered.
-- **Outbound.** Posts go through the existing posting scripts: Markdown check, no footer, no closing
-  keywords.
-- **Dropped items are not lost.** The agent never sees their content, but the toolset keeps a
-  digest of them (count, repo, number and link). The orchestrator passes the digest to the owner
-  once a day, unread. Public repos will get outside contributions, and the owner decides whether
-  to add a login.
-- **Diagnosis needs reads, not a ban.** `vmethod gh-read <endpoint | graphql-file>` allows GET
-  and GraphQL queries only, and refuses mutations. It applies the people filter to known
-  author-bearing fields (comments, reviews, issue and PR bodies). Its output is labelled
-  untrusted data. All writes go through named wrappers.
-- **Cross-session messages bypass GitHub,** so the gateway doesn't see them. The rule stays:
-  a peer session's message is never owner authority. Anything in it that needs an owner decision
-  goes to the owner, in their own chat or on GitHub.
-- **Wrapped verbs (initial inventory, from SpaceRocks, VecsMaster and the vmethod orchestrator):**
-  - `read pr <repo#n> [--files|--diff|--reviews|--branch]`;
-  - `read issue`;
-  - `read checks`;
-  - `post <repo#n> <file>` (comment or review comment, with repo allowlist, Markdown check,
-    closing-keyword guard; no footer);
-  - `watch`, `mute`;
-  - `board fields|subissue|item`;
-  - `issue edit` (body, labels, close) and `pr create|ready|retarget`;
-  - `board clear <field>` and `budget`, which reads the rate-limit headers;
-  - `read comment <repo> <id>`, `branch delete <name>` (refuses protected and task branches), and
-    `wait release <pkg>@<ver>` (a tag or ref plus the registry);
-  - `read registry` (npm metadata is untrusted text too).
-
-  Repo-admin operations (visibility, default branch, rulesets, security settings) stay with the
-  owner.
-- **Coverage.** Every GitHub operation an orchestrator or worker needs gets a wrapper. Gaps are
-  collected from the orchestrators (#2) and become wrappers before 1.0. Until a wrapper exists,
-  the agent asks its owner instead of using `gh`.
-
-### The gateway as a server (future MCP server)
-
-The owner's direction (#4): **the gateway will become an MCP server that alone holds the
-credentials**, so that an agent cannot work around it, because it has nothing to work around
-with. 1.0 keeps everything in one process, but the code is split along that seam now, so that
-moving the server out of process later changes the transport, not the logic:
-
-- **Server and client.** `src/gateway/` exposes a typed set of operations (read, post, board,
-  push, worker control, events). Verbs are clients that call these operations through a
-  `Transport` interface. 1.0 ships the in-process transport. The future MCP transport exposes the
-  same operations as MCP tools, and the CLI stays for humans and compatibility.
-- **Credentials live only on the server side.** The GitHub token, the git push credentials and
-  the opencode password are read by the server, never by verbs, and never passed back to a
-  client. Once the server runs as its own process (and OS user), an agent's shell holds no
-  credentials at all.
-- **Events are produced by the server.** `vmethod watch` is "the server produces events, the
-  client prints them". The event loop, its state and the people filter run in the server; a
-  client reads events through a blocking `next_events` operation (later an MCP tool or
-  notifications).
-- **Push is a server operation:** `push(worktree, branch)` pushes a given local ref. The server
-  enforces the branch policy (never `baseBranch` or `releaseBranch`; a worker only its own task
-  branch). The `push` verb keeps this ref-based interface.
-- **Task flow is server-side too:** the four task-flow verbs call named gateway
-  operations; approval proofs, worker-status checks, CI, board updates and durable
-  merge follow-up never rely on client-supplied permission booleans. See
-  [task-flow commands](gateway.md#task-flow-commands).
-- **Scoped identities per role.** The server authenticates each client session (orchestrator,
-  worker, track or side session) and scopes what it may do. A worker may read, post on its own
-  task PR, and push its own branch. Only an orchestrator session may review, move cards or merge,
-  and merging also requires owner approval. "Who is who" is then enforced by credentials, not
-  only by labels.
-- **Until the server is separate,** the permission rules (deny `gh`, `curl`, `npx`, raw
-  `git push`) are what keep agents on the gateway.
-
-### Watching and muting threads
-
-`vmethod watch` is the one event loop that feeds an orchestrator. It covers its own repo's PRs and
-board, as `watch-prs.sh` does today, and **vmethod's issues and PRs**. Every orchestrator is an
-interested party in methodology changes.
-
-- **Default: subscribed.** Every orchestrator receives every new vmethod issue and PR, and their
-  comments, so it can chip in, e.g. "B's proposal would break our setup".
-- **Mute.** `vmethod mute <repo>#<n>` silences one issue or PR, in any repo, for this
-  orchestrator. Muted threads deliver nothing until the orchestrator is **explicitly mentioned**
-  there. A mention removes the mute and delivers the event; to silence the thread again, the
-  orchestrator mutes it again. `vmethod mutes` lists the mutes, and `vmethod unmute` clears one.
-  Mutes are local state under `STATE_NAME`.
-
-### How a methodology change happens
-
-1. **A need appears.** The owner asks an orchestrator for something, or an orchestrator detects a
-   gap. That orchestrator opens a vmethod issue (`vmethod upstream issue <title> <body-file>`) describing the need and the
-   project context, or a PR if the change is small and clear.
-2. **Interested parties chip in.** Every other orchestrator sees it through `vmethod watch`, and
-   comments with support, concerns or conflicts with their setup, or mutes it.
-3. **Agreement.** The vmethod orchestrator elaborates the proposal until every orchestrator's
-   concerns are resolved or explicitly overruled, and puts it to the owner.
-4. **Decision and release.** The owner approves (Approved on the vmethod board, and an approving
-   review on the PR). It ships in a release, and consumers adopt it with an `npm install` upgrade and
-   `board migrate`.
+- Keep one home for shared roles, lifecycle, board, protocol, role guides and their tooling; consumer projects keep only project-specific settings and domain rules locally.
+- Distribute an exactly pinned release rather than hand-copied methodology, so consumers choose when to adopt shared changes.
+- Run vmethod on its own methodology (dogfooding). The [change process](change-process.md) describes the last-released-package operating policy; the launcher also supports this repository's local build for development and verification.
+
+## Distribution and configuration
+
+vmethod is the shared methodology and tooling used by project orchestrators and workers. Consumers pin **`@vworlds/vmethod`** exactly as an npm devDependency and retain their project-specific settings locally. The package requires Node ≥ 24 and ships documentation, schemas, migrations, templates, source and a readable, unminified ESM bundle with sourcemaps. Runtime libraries are bundled; Markdown/Mermaid checking loads the optional `jsdom` and `mermaid` peers on demand. Mermaid is pinned to the package's exact renderer version; missing peers and mismatches are reported rather than silently skipping checks (`src/check.ts check`, `src/gateway/markdown.ts checkMarkdown`).
+
+Run `vmethod <verb>` through the installed PATH launcher. It resolves the checkout and runs its local install; in vmethod's own checkout it runs `dist/vmethod.mjs`. Generated stubs run the checkout's `node_modules/.bin/vmethod`, refuse a missing install and never download a replacement (`src/registry.ts launcher`, `stub`). `init` replaces only marked stubs. Workers run in worktrees of a separate `workerCheckout`, not the orchestrator's checkout, and preparation installs dependencies before starting the session (`src/gateway/worker-launch.ts WorkerWorktrees.prepare`).
+
+The running package can replace itself during merge follow-up. The build is one bundle without split chunks (`scripts/build.mjs`); dependency reinstall is the last follow-up step, after state and board writes (`src/tasks/merge.ts TaskMerge.mergeDelivery`). State and caches belong under the OS user's state/cache roots, never `node_modules`. Worktree scratch files and thread snapshots belong in ignored `.tmp/`.
+
+The npm pin and lockfile integrity tie installation to the reviewed package; published npm versions are immutable, and provenance ties a publication to its source/workflow. Review release notes and `npm diff` as well as the manifest/lockfile bump. `node_modules` keeps consumer source checks separate from the packaged tools. Release candidates use `next`; stable releases use `latest`. See [initial adoption](adoption.md#initial-adoption), [every upgrade](adoption.md#every-upgrade) and [package commands](package.md) for installation, launcher/stub safety, peer requirements, consumer routing and the bin-only dependency's Knip setup. A non-Node project still needs the required Node runtime and a tooling-only npm manifest/lockfile with the same exact pin; there is no separate non-Node distribution or downloading fallback.
+
+Three owner-controlled project files parameterise the package:
+
+| File | Responsibility | Owning implementation |
+| --- | --- | --- |
+| `vmethod.yaml` | Repository, base/release branches, worker checkout, board, branch conventions, checks/hooks, post-merge install, changelog, state name, limits and learning privacy | `src/core/config.ts loadYaml`, `validateYaml`, `getConfig`; `schema/vmethod.schema.json` |
+| `people.yaml` | Numeric identity, login, account type, role, repository bindings, system event/application allowlists | `src/gateway/people.ts PeopleFilter`; `schema/people.schema.json` |
+| `models.yaml` | Model families, OpenCode provider/model IDs, owner gates, tiers, fallbacks and prices; families match board Model options | `src/core/config.ts ModelRegistry.entries`, `validateYaml`; `schema/models.schema.json` |
+
+YAML uses 1.2 semantics and rejects duplicate keys. Schema-directed `VMETHOD_*` overrides apply to `vmethod.yaml`; `VMETHOD_BASE` and `VMETHOD_BOARD=off` are aliases (`src/core/config.ts overrides`). Validated file loads and services share the strict `Config` type (`ConfigInput` is an alias): `repo`, `org`, `baseBranch` and `board` (including `owner`, `number`, `repos`) are required, and unknown keys are not indexable. `stateName` remains schema-optional; existing per-service state-name fallbacks are preserved to avoid moving state. `src/config.ts` re-exports the configuration API. The gateway shares a lazy model registry; watcher config and people reloads occur at poll boundaries and retain the last valid version on invalid edits.
+
+The schemas above own the complete configuration keys. See [typed configuration](package.md#typed-project-configuration), [environment mapping](package.md#environment-mapping) and [worker worktree configuration](package.md#worker-worktree-configuration) for types, defaults and path semantics. [Board migrations](board.md#migrations-what-adopters-see) own version/compatibility blocks, expand/contract adoption, locks, archive-safe operations and dry-run workflow checks. These are configuration and migration contracts, not project-specific copies of shared behaviour.
+
+Configuration holds no credential values. The server reads the gh login from `GH_CONFIG_DIR`, git credentials from the checkout environment and OpenCode endpoints/credentials from `OPENCODE_*`. `credentials.sshKey` names an environment variable. The gateway does not read `GH_TOKEN`. See [security](security.md), [adoption](adoption.md) and [package commands](package.md) for operational details.
+
+Project-specific verification runs through `scripts/vmethod-hooks/verify`, with a credential-filtered environment and retained logs (`src/gateway/verify-hook.ts runVerifyHook`). Integration verification requires that hook; conflict verification reports an absent hook and skips only local verification, never the independent green-CI gate (`VerificationService`, `verifyConflictHead`).
+
+Use the [verify-hook contract](gateway.md#verify-hook) for behaviour-specific checks. Project-specific release/build tools remain local; the configured post-merge install command and trigger select dependency refresh without embedding a consumer's recipe in vmethod.
+
+## Concept model and state ownership
+
+### Identity and trust
+
+`PeopleFilter` decides who is speaking before content is relayed. Pins match numeric ID, account type and login; an edited item belongs to its verified editor. Repository bindings make a peer project's orchestrator a collaborator here. `src/identity/token.ts TokenAuthentication.authenticate` authenticates the token viewer, cached per gateway instance; `src/identity/policy.ts authorizeGateway` applies operation and own-task policy. The environment may narrow authority, never elevate it; task-scoped calls require a worker token. Dropped metadata is recorded by `src/gateway/digest.ts Digest`, without exposing unknown authors' bodies.
+
+See [roles and authority](roles.md), [identity pins](gateway.md#identity-pins-pre-10-migration) and [security's authority/filtering rules](security.md#authority-and-filtering) for owner-approved pins, editor checks, Bot spelling, per-repository authority and system application/event allowlists. Several owners may approve; [board assignment](board.md#status-and-assignee) selects one owner for a turn without restricting the others' approval authority.
+
+### Gateway boundary, transport and clients
+
+The CLI calls typed `Operations` through `Transport`; the shipped transport is in-process (`src/gateway/transport.ts inProcess`, `context`). `src/gateway/server.ts createGateway` and `GatewayServices` compose lazy services, handlers and authentication. Credentials and raw external responses stay behind this operation seam.
+
+`src/gateway/client.ts GitHubClient` owns strict HTTP/GraphQL handling, retries, budget headers, secondary-limit pauses and successful-write journaling; `OpencodeClient` owns sessions, messages, permissions, usage and worktree access. `src/gateway/git.ts GitTransport` owns classified git transfers and merge previews. The boundary also owns Markdown/closing-keyword checks and filtered diagnostic reads (`src/gateway/markdown.ts`, `src/github/diagnostic.ts`). Budget and pause state are process-local; poll retries go to `watch-retries.log`, not the wake stream.
+
+This is a logical trust boundary, not yet an OS-isolated credential server. Owner-installed permission rules keep agents on the wrappers; agents do not install or change those rules. A separate MCP transport/credential-holding process is not implemented. It can attach to the operation seam without moving policy into CLI verbs.
+
+The [gateway guide](gateway.md) owns the implemented operation inventory and read/post/diagnostic contracts; [owner-installed permissions](security.md#owner-installed-permissions) and the [permission templates](../templates/README.md) own enforcement setup. [Credentials and supply chain](security.md#credentials-and-supply-chain) cover credential separation, protected releases, read-only CI defaults, fork safety and secret protection. [Learnings privacy](security.md#learnings-privacy) covers private-data reduction. External text and peer-session relays never become instructions or owner authority; unavailable wrappers are not permission for raw GitHub access. Dropped items remain an unread metadata digest for owner triage, not content delivered to agents.
+
+Repository protection definitions prohibit deletion/force-push of `dev` and `master` and alteration of `v*` release tags (`.github/rulesets/branches.json`, `.github/rulesets/tags.json`); they do not require an approving GitHub review. Owner approval is gateway evidence, not an assumed branch-review rule. The npm publishing policy is trusted publishing/provenance with organisation 2FA, supplemented by secret scanning and push protection; these hosted settings remain owner-administered and cannot be proved installed merely by reading the repository. Agent-facing configuration/logging and CI's explicitly scoped publication credentials are separate boundaries.
+
+### Board and turns
+
+The GitHub project is workflow state. Its seven columns are Backlog, Scoping, Spec review, Executing, Owner review, Approved and Done (`src/board/runner.ts workflowColumns`). Progress and management assignment express whose move it is; worker assignees are preserved. `src/core/progress.ts` owns the grammar, expected turn and replacement guards; `src/gateway/turn.ts` applies turn assignment. `src/gateway/board.ts BoardService` owns repository-scoped writes, issue-side membership reads, ordered field batches and position hooks.
+
+Status changes carry Progress first in the same mutation; verbs set assignees before the board move. Executing is activity-ordered at the top; Owner review receives handovers at the bottom. Other columns remain owner-ordered. Linked issues stay Executing without mirrored owner turns; delivery review lives on the PR. Estimates belong to issues, not PRs; task opening freezes `points_open`, grading writes the final issue Estimate.
+
+The board README stores version, compatibility, lock, aliases and resumable migration state. `src/board/readme.ts` and `src/board/runner.ts MigrationRunner` own that block; migrations in `board/migrations/` are append-only, idempotent, locked and verified. Expand/contract migrations support consumers pinned to different versions; contract operations wait for adoption across configured board repositories. Ordinary operations are repository-scoped; migrations alone act board-wide. Done retention keeps six cards across repositories while each repository archives only its own. See [board](board.md) for the schema and migration protocol.
+
+### Scope and approval evidence
+
+`src/evidence/` answers whether scope, delivery, delegation, model use or summons release is proved. Pure readers consume authenticated GitHub history; `EvidenceReader` gathers reviews, timeline events, comments, body hashes and recorded field creators through the existing gateway helpers. A card's Status is not approval. Missing evidence can be `unknown`, never implicit permission.
+
+Evidence is recomputed, not stored as a local permission flag. The local `.tmp/issue-read-<n>.sha256` is only a stale-read guard for issue edits. Approval carry and conflict proofs live in `clean-base.ts`, `carry-approval.ts` and `conflict-proof.ts`. See [scope review](orchestrator-guide.md#scope-review) and [approval and testing](gateway.md#approval-and-testing).
+
+### Task delivery
+
+`src/gateway/task-flow.ts TaskFlow` delegates to `src/tasks/{open,review,merge,link}.ts` and `src/conflicts/cards.ts`. `src/tasks/common.ts TaskCommon` supplies shared reads/writes. Task markers and relations have one decoder in `src/tasks/markers.ts`; PR headers and structured markers hold issue relations, opening points, model overrides, delegation copy proof and holds.
+
+Delivery applies scope, owner/model/delegation, current-head CI, base, conflict and worker-stop gates in order. `src/gateway/checks.ts ChecksService` owns CI evidence; `src/gateway/verify.ts VerificationService` owns integration verification and refresh-checks. Push policy remains in `src/gateway/handlers/push.ts push`. Merge follow-up persists `merge-<pr>.json` so interruption and owner button-merges can resume idempotently. Read snapshots remain in `.tmp/`.
+
+The current methodology is defined by [roles](roles.md), [lifecycle and shortcuts](lifecycle.md), [tracks and packs](lifecycle.md#tracks-and-packs), [board fields/estimates](board.md), [comment protocol](protocol.md), and the [worker](worker-guide.md) and [orchestrator](orchestrator-guide.md) guides. These replace the old six-column lifecycle, not its separation of scope and delivery acceptance. [Tooling incident rules](tooling-rules.md) own fail-visible state writes, budget/listing-lag handling, hostile-input/fail-loud testing and package-replacement safety; [CI and integration commands](gateway.md#ci-and-integration-commands) own project verification entry points. Changelog fragments accompany deliveries and are collected at release.
+
+### Worker sessions
+
+`src/gateway/workers.ts WorkerService` runs one OpenCode session per task PR, with worktree preparation in `WorkerWorktrees` and guarded cleanup in `WorktreeService`. `src/gateway/worker-prompt.ts` builds onboarding. `src/sessions/lifecycle.ts plan` computes ordered effects and lazy observations; `WorkerService` executes them. `src/sessions/usage.ts` handles segment/request accounting with `src/cost.ts`.
+
+`workers/<pr>.json` stores the session, directory, model, usage segments/baselines, pending wakes and conflicts, conflict send time, quota stop/resume, captured usage and grading/finalisation flags. `<pr>.wake` persists lock-contended wakes; `<pr>.lock` serialises operations; `quota-<family>.json` records quota failures. `.vmethod/.env` scopes the task worktree. A fresh session receives onboarding; a live one receives fixed PR-reading wakes, not another first prompt. Conflict drains precede ordinary wakes; quota recovery uses structured errors and eligible approved fallbacks.
+
+### Conflict resolution
+
+`src/conflicts/machine.ts step` is the pure transition policy; `src/gateway/conflicts.ts ConflictService` holds the lock, gathers observations and executes ordered effects. `src/conflicts/cards.ts ConflictCards` owns card snapshots, conflict turns, restoration and escalation. `WorkerService` selects and runs fixers; `src/watch/pulls.ts PullPoller` drives reconciliation.
+
+`conflicts/<pr>.json` stores head/base, files, resolution step, phase (`starting`, `waiting`, `resolved`, `blocked`, `merged`), prior card and dispatch/restore flags. The per-PR lock names its process identity. Watcher markers record conflict/base dispatch and results. Fresh head/base reads precede dispatch; clean merge or conflict-hunk/lockfile proofs, CI, verification and a final snapshot precede acceptance. Dispatch and restore preserve a live Approved card rather than overwriting an owner decision.
+
+### Watcher event loop
+
+`src/gateway/events.ts EventLoop` owns the single-reader lock, ordered poll steps, failures, pacing, pending/quiet/once batching and delivery acknowledgement. `src/watch/comments.ts CommentStream` owns comments and protocol memory. `BoardPoller`, `PullPoller` and `WorkerPoller` own board reconciliation, pull/conflict driving and worker/cost/quota observation respectively. Pollers receive narrowed host services, typed state and explicit callbacks, not an `EventLoop` instance. Pull details and worker sessions share a six-cycle cadence.
+
+The watcher shadows GitHub under `$XDG_STATE_HOME/vmethod/<stateName>` to distinguish news from noise. `src/watch/state.ts` exposes `PrState`, `CardState` and `LoopState` over the existing marker files: open/head/branch/CI/activity/review/protocol/prompt/conflict/cost/progress markers, board column/assignee/absence baselines, cursor, listing baseline, mutes and tracks. `pending.json`, `quiet`, `delivered.jsonl` and `writes.jsonl` support restart-safe delivery and attribution. These are observation/delivery state, not a replacement for the board or approval history.
+
+See [watching and muting](gateway.md#watching-and-muting) for methodology subscriptions, local mutes/unmutes, mention-triggered unmuting, scoped sessions, replay and metadata-only previews; [watch without wasting budget](orchestrator-guide.md#watch-without-wasting-budget) owns the operating procedure. Consumers can discuss methodology needs through [upstream commands](gateway.md#upstream-needs); interested orchestrators' input is collaboration, never another project's approval.
+
+### Journals and locks
+
+`src/gateway/write-journal.ts WriteJournal` records successful writes at the client boundary, matches own writes, marks in-flight operations and attributes pushed heads. `writes.jsonl` retains 24 hours. It is the shared attribution seam between independent verbs and watcher processes; verbs do not write watcher protocol markers directly.
+
+Lock policies deliberately differ. `src/journal/locks.ts OwnedLock` uses PID/start-time identity for watch/conflict locks; `DirLock` never automatically removes worker, learning/generation or verification claims. Worker claims name their holder. The write journal uses `PidLock`: only a file older than three seconds whose PID returns ESRCH is reclaimed; a reused live PID remains locked. The board field lock stays in `MigrationRunner`, with host/boot/PID/start identity, a holder-less initialization window and explicit recovery. See [lock policies](locks.md).
+
+### Shared learnings
+
+`WorkerService.grade` validates a delivery record before writing the issue Estimate and staging `.vmethod/model-log.jsonl`. `src/learnings.ts` owns the shared schema; `src/gateway/learnings.ts LearningsService` owns submission, union, reports and reads. Central records live in `learnings/models/**` and `learnings/notes/**`; `learnings.json` is a local receipt, not the authority for novelty. Policy/check/merge and annotation generation remain gateway modules.
+
+Submissions are add-only fork PRs from centrally bound orchestrators. Private reduction rebuilds allowed fields, retaining only cleared information. Missing telemetry is null, not fabricated zero. Generated annotations come from a tool-denied session with allowed source URLs and are not automatically committed. Learnings are advice, never approval or policy: consumers can read current central pages while releases bundle an offline snapshot. See [learnings](learnings.md).
+
+### Releases
+
+`src/gateway/release.ts releaseNext` dispatches publishing from a base branch at the remote head. `scripts/{changelog,release-notes,publish}.mjs` collect fragments and publish; learning merge is a pre-release operation. Tags, GitHub releases, npm dist-tags and `package.json`'s `boardVersion` are release state. Publishing uses trusted identity/provenance, not registry tokens. Consumer upgrades review release notes and package diff, update the exact pin/lockfile and run board migration. See [change process](change-process.md).
 
 ## Versioning and change process
 
-- SemVer tags `vX.Y.Z`. A breaking change to `config.schema`, a board schema or a script interface
-  means a major version. Release notes list the added or changed config keys and the migration
-  steps.
-- Change requests:
-  1. A consumer opens an issue with the `change-request` label.
-  2. The vmethod orchestrator elaborates it.
-  3. The owner accepts it (Approved).
-  4. A worker implements it, and it ships in the next release.
-  5. Consumers upgrade the pinned `@vworlds/vmethod` version when they choose, then run
-     `vmethod board migrate`.
-- **Freeze rule (until both projects have adopted 1.0).** From the day the baseline import lands,
-  every tooling fix made in a consumer's local copy also gets a `change-request` issue in vmethod,
-  linked from that PR. Convergence picks it up.
+- Tag releases `vX.Y.Z` using SemVer. A breaking configuration, board-schema or command-interface change requires a major version; release notes identify changed keys/interfaces and migration steps. Per-PR fragments feed release collection (`scripts/changelog.mjs`, `scripts/release-plan.mjs`, `scripts/release-notes.mjs`).
+- A consumer raises a need through [upstream commands](gateway.md#upstream-needs), or records a change-request issue. The vmethod orchestrator elaborates it with affected consumers; owner-approved scope precedes implementation and owner delivery approval precedes merge, subject only to explicit documented exceptions. Architecture changes also follow [Changing the architecture](#changing-the-architecture).
+- Consumers choose when to upgrade their exact pin, review release notes/package diff, install and migrate the board. Published migrations are append-only and shared-board contract migrations wait for every repository's adoption. The [change process](change-process.md#propose-agree-release-adopt) and [upgrade checklist](adoption.md#every-upgrade) own the procedure.
+- The transitional [freeze rule](change-process.md#freeze-rule) remains: from baseline import until the initial consumers adopt 1.0, every tooling fix in a consumer's local copy also needs a linked change-request here. This is not an ongoing licence to fork shared methodology or bypass owner agreement.
+- Learnings travel faster than releases as reviewed advice; a rule, gate, script or default change uses the normal owner-approved release process, not a learning shortcut.
 
-## Road to 1.0 (parity first, straight to TypeScript)
-
-The owner decided (#7) to port the existing bash tooling **straight to TypeScript**, with no bash
-stage inside the package. The bash scripts in vecs and SpaceRocks are the behavioural reference:
-same inputs, outputs, exit codes and messages wherever workers, prompts or the owner depend on
-them. Their test suites are ported as vitest cases.
-
-1. **Package skeleton** (#3, done): toolchain, CI, publishing, config and schemas,
-   `vmethod check|init|version`.
-2. **Gateway** (#4): GitHub and opencode access, the people filter, and the `read`, `post` and
-   `gh-read` verbs.
-3. **Board** (#5): board client, field lock, migrations, `0001-baseline`.
-4. **Ports, test-first, one worker task per group,** taking the side named as ahead for each:
-   - worker verbs (#7): `start-task`, `read-pr`, `pr-comment`, `push`,
-     `check-markdown`;
-   - `vmethod watch` and `mute` (#6): three-way from both `watch-prs.sh`;
-   - task flow (#8): `open-task`, `review`, `merge-task`, `release-hold`. vecs: track base,
-     `--merge-commit`, pack keep, owner button-merge follow-up. SpaceRocks: partial re-run,
-     CI-tested-base guard. Both: post-fast-forward install, as the last step;
-   - worker management (#9): `worker`, `claude-worker`, `start-worker`, `suggest-model`, `grade`;
-   - CI and verify (#10): vecs' `wait-checks`; SpaceRocks' `verify` generic part (test-merge
-     several PR heads onto their base; the recipe becomes the `verify` hook), `refresh-checks`,
-     `check-task-ci`;
-   - learnings (#11): `learnings submit|show|report`, with `grade` writing the shared model log.
-
-   Each project's orchestrator reviews the verbs its side knows.
-5. **Docs** (#12): merge vecs `.agents/workflows/*` and SpaceRocks `docs/agents/*` into `docs/`.
-6. **Pilot** (#13): vecs adopts `1.0.0-rc.N` in **one PR**:
-   - add the devDependency;
-   - replace `scripts/{agent,orchestrator}` with stubs;
-   - move its config to `vmethod.yaml`, `people.yaml` and `models.yaml` (`vmethod init` converts
-     `models.tsv` once; `gate` semantics are unchanged);
-   - tell knip about the `bin`-only dependency (a `package.json` script that names it, or
-     `ignoreDependencies`). This is in the adoption checklist.
-
-   Its current tooling keeps working until that PR merges. The rc exits when vecs has run on it:
-   - one `open-task` → worker → `review` round → `merge-task` cycle;
-   - an owner button merge;
-   - a track session (`VMETHOD_TRACK`);
-   - a release with `vmethod check` in CI.
-
-   SpaceRocks then adopts, and `1.0.0` ships.
-
-**After 1.0:**
-- one Status × Assignee × Progress × draft state-machine table;
-- one event poller per account, or webhooks, instead of one per session.
+The implemented publication path is stable releases from `master` and workflow-dispatched release candidates from `dev` on `next` (`.github/workflows/publish.yml`, `scripts/publish.mjs publish`). The earlier general branch/beta-dist-tag sketch is not the delivered release interface. The repository is currently a development build on the release-candidate path; 1.0 remains the first stable interface, not a claim that stable 1.0 has shipped.
 
 ## Owner decisions (#1)
 
-1. **vmethod is public.**
-2. **Workers** are opencode sessions reached through the `OPENCODE_*` environment variables
-   loaded into the orchestrator's session (base URL, server username and password); Claude
-   models run through OpenCode too. They act on GitHub as `alfredjpr79`. They share the
-   orchestrator's machine but never its checkout: each runs in a worktree of the worker
-   checkout, whose environment carries the worker identity. Scripts reach opencode only through
-   those variables, never by assuming a local host.
-3. **Scope of 1.0** is parity + config + distribution. The rest comes later, step by step.
-4. **Merging:** the orchestrator merges with the owner's approval. The orchestrator may merge
-   unimportant PRs on its own review.
-5. **Roles:** `owner`, `orchestrator`, `worker`, `collaborator` and `system` (#2).
-6. **Distribution:** an npm package written in TypeScript, using the consumers' existing tooling
-   and testing methodology (#2).
-7. **No bash stage:** the existing tooling is ported straight to TypeScript (#7).
-8. **No footer** on posts made by vmethod (#4).
-9. **Estimates belong to issues**, set in Backlog and revisable; never on PRs (#15).
-10. **`watch.preview` defaults to off**: wake lines carry metadata only; a project may opt in (chat, 2026-10-17).
-11. **`.claude/settings.json` is installed in vmethod after 1.0 adoption** by vecs and SpaceRocks;
-    direct `gh` stays available until then as an escape hatch for vmethod bugs (#13).
-12. **vmethod 1.0.0 is the first stable interface** (decided by approving the release-prep PR): its fragment is `kind: breaking`
-    so the first rc is `1.0.0-rc.1` rather than `0.1.0-rc.1` (#13).
+Keep these design decisions visible alongside the implemented architecture. References retain the original decision issue; rollout details below distinguish policy/history from code-enforced behaviour.
+
+1. **vmethod is public.** The shared package, methodology and learning interface are public; consumer privacy still requires reduction and clearance ([security](security.md#learnings-privacy)).
+2. **Workers are OpenCode sessions reached through `OPENCODE_*`.** Claude models use OpenCode too. The original worker GitHub identity is `alfredjpr79`; projects pin their own verified worker/orchestrator identities in `people.yaml`. Workers may share the machine but never the orchestrator's checkout: each task runs in a worktree of the separate worker checkout, with that checkout's identity environment. Never assume a local OpenCode host ([worker configuration](package.md#worker-worktree-configuration), #285).
+3. **The 1.0 scope is parity, configuration and distribution.** The TypeScript port and incident-preserving restructuring are delivered; this historical release boundary is not an unfinished implementation roadmap. Further features use the current scope-review process.
+4. **The orchestrator merges with owner approval.** The owner may permit its own-review exception for unimportant changes; do not expand that into a general exemption. The gateway's merge evidence gates and repository protections still apply ([roles](roles.md)).
+5. **Roles are owner, orchestrator, worker, collaborator and system** (#2). Orchestrator authority is repository-bound; system entries supply allowlisted structured facts, never free-text instructions ([roles](roles.md), [security](security.md)).
+6. **Distribution is an npm package written in TypeScript**, using the consumers' familiar tooling/testing methodology (#2). Keep exact pins, reviewed upgrades and local project hooks rather than copied methodology.
+7. **There is no bash port stage inside the package** (#7). The delivered implementation is TypeScript; thin shell launchers/stubs remain entry points, not a second workflow implementation.
+8. **Posts have no footer** (#4). The posting path validates Markdown and forbidden closing syntax; protocol headers classify authenticated speakers, not authority ([protocol](protocol.md)).
+9. **Estimates belong to issues**, set in Backlog and revisable, never to PRs (#15). Task opening records `points_open`; grading records final points on the issue ([board](board.md)).
+10. **`watch.preview` defaults off.** Wake lines carry metadata only unless the project opts in (chat, 2026-10-17); previews never grant authority ([watching and muting](gateway.md#watching-and-muting)).
+11. **Permission installation is owner-controlled.** The original pilot deferred vmethod's `.claude/settings.json` until consumer 1.0 adoption (#13). Current code supports an explicit owner-approved prerelease deferral with warnings; stable releases reject deferral. This is not permission for agents to bypass wrappers or install their own rules, and a passing check does not prove an OS sandbox ([owner-installed permissions](security.md#owner-installed-permissions)).
+12. **1.0.0 is the first stable interface.** The release-preparation decision uses a breaking fragment so the initial candidate is `1.0.0-rc.1`, not `0.1.0-rc.1` (#13). The current release planner implements that transition (`scripts/release-plan.mjs releasePlan`); subsequent breaking changes follow SemVer.
+
+## Interactions
+
+```mermaid
+flowchart LR
+  A[Agents] --> T[Typed gateway operations]
+  T --> I[Identity and operation policy]
+  T --> D[Task delivery]
+  D --> E[Scope and approval evidence]
+  D --> B[Board and turns]
+  D --> S[Worker sessions]
+  C[Conflict runner] --> E
+  C --> B
+  C --> S
+  W[Watcher pollers] --> C
+  W --> B
+  W --> S
+  W --> J[Write journal]
+  W --> O[Orchestrator wake lines]
+  T --> X[GitHub and OpenCode clients]
+  X --> J
+  X --> G[External systems]
+```
+
+- **Turns cross delivery, watcher and conflict boundaries.** Shared Progress policy determines management assignment; ordered writes and the two-minute operation window keep a poll between writes from reporting a violation. `TaskReview.review`, `BoardPoller.applyProgress`/`reconcileTurn` and `ConflictCards.cardRestore` are different callers of that policy.
+- **Approval and card preservation answer different questions.** `EvidenceReader.approvalFor` proves permission for a head; conflict card restoration reads live Status to preserve an Approved move, not to manufacture approval. Delegation is checked at the time of the relevant action and again before writes. Incidents #244, #245 and #274 exposed this overlap.
+- **Wakes cross review, hold release, worker polls and fixers.** Review/release create fixed notifications, busy sessions queue, conflict drains run first, and owner summons/merge deliberately clear wakes. `plan` and `filterStaleWakes` retain the ordering learned from #105, #181, #193, #331 and #373.
+- **Watcher markers shadow protocol position; GitHub remains authoritative.** Comment memory and worker-round readers serve different observation contexts. Thread snapshots separate content hashes from state-line hashes so a changed head does not re-deliver an unchanged task body.
+- **The journal attributes, it does not approve.** Exact comment IDs or bounded field/value/time matches distinguish this session's writes from a sibling's. Operation records hide only in-flight bookkeeping, and pushed-head records attribute activity. Unknown or unmatched writes are reported, not discarded.
+
+## Delivered module structure
+
+Paths below describe the implemented modules, not a target tree. Exported declarations in the named source files own exhaustive signatures.
+
+| Area | Modules and public responsibilities |
+| --- | --- |
+| `src/core/` | `protocol.ts`: tags, parsing, headings and wake texts; `progress.ts`: grammar, expected turn and replacement guards; `time.ts`: named windows; `config.ts`: validated files/types and model registry |
+| `src/identity/` | `token.ts`: `TokenAuthentication`; `policy.ts`: `authorizeGateway`. `PeopleFilter`, digest and token acquisition remain under `src/gateway/` |
+| `src/github/` | `pages.ts`: fail-closed `pages`, `batchPages`, `pageCursor`; `selections.ts`: shared GraphQL fields; `diagnostic.ts`: filtered diagnostic values |
+| `src/journal/` | `locks.ts`: `OwnedLock`, `PidLock`, `DirLock`; the board field lock remains in `src/board/runner.ts` |
+| `src/board/` | Estimates, migration loading/types, README state and `MigrationRunner`; migration artefacts are in `board/migrations/` |
+| `src/evidence/` | Scope, approval, autopilot, model gates, owner agreement, three separate proof modules and `EvidenceReader` |
+| `src/tasks/` | `TaskCommon` in `common.ts`; markers; `TaskOpen`, `TaskReview`, `TaskMerge` (including close and follow-up), `TaskLink` |
+| `src/sessions/` | `lifecycle.ts`: pure `plan`, `staleWakes`, `filterStaleWakes`; `usage.ts`: usage accounting. Session storage, locking, quota/model selection and grading remain in `WorkerService` |
+| `src/conflicts/` | `machine.ts`: `Resolution`, `Observation`, ordered `Effect` and pure `step`; `cards.ts`: `ConflictCards`. I/O runner stays in `ConflictService` |
+| `src/watch/` | `state.ts`: typed markers, PR/card/loop state; `comments.ts`, `board.ts`, `pulls.ts`, `workers.ts`: concept pollers |
+| `src/gateway/` | `server.ts`: composition root; `transport.ts`: operation seam; `handlers/`: thread, issue, board, push, task, worker, watch, diagnostic and learning adapters. Clients, git, board/worker/conflict services, `TaskFlow` facade, loop/delivery/pacing, checks/verification, learnings and releases stay here |
+| `src/cli/` | CLI parsing, operation calls and rendering; no client-supplied permission booleans replace server-side gates |
+
+The conflict machine returns ordered effects and continuation stages, not a second I/O implementation. Session plans similarly request lazy observations after ordered effects. Typed watcher markers preserve on-disk names/content; completed PR cleanup includes the delivered protocol/worker/cost/dispatch markers. The board writer shares issue-side membership within a multi-field operation and avoids redundant reads without changing mutation order.
+
+## Invariants and their incident evidence
+
+Each stable ID records a rule, the incident/design that taught it and its current enforcement locations. Locations name files and functions, never drifting line numbers. Preserve these constraints when extending the architecture.
+
+### Identity and trust
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| I1 | Token pins confer authority; environment only narrows; task-scoped calls require a worker token. | #66 (PR #67) | `src/identity/token.ts TokenAuthentication.authenticate`; `src/gateway/transport.ts context` |
+| I2 | Tags, display/commit names and card Status confer no authority; match ID, type and login pins. | design #2, #19 | `src/gateway/people.ts pinnedIdentity`; `src/github/diagnostic.ts filterDiagnosticValue` |
+| I3 | Orchestrator authority is per repository; peers cannot amend, answer, release holds or take turns here. | #186 (PR #196), #201 | `src/gateway/people.ts PeopleFilter.roleIn`; `src/gateway/turn.ts turnAssignees`; `src/watch/comments.ts CommentStream.processComment`; `src/evidence/scope.ts orchestrates` |
+| I4 | Edits belong to verified editors; unverifiable edits fail closed; edited REST text is not instruction authority. | #19, #53 | `src/gateway/people.ts PeopleFilter.accept`; `src/github/diagnostic.ts filterDiagnosticValue`; `src/watch/comments.ts CommentStream.processComment` |
+| I5 | Drop unknown authors before body fetches; scope/delegation readers filter metadata first; record dropped metadata. | design #4, #45 (PR #53) | `src/gateway/handlers/threads.ts collection`; `src/evidence/scope.ts ScopeReader.read`; `src/evidence/autopilot.ts AutopilotReader.records`; `src/gateway/digest.ts Digest.drop` |
+| I6 | System identities yield structured facts, checked by application ID, not check name or free text. | design #2 | `src/gateway/people.ts PeopleFilter.check`, `checkFacts`; `src/gateway/checks.ts ChecksService.runs` |
+| I7 | Use the checkout's gh login in `GH_CONFIG_DIR`, never `GH_TOKEN`. | #285 | `src/gateway/github-token.ts githubToken`; `src/check.ts check` |
+| I8 | Worker post/wait/push writes are restricted to its own task PR/repository. | #7, #23 | `src/identity/policy.ts authorizeGateway`; `src/gateway/handlers/push.ts push` |
+
+### Gateway boundary
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| G1 | Journal only successful complete writes; refused/partial GraphQL mutations never stamp. | #55 (PR #56), #113 | `src/gateway/client.ts GitHubClient.rest` |
+| G2 | Budget comes from headers, never `rateLimit.remaining`; pause before reserve; polls raise rather than sleep. | design #2, #6, #364 | `src/gateway/client.ts GitHubClient.request`; `src/gateway/watch-pacing.ts WatchPacing` |
+| G3 | Poll retries log instead of printing; exhaustion still surfaces. | #273 (PR #277) | `src/gateway/client.ts GitHubClient.note` |
+| G4 | Invalid shapes, missing connections and bad pagination cursors throw, never become empty success. | tooling rules, #45 | `src/github/pages.ts pages`; `src/gateway/board.ts nextCursor`; `src/gateway/handlers/threads.ts collection` |
+| G5 | Credentials/raw responses stay behind the seam; subprocess environments are allowlisted. | design #4, #285 | `src/gateway/git.ts GitTransport.localEnvironment`; `src/gateway/lockfile.ts npmCiEnvironment`; `src/gateway/worker-launch.ts WorkerWorktrees.git` |
+| G6 | Posts pass Markdown/closing-keyword guards; worker headers are not duplicated; file text has no added footer. | #4, #268, #266 | `src/gateway/markdown.ts checkMarkdown`, `guardClosingKeywords`; `src/gateway/handlers/threads.ts post`; `src/gateway/worker-verbs.ts workerVerb` |
+
+### Board and turns
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| B1 | Status carries Progress in the same ordered mutation, Progress first; verbs write assignees first. | PR #178, #199 (PR #235) | `src/gateway/board.ts BoardService.set`, `setFields`; `src/tasks/review.ts TaskReview.review` |
+| B2 | Owner Progress holds owner; worker handoffs/verifying hold orchestrator; working clears management turns. Housekeeping falls back to owner for empty/stuck/unknown states in review columns; watcher reconciliation leaves unspecified turns untouched. Preserve worker assignees. | PR #79, #257 (PR #259) | `src/core/progress.ts expectedTurn`, `reconciledTurn`; `src/watch/board.ts BoardPoller.reconcileTurn`; `src/gateway/board.ts BoardService.setAssignees`; `src/gateway/turn.ts turnAssignees` |
+| B3 | Record multi-field operations before writes; watcher turn/delegation checks skip the two-minute in-flight window. | #199, #249, #253 | `src/gateway/write-journal.ts WriteJournal.beginOperation`, `recentlyWrote`; `src/watch/board.ts BoardPoller.watchAutopilot`, `reconcileTurn` |
+| B4 | Current card Status is never approval; authenticate historical owner actors/reviews. | design #17, #19 | `src/evidence/approval.ts isOwnerApproved` |
+| B5 | Own handover Progress is applied once per comment, not on each overlapping reread. | #126 (PR #127) | `src/watch/comments.ts CommentStream.processComment` |
+| B6 | Empty Status with a column baseline is unknown for that poll; prune only after three successful absences spanning 24 hours. | #216 (PR #232), #206 (PR #210) | `src/watch/board.ts BoardPoller.watchColumn`, `pruneBoardBaselines` |
+| B7 | Reread listing moves before reporting; discard stale observations without replacing baseline; only authenticated newer moves cancel turns. | #164 (PR #165), #175 (PR #178) | `src/watch/board.ts BoardPoller.watchColumn`, `queueMoveCancelsTurn` |
+| B8 | Owner self-unassignment returns verifying to orchestrator; plain owner comments do not release summons. | #223 (PR #224) | `src/watch/board.ts BoardPoller.watchAssignees`, `applyProgress` |
+| B9 | Linked issues stay Executing without an owner mirror; owner delivery states live on the PR. | #106 (PR #109), #223 | `src/watch/board.ts BoardPoller.clearStaleOwnerMirrors`; `src/tasks/review.ts TaskReview.review` |
+| B10 | Reorder Executing to top and Owner review handovers to bottom only; position writes are best effort. | #238 (PR #240) | `src/gateway/board.ts BoardService.moveToTop`, `moveToOwnerReviewBottom`, `orderAfterEntries` |
+| B11 | Ordinary writes reject foreign/draft cards; migrations alone are board-wide; Done keeps six across repos. | design #5, #87 | `src/gateway/board.ts BoardService.scope`, `capDone`, `ensureCard` |
+| B12 | Migrations are append-only, locked, idempotent, verified and never downgrade; preserve option IDs and verify card values. | #22, #83, #234, #252, #258 | `src/board/runner.ts MigrationRunner.migrate`, `preserveOptions` |
+| B13 | Archived field changes go through journaled unarchive/set/archive/verify, never a direct write. | #258, #267 (PR #269) | `src/gateway/board.ts BoardService.setArchivedCard`; `src/board/runner.ts MigrationRunner.finishArchivedMove` |
+| B14 | Membership/per-item writes read issue-side relations; project listings are for board-wide scans. | #168 (PR #188), #287 (PR #296) | `src/gateway/board.ts BoardService.issueSideItem`, `setIssueFields` |
+
+### Scope and approval evidence
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| S1 | Normal scope approval requires an owner Spec review → Executing move newer than the latest body-matching SCOPE REVIEW; the trivial shortcut uses Scoping → Executing. Explicit configured fast-path/delegation routes still require a matching review. | #138 (PR #140), #223 | `src/evidence/scope.ts scopeApproved` |
+| S2 | Body edits void scope approval and warn at edit time. | #359 (PR #375), #341 | `src/gateway/handlers/issues.ts issueEdit`; `src/evidence/scope.ts scopeRefusal` |
+| S3 | Any non-local-orchestrator comment voids the trivial shortcut. | #138, #186 | `src/evidence/scope.ts scopeApproved` |
+| S4 | Owner delivery approval binds the exact head, via review or a move Owner review → Approved after a handover naming it; edits cannot backdate handovers. | design #17, #19, #88 (PR #89) | `src/evidence/approval.ts isOwnerApproved` |
+| S5 | Historical approval survives later non-owner moves; a later owner move away from Approved revokes that status-based approval. | #88 (PR #89) | `src/evidence/approval.ts isOwnerApproved` |
+| S6 | Carry across base merges needs two-parent base-merge proof or approved-file proof plus certification; escalated paths never carry. | #81 (PR #82), #362, #148 | `src/tasks/merge.ts TaskMerge.mergeDelivery`; `src/evidence/clean-base.ts cleanBaseMerges`; `src/evidence/carry-approval.ts approvalCarryFiles` |
+| S7 | Delegation comes from owner label events or verified copy proof, not current label presence; watcher cleanup is not revocation; missing grants are unknown. | #244, #249 (PR #250), #253 (PR #254) | `src/evidence/autopilot.ts autopilotStates`; `src/watch/board.ts BoardPoller.watchAutopilot` |
+| S8 | Recheck delegation at each delegated write and immediately before merge; reserved paths/release branch are excluded. | #244, #362 | `src/tasks/merge.ts TaskMerge.mergeDelivery`; `src/evidence/reader.ts EvidenceReader.autopilotApprovalFor` |
+| S9 | Gated families require owner APPROVE MODEL after the body edit, or a card Model with recorded owner creator; flags alone do not approve. | #218 (PR #220), #242 (PR #248) | `src/evidence/model-gate.ts isModelApproved`; `src/evidence/reader.ts EvidenceReader.modelApproval`, `ownerCardModel`; `src/gateway/workers.ts WorkerService.resolve` |
+| S10 | Executing summons release requires quoted owner agreement after summons, or owner self-unassignment. | #223, #202 (PR #205) | `src/evidence/owner-agreement.ts ownerAgreement`; `src/tasks/review.ts TaskReview.review`; `src/watch/board.ts BoardPoller.watchAssignees` |
+| S11 | Unknown never becomes approval; unknown worker state blocks merge. | #19, #118 (PR #120) | `src/evidence/approval.ts isOwnerApproved`; `src/tasks/merge.ts TaskMerge.mergeDelivery` |
+
+### Task delivery
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| D1 | Normal open-task requires Executing, approved scope and on-scale Estimate; explicit exceptions are recorded. Freeze opening points once; launch never substitutes today's Estimate. | #15, #8, #76 | `src/tasks/open.ts TaskOpen.open`; `src/gateway/workers.ts WorkerService.start` |
+| D2 | Task relations are structured/header data, not prose/closing keywords; dependency prose is refused. | #72 (PR #73), #207 | `src/tasks/markers.ts taskRelation`, `taskIssueNumbers`; `src/gateway/markdown.ts guardDependencyText` |
+| D3 | Merge requires Approved, approval/scope evidence, exact-head green CI, mergeability/current-base evidence and stopped worker; reread head/base/worker after checks. | #27, #118 (PR #120), #133 (PR #143) | `src/tasks/merge.ts TaskMerge.mergeDelivery` |
+| D4 | Follow-up is journaled, idempotent and resumable; install is last because the package replaces itself. | #37 (PR #38), #97 (PR #104), #115 (PR #119), tooling rules | `src/tasks/merge.ts TaskMerge.mergeDelivery` |
+| D5 | Do not delete branches containing commits beyond the merged head; compare-and-delete. | PR #38, #141 (PR #144) | `src/tasks/merge.ts TaskMerge.mergeDelivery`; `src/gateway/worktrees.ts WorktreeService.cleanup` |
+| D6 | Refuse handover/approval on conflict or active conflict record; owner handover clears wakes and stops worker. | #245 (PR #251), #193 (PR #198) | `src/tasks/review.ts TaskReview.review` |
+| D7 | Worker push requires own open task branch and frozen commit; no force, no artefacts; classify failures without credential leakage. | #23, #318 (PR #321), #354 | `src/gateway/handlers/push.ts push`; `src/gateway/git.ts classifyFailure` |
+| D8 | Keep draft until owner handover or delegated review marks ready. | #99 (PR #102) | `src/tasks/review.ts TaskReview.review` |
+| D9 | Hold is the exact banner/title prefix; release rereads before editing and posts GO once. | #121 (PR #124) | `src/tasks/markers.ts taskHeld`; `src/tasks/review.ts TaskReview.release` |
+| D10 | Absent worker record permits cleanup; recorded but unresolvable session remains cautious. | #275 (PR #279) | `src/tasks/merge.ts TaskMerge.workerAbsent`, `mergeDelivery` |
+
+### Worker sessions
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| W1 | Task sessions run in OpenCode-created linked worktrees of worker checkout, never orchestrator checkout. | #285 | `src/gateway/worker-launch.ts WorkerWorktrees.prepare`, `verify` |
+| W2 | Never lose a wake: queue busy sessions, persist lock contention, drain on idle; merge/owner summons deliberately drop it. | #105, #181 (PR #184), #373 (PR #377) | `src/gateway/workers.ts WorkerService.resume`, `watchStatus`; `src/sessions/lifecycle.ts plan` |
+| W3 | Only a genuine later reply makes a wake stale; replies during conflict-only turns answer no wakes, including wakes queued during that turn. | #193 (PR #198), #331 (PR #345) | `src/sessions/lifecycle.ts filterStaleWakes` |
+| W4 | Busy conflict turns queue, never steer; send conflict before ordinary wakes and record send time. | #148, #331 | `src/sessions/lifecycle.ts plan`; `src/gateway/workers.ts WorkerService.resolveConflict` |
+| W5 | One operation per PR; worker directory lock names holder and is never automatically reclaimed. | #91 (PR #92), #338 (PR #369) | `src/gateway/workers.ts WorkerService.locked`; `src/journal/locks.ts DirLock.holder` |
+| W6 | Switches start usage-baselined segments; conflict-only switches never write card Model; card-driven resumes record owner-hint. | #68 (PR #74), #137 (PR #139), #274 (PR #278) | `src/gateway/workers.ts WorkerService.changeModel`, `switchModel`, `resumeModel` |
+| W7 | Session unknown is not stopped; worktree gone is stopped; status reads do not create directories. | #118, #286 (PR #289), #290 (PR #297) | `src/gateway/workers.ts WorkerService.mergeStatus`; `src/gateway/client.ts OpencodeClient.worktreeGone` |
+| W8 | Capture usage before removal; grading prefers capture, then live, then stored poll; refuse only with no stored evidence, never fabricate zero cost. | #262 (PR #263), #267 (PR #269) | `src/gateway/workers.ts WorkerService.captureUsage`, `grade`; `src/cost.ts sumUsd` |
+| W9 | Recover only structured quota errors; skip at-risk/quota-failed/unapproved gated fallbacks; resend interrupted prompt or queued wakes. | #358, #374 (PR #378) | `src/sessions/lifecycle.ts plan`; `src/gateway/workers.ts WorkerService.finishQuotaResume` |
+| W10 | Refuse worker send on owner/orchestrator turns; guidance uses review. | #131, #223 | `src/gateway/workers.ts WorkerService.command` |
+| W11 | Fresh contexts receive onboarding, live ones do not; Model comes from card, not body prose. | #136 (PR #146), #301 (PR #303) | `src/gateway/workers.ts WorkerService.firstPrompt`, `start`; `src/gateway/worker-prompt.ts workerFirstPrompt` |
+| W12 | Idle without protocol reply gets at most two CHECK-INs per round, then a stop report. | #93 (PR #94), #151 | `src/watch/workers.ts WorkerPoller.pollWorkers` |
+
+### Conflict resolution
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| C1 | One owned resolution lock per PR; refresh-checks holds it from snapshot through push; live holders mean quiet pending, dead holders recover. | #211 (PR #237), #373 (PR #377) | `src/gateway/conflicts.ts ConflictService.resolve`, `acquire`; `src/journal/locks.ts OwnedLock.conflict`; `src/gateway/verify.ts VerificationService.refresh` |
+| C2 | Mark dispatch only after the call returns; a pending outcome without a pending record retries, as does a failed dispatch. Terminal results can be marked immediately after return. | #373 | `src/watch/pulls.ts PullPoller.reconcileConflicts` |
+| C3 | Reread head/base before dispatch; moved heads retry next poll; vanished conflicts close record. | #373 | `src/conflicts/machine.ts step` stages `recheck`, `recheck-preview` |
+| C4 | Dispatch/escalation/restore never move Approved away; restore rereads live card and preserves approval. | #244, #245 (PR #251), #274 (PR #278) | `src/conflicts/cards.ts ConflictCards.cardRestore`, `escalateConflict`; `src/conflicts/machine.ts step` stage `restore` |
+| C5 | Accept only exact-parent/hunk or synced-lockfile proofs, green non-stale CI, verification and final resnapshot. An absent conflict verify hook is explicitly reported and skips local verification only. | #148, #368 | `src/conflicts/machine.ts step` stages `proof` through `final`; `src/evidence/conflict-proof.ts proveConflictMerge`; `src/gateway/verify-hook.ts verifyConflictHead` |
+| C6 | Outside fixes/closed/merged PRs close records quietly; up-to-date PRs produce no event. | #245, #274, #295 | `src/conflicts/machine.ts step` stages `held-status`, `held-preview`, `ancestor`; `src/watch/pulls.ts PullPoller.settleConflicts` |
+| C7 | Fixer comments/commits do not revive task Progress/Status while dispatched fixer owns card. | #193, #274 | `src/watch/pulls.ts PullPoller.processOpenPr`; `src/watch/comments.ts CommentStream.processComment`; `src/gateway/conflicts.ts ConflictService.fixing` |
+| C8 | Update-branch accepts only clean base merges; fixer selection uses cheapest ungated priced same-backend family, skipping at-risk providers. | #148, #374 | `src/conflicts/machine.ts step` stage `proof`; `src/gateway/workers.ts WorkerService.conflictChoice` |
+| C9 | Bound resolution to one hour; retry re-proves only recorded verify failure. | #148, #274 | `src/conflicts/machine.ts step` stages `deadline`, `start` |
+
+### Watcher event loop
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| A1 | One reader per state directory under PID/start lock; stop verifies command line and never SIGKILLs. | design #6, #340 (PR #372) | `src/gateway/events.ts EventLoop.acquireLock`; `src/journal/locks.ts OwnedLock.watch`; `src/gateway/watch-stop.ts watchStop` |
+| A2 | Acknowledge only after printing; interrupted delivery is replayable; retain deliveries seven days. | #6, #170 (PR #179) | `src/gateway/events.ts EventLoop.nextEvents`, `applyAck`; `src/gateway/watch-delivery.ts WatchDelivery.append`, `replay` |
+| A3 | Once markers and occurrence IDs dedupe separately; quiet lines ride a real event; own journaled comments stay suppressed across restart. | #55 (PR #56), #69 (PR #71), #92 | `src/gateway/events.ts EventLoop.produceOnce`, `buildBatch`; `src/watch/comments.ts CommentStream.processComment` |
+| A4 | Overlap comment cursor ten minutes; advance only after comment/item polls succeed; first run baselines silently. | #69 (PR #71) | `src/gateway/events.ts EventLoop.runPoll`; `src/watch/comments.ts CommentStream.pollComments` |
+| A5 | Failed steps publish no partial state: retain last good PR links; prune baselines only after complete board polls. | #159 (PR #162), #206 | `src/watch/pulls.ts PullPoller.pollPulls`; `src/watch/board.ts BoardPoller.pollBoard` |
+| A6 | Report identical failure once, remind hourly, report recovery once. | #91 (PR #92) | `src/gateway/events.ts EventLoop.step` |
+| A7 | Watcher never runs merge follow-up; button merges remain action items until journal complete; same-account notices wait ten minutes. | #38, #115 (PR #119), #142 | `src/watch/pulls.ts PullPoller.processGonePr` |
+| A8 | Run one settling poll after first pending event to batch the same action. | #6 | `src/gateway/events.ts EventLoop.readEvents` |
+| A9 | NEXT excludes owner turns; held startables/fresh launches reset signature. | #320 (PR #370) | `src/watch/board.ts BoardPoller.watchNext`, `ownerTurn` |
+| A10 | Board pacing uses query cost/header depletion, ten-second floor and boundary/three-poll reporting. | #364, #376 | `src/gateway/watch-pacing.ts WatchPacing`; `src/gateway/events.ts EventLoop.checkBudget` |
+| A11 | Blocked cards have no reminders/reconciliation until blockers close; incomplete pages never prove closure; report UNBLOCKED once. | #280 | `src/watch/board.ts BoardPoller.waiting`, `watchBlockers` |
+| A12 | Reload config/people at poll boundaries; keep last valid files on invalid edits. | #350 | `src/gateway/handlers/watch.ts reloadWatchFiles` |
+
+### Journals and locks
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| J1 | Lock append/prune so no concurrent data is lost; successful writes that cannot be journaled are errors. | #101 (PR #108), #379 (PR #380, learning union) | `src/gateway/write-journal.ts WriteJournal.append`, `beginOperation`; `src/journal/locks.ts PidLock.acquire` |
+| J2 | Match exact comment IDs where present, else field/value/time within two minutes; unmatched same-account writes are sibling activity. | #55, #69 | `src/gateway/write-journal.ts WriteJournal.matches` |
+| J3 | Watch/conflict use PID/start; board lock includes host/boot and initialization age. Directory locks never auto-recover; journal PID-only lock requires age >3s and ESRCH, not age alone. | #211, #252, #338, #340 | `src/gateway/process-identity.ts procStart`; `src/gateway/lock-holder.ts lockHolder`; `src/journal/locks.ts OwnedLock`, `DirLock`, `PidLock`; `src/board/runner.ts MigrationRunner.acquire` |
+| J4 | Structured state replacements use temp/rename and restrictive modes. Marker stamps/quiet drains retain direct writes; append paths retain their own contract. | tooling rules | `src/watch/state.ts Marker.writeText`, `stamp`, `append`; `src/gateway/workers.ts WorkerService.save`; `src/gateway/conflicts.ts ConflictService.save` |
+
+### Learnings and grading
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| L1 | Validate before writes; identical regrade appends no duplicate record, differing regrade refuses; write issue Estimate, never PR Estimate. | #9, #98 (PR #111), #15 | `src/gateway/workers.ts WorkerService.grade` |
+| L2 | Private reduction reconstructs allowlisted fields, never copies narrative wholesale. | #11, #41 | `src/gateway/learnings.ts privateLearning` |
+| L3 | Add-only submissions require centrally bound orchestrator; central dev/open submissions determine novelty, not local receipts. | #11, #51 (PR #52), #186 | `src/gateway/learning-policy.ts` policy readers; `src/gateway/learnings.ts LearningsService.submitLocked` |
+| L4 | Union fills nulls; real conflict excludes only that delivery on read and refuses write. | #379 (PR #380) | `src/gateway/learnings.ts unionRecords` |
+| L5 | Advice generation is tool-denied, claims cite allowed URLs, nothing auto-commits. | #197, #200 (PR #215) | `src/gateway/learning-annotations.ts LearningAnnotations` |
+| L6 | Metrics use authenticated events; absent telemetry is null, not zero. | #197, #68 | `src/learning-metrics.ts exactMetrics`; `src/cost.ts sumUsd` |
+
+### Releases
+
+| ID | Invariant | Taught by | Enforced at |
+| --- | --- | --- | --- |
+| R1 | Release dispatch requires base at remote head and run on that head; tags/releases are authoritative while npm propagates. | #308 (PR #317), #310 | `src/gateway/release.ts releaseNext` |
+| R2 | Replace running package only after state/board work; build has no lazy split chunks. | tooling rules, #3 | `src/tasks/merge.ts TaskMerge.mergeDelivery`; `scripts/build.mjs` build |
+| R3 | boardVersion equals last migration; contract waits for all board repositories to adopt. | #5, #22, #87 | `src/board/runner.ts MigrationRunner` constructor; `src/gateway/board.ts BoardService.adoption` |
+
+## Load-bearing behaviours
+
+These details can look accidental. Preserve them, or explicitly justify their architectural change through scope review.
+
+1. The settling poll batches one action's writes (`src/gateway/events.ts EventLoop.readEvents`).
+2. `WORKER_EVERY = 6` calibrates worker/commit/CI reads and stale/silent timers (`src/watch/workers.ts WORKER_EVERY`; `src/watch/pulls.ts PullPoller.pollPulls`).
+3. Mark conflict dispatch after the call returns; pending without a landed record retries (`src/watch/pulls.ts PullPoller.reconcileConflicts`, #373).
+4. `conflictSentAt` excludes every reply at/after it, even for wakes queued during the fixer's turn (`src/sessions/lifecycle.ts filterStaleWakes`, PR #345).
+5. The two-minute operation window and recent delivery-column Status stamps both suppress in-flight violations (`src/gateway/write-journal.ts WriteJournal.recentlyWrote`; `src/core/time.ts OPERATION_INFLIGHT_MS`).
+6. `beginOperation` throws if journal writing fails, before board writes (`src/gateway/write-journal.ts WriteJournal.beginOperation`).
+7. Failed/partial responses never stamp the journal (`src/gateway/client.ts GitHubClient.rest`).
+8. Status-based delivery approval requires previousStatus Owner review; dragging Backlog → Approved proves nothing (`src/evidence/approval.ts isOwnerApproved`).
+9. Keep unknown distinct from both false and true for approval, worker and delegation evidence (`src/evidence/approval.ts isOwnerApproved`; `src/evidence/autopilot.ts autopilotStates`; `src/gateway/workers.ts WorkerService.mergeStatus`).
+10. Owner comments queue verifying on task PR and linked issues; the owner-pause gate still applies (`src/watch/comments.ts CommentStream.processComment`; `src/watch/board.ts BoardPoller.applyProgress`).
+11. Owner self-unassignment releases a summons; ordinary comments do not (`src/watch/board.ts BoardPoller.watchAssignees`, #223).
+12. The card Model's recorded creator is gate evidence (`src/evidence/reader.ts EvidenceReader.ownerCardModel`).
+13. Issue-side membership is authoritative, not lagging listings (`src/gateway/board.ts BoardService.issueSideItem`, #168, #206).
+14. Baseline pruning requires both three absences and 24 hours (`src/watch/board.ts BoardPoller.pruneBoardBaselines`).
+15. Discard stale listing moves rather than adopt the reread value as baseline (`src/watch/board.ts BoardPoller.watchColumn`).
+16. Preserve assignees → Progress → Status order and the owner-paused apply gate (`src/tasks/review.ts TaskReview.review`; `src/gateway/board.ts BoardService.setFields`; `src/watch/board.ts BoardPoller.applyProgress`).
+17. Nothing-to-resolve produces no watcher event (`src/watch/pulls.ts PullPoller.settleConflicts`).
+18. Conflicting PRs refuse owner handover before any write (`src/tasks/review.ts TaskReview.review`).
+19. Worktree gone is stopped; session unknown is not (`src/gateway/workers.ts WorkerService.mergeStatus`).
+20. Capture usage before removal; grading refuses only if no stored usage remains (`src/gateway/workers.ts WorkerService.captureUsage`, `grade`).
+21. Conflict-only model switches leave card Model intact (`src/gateway/workers.ts WorkerService.switchModel`).
+22. Cleanup fetches missing pull heads before containment and uses `update-ref -d <branch> <head>` compare-and-delete (`src/gateway/worktrees.ts WorktreeService.cleanup`, `fetchMissing`).
+23. Dependency reinstall is the final awaited follow-up step (`src/tasks/merge.ts TaskMerge.mergeDelivery`).
+24. Headers supply budget; `rateLimit.cost` is only telemetry (`src/gateway/watch-pacing.ts WatchPacing`; `src/gateway/watch-board.ts WatchBoard.query`).
+25. Pagination fails closed rather than silently truncate (`src/github/pages.ts pageCursor`, `pages`, `batchPages`).
+26. Thread snapshots hash the state line separately from content (`src/gateway/thread.ts saveThreadSnapshot`, #284, PR #291).
+27. REMINDER (owner rule) is delivery metadata, not an acknowledged/replayed event (`src/gateway/events.ts EventLoop.chatReminder`).
+28. Poll retries log rather than stderr: monitor lines become orchestrator wakes (`src/gateway/client.ts GitHubClient.note`).
+29. Stubs and launcher never download an unpinned replacement (`src/registry.ts stub`, `launcher`).
+30. Invalid people reload keeps the previous list; missing delegation grants stay unknown (`src/gateway/handlers/watch.ts reloadWatchFiles`; `src/evidence/autopilot.ts autopilotStates`).
+
+## Toolchain and verification
+
+TypeScript strict checking, esbuild bundling, Vitest, ESLint/typescript-eslint, Prettier (with prettier-plugin-sh for shell), Husky/lint-staged pre-commit hooks and Knip are configured in `package.json` and the repository tool configs. Tests inject fetch/exec and fail-loud fakes for gateway behaviour; integration/launcher and packed-install smoke checks also exercise real local child processes. No live GitHub credentials are needed for tests. `scripts/smoke.mjs` installs the packed bundle into a fixture consumer and checks it there.
+
+The CI recipe covers format, lint, typecheck, tests, build, smoke and unused-code checks (`.github/workflows/ci.yml`); publishing has its own checked workflow and trusted identity/provenance path. [Tooling incident rules](tooling-rules.md#fakes-and-guards-fail-loudly) own recorded response shapes, failing fake defaults, behavioural assertions, hostile inputs, bounded tests and package-replacement checks. These preserve the original testing methodology without claiming that local process tests use no real git. Consumer-specific oracles, headless checks and benchmarks belong in the local verification recipe reached through the [verify hook](gateway.md#verify-hook); there is no separate exported testing package in the delivered npm exports.
+
+Run the project's configured `checks.verify` recipe and task-specific gates; see the [worker guide](worker-guide.md#checks-and-submission). Keep behavioural assertions, hostile-input coverage, bounded timeouts and explicit failure evidence. Public operation signatures live in source; [gateway](gateway.md), [board](board.md), [security](security.md), [protocol](protocol.md) and the role guides own operational instructions. Consumer routing stays local: `AGENTS.md` points to pinned package guides plus project-specific engineering rules.

@@ -56,9 +56,9 @@ export function workerWorktreeName(config: Config, branch: string): string {
   return `${workerWorktreePrefix(config)}${branch.replaceAll("/", "-")}`;
 }
 
-/** Return the literal worktree prefix shared by worktree names and legacy key decoding. */
+/** Return the literal worktree prefix used by worker worktree names. */
 export function workerWorktreePrefix(config: Config): string {
-  const prefix = (config.branches as { worktreePrefix?: unknown } | undefined)?.worktreePrefix;
+  const prefix = config.branches?.worktreePrefix;
   if (prefix === undefined) {
     return "auto-";
   }

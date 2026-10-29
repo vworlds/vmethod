@@ -9,6 +9,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { createGateway } from "../../src/gateway/server.js";
+import { ConflictOutcome } from "../../src/conflicts/outcomes.js";
 
 const base = "b".repeat(40);
 const prefix = "/repos/example/project";
@@ -39,6 +40,14 @@ const checks = (runs = [run()]) => ({
   json: { check_runs: runs },
 });
 const ctx = { role: "worker", taskPr: 3 } as const;
+
+test("a PR closed during a CI read signals a typed terminal outcome", async () => {
+  const f = fixtureServer([pull({ state: "closed" })]);
+  await expect(f.gateway.call("waitChecks", { ref: "3" }, ctx)).rejects.toBeInstanceOf(
+    ConflictOutcome
+  );
+  f.done();
+});
 // Project commit.sha from the Get a branch response; substitute only the SHA.
 // Wire shape: https://docs.github.com/en/rest/branches/branches#get-a-branch
 const liveBase = (sha = base) => ({

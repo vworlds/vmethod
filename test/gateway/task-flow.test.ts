@@ -12,7 +12,6 @@ import { object, type ObjectData, type Person } from "../../src/gateway/people.j
 import type { Card } from "../../src/board/types.js";
 import { validProject, ghConfig } from "../helpers.js";
 import { actor, people, sha } from "./helpers.js";
-import legacyBodies from "../fixtures/github/legacy-task-bodies.json" with { type: "json" };
 import closingReferences from "../fixtures/github/task-closing-references.json" with { type: "json" };
 import developmentLinks from "../fixtures/github/task-development-links.json" with { type: "json" };
 import { BoardService } from "../../src/gateway/board.js";
@@ -21,8 +20,8 @@ import { writeState } from "../../src/board/readme.js";
 import { taskFlowVerb } from "../../src/cli/task-flow.js";
 import type { Operations, Transport } from "../../src/gateway/transport.js";
 import { WorkerService } from "../../src/gateway/workers.js";
-import { bodyHash, scopeApproved } from "../../src/gateway/scope.js";
-import { taskModelOverride } from "../../src/gateway/task-flow-types.js";
+import { bodyHash, scopeApproved } from "../../src/evidence/scope.js";
+import { taskModelOverride } from "../../src/tasks/markers.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { scopeIssue, scopeComment, scopeMove } from "./scope-fixture.js";
@@ -564,7 +563,15 @@ test.each([
   if (scenario === "fast") {
     f.config.scope = { fastPath: ["bug"] };
   }
-  const timeline = scenario.startsWith("fast") ? [] : [scopeMove()];
+  const timeline = scenario.startsWith("fast")
+    ? []
+    : [
+        scopeMove({
+          previousStatus: ["trivial", "orchestrator question"].includes(scenario)
+            ? "Scoping"
+            : "Spec review",
+        }),
+      ];
   f.host.issueApproved = async () => scopeApproved(issue, comments, timeline, f.config, filter);
   if (proceed) {
     await expect(
@@ -1164,6 +1171,7 @@ function fixture() {
   let body = '<!-- vmethod-task {"issues":[8]} -->';
   let issueNumber = 8;
   let isDraft = true;
+  let opened = false;
   let references: ObjectData = structuredClone(
     developmentLinks.before.data.repository.pullRequest.closingIssuesReferences
   );
@@ -1207,7 +1215,10 @@ function fixture() {
         path = url.pathname + url.search;
       const payload = init?.body ? object(JSON.parse(String(init.body))) : {};
       events.push(`${method} ${path}`);
-      writes.push({ path, body: payload });
+      // Task discovery is a read, not a side effect of opening a delivery.
+      if (!(method === "GET" && path.startsWith("/repos/example/project/pulls?state=open&head="))) {
+        writes.push({ path, body: payload });
+      }
       if (fail && path.includes(fail)) {
         throw new Error("injected failure");
       }
@@ -1259,7 +1270,14 @@ function fixture() {
       } else if (method === "POST" && path === "/repos/example/project/pulls") {
         expect(typeof payload.body).toBe("string");
         body = String(payload.body);
+        opened = true;
         data = { number: 27, node_id: "pr" };
+      } else if (
+        method === "GET" &&
+        path.startsWith("/repos/example/project/pulls?state=open&head=example%3A") &&
+        url.searchParams.get("per_page") === "100"
+      ) {
+        data = opened ? [{ number: 27 }] : [];
       } else if (method === "PATCH" && path === "/repos/example/project/pulls/27") {
         expect(["string", "undefined"]).toContain(typeof payload.body);
         if (typeof payload.body === "string") {
@@ -1439,6 +1457,9 @@ function fixture() {
       },
       capDone: async () => {
         events.push("done-cap");
+      },
+      setArchived: async () => {
+        throw new Error("Unexpected archive change");
       },
       snapshot: async () => ({ id: "board", readme: "", fields: [] }),
       cards: async () => [
@@ -2888,6 +2909,117 @@ test("merge follow-up completes a GitHub-auto-closed issue without closing or co
   f.done();
 });
 
+test.each([
+  { status: "Done", interrupt: false },
+  { status: "Executing", interrupt: false },
+  { status: "Executing", interrupt: true },
+])(
+  "merge follow-up completes a PR card archived in $status without writing while archived (interrupted: $interrupt)",
+  async ({ status, interrupt }) => {
+    const f = fixture();
+    f.set({ state: "MERGED", assignees: ["owner"] });
+    const board = f.host.board();
+    const card: Card = {
+      id: "pr",
+      contentId: "pr",
+      repo: "example/project",
+      kind: "PullRequest",
+      assignees: ["owner"],
+      closedAt: "2026-01-01T00:00:00Z",
+      archived: status !== "Done",
+      values: { Status: status, Progress: null },
+    };
+    const effects: string[] = [];
+    let failWrite = interrupt;
+    const capper = new BoardService(f.config, f.host.github, f.deps);
+    capper.snapshot = board.snapshot;
+    capper.cards = async () => [
+      ...Array.from({ length: 6 }, (_, index) => ({
+        ...card,
+        id: `newer-${index}`,
+        archived: false,
+        closedAt: "2026-02-01T00:00:00Z",
+        values: { Status: "Done" },
+      })),
+      ...(!card.archived ? [structuredClone(card)] : []),
+    ];
+    capper.archive = async (id) => {
+      expect(id).toBe("pr");
+      card.archived = true;
+      effects.push("archive");
+      return "ok";
+    };
+    if (status === "Done") {
+      // An earlier follow-up's real Done cap archived this older PR.
+      await capper.capDone();
+      expect(card.archived).toBe(true);
+      expect(effects).toEqual(["archive"]);
+      effects.length = 0;
+    }
+    f.host.board = () => ({
+      ...board,
+      // Archived cards are absent from the active listing; resolve membership instead.
+      cards: async () => [],
+      item: async (id) => {
+        expect(id).toBe("pr");
+        return structuredClone(card);
+      },
+      setArchived: async (project, id, archived) => {
+        expect(project).toBe("board");
+        expect(id).toBe("pr");
+        effects.push(archived ? "archive" : "unarchive");
+        card.archived = archived;
+      },
+      set: async (input) => {
+        if (input.itemId !== "pr") {
+          return board.set(input);
+        }
+        if (card.archived) {
+          throw new Error("Cannot update an archived card");
+        }
+        if (failWrite) {
+          failWrite = false;
+          throw new Error("Interrupted PR card write");
+        }
+        effects.push("write");
+        card.values.Status = String(input.value);
+        card.values.Progress = input.progress ?? null;
+        return "ok";
+      },
+      capDone: async () => {
+        effects.push("cap");
+        await capper.capDone();
+      },
+    });
+    const journal = join(
+      f.env.XDG_STATE_HOME,
+      "vmethod",
+      String(f.config.stateName),
+      "merge-27.json"
+    );
+    if (interrupt) {
+      await expect(f.flow().merge("27")).rejects.toThrow("Interrupted PR card write");
+      expect(card).toMatchObject({ archived: false, values: { Status: "Executing" } });
+      expect(JSON.parse(readFileSync(journal, "utf8")).done).not.toContain("pr-card");
+      expect(effects).toEqual(["unarchive"]);
+    }
+    await expect(f.flow().merge("27")).resolves.toBe("Merged #27");
+    expect(card).toMatchObject({ archived: true, values: { Status: "Done", Progress: null } });
+    expect(effects).toEqual(status === "Done" ? ["cap"] : ["unarchive", "write", "cap", "archive"]);
+    expect(f.writes).toContainEqual({
+      path: "/repos/example/project/issues/27/assignees",
+      body: { assignees: ["owner"] },
+    });
+    expect(JSON.parse(readFileSync(journal, "utf8")).done).toEqual(
+      expect.arrayContaining(["pr-card", "done-cap", "follow-up"])
+    );
+    const before = [...effects];
+    await f.flow().merge("27");
+    expect(effects).toEqual(before);
+    f.done();
+  }
+);
+
 test.each(["Closes #8", "Part of #8", "Fixes #8"])(
   "open-task still guards source prose: %s",
   async (body) => {
@@ -3202,39 +3334,6 @@ test("a PR-numbered branch without a relation reports no linked issue", async ()
   f.done();
 });
 
-test.each(legacyBodies)(
-  "recorded legacy body on $headRefName links only its issue",
-  async (recording) => {
-    const f = fixture();
-    f.set({
-      state: "MERGED",
-      branch: recording.headRefName,
-      body: recording.body,
-      issueNumber: recording.issue,
-    });
-    await f.flow().merge("27");
-    expect(f.events).toContain(`read issue ${recording.issue}`);
-    expect(f.writes.filter((w) => w.body.state === "closed")).toEqual([
-      {
-        path: `/repos/example/project/issues/${recording.issue}`,
-        body: { state: "closed", state_reason: "completed" },
-      },
-    ]);
-    f.done();
-  }
-);
-
-test.each(["Agent task for #344", "> **Agent task for #344.**", "> **Closes #344.**"])(
-  "legacy header %s overrides branch numbering",
-  async (body) => {
-    const f = fixture();
-    f.set({ state: "MERGED", branch: "345-tracks", body, issueNumber: 344 });
-    await f.flow().merge("27");
-    expect(f.events).toContain("read issue 344");
-    f.done();
-  }
-);
-
 test.each(["Part of #344.", "> **Part of #344.**"])(
   "partial legacy header %s suppresses closing references",
   async (body) => {
@@ -3524,6 +3623,125 @@ test("open-task refuses a gated model without --owner-approved before any verifi
   expect(f.events).not.toContain("model-approval 8 astra");
   f.done();
 });
+
+test.each([1, 3, 5, 6])(
+  "open-task retries an unresolved new card (%s failures) and resumes without duplicating delivery",
+  async (failures) => {
+    const f = fixture();
+    const board = f.host.board();
+    const set = board.set;
+    const item = board.item;
+    const values: Card["values"] = { Status: "Backlog" };
+    board.item = async (id) => ({ ...(await item(id)), values: { ...values } });
+    let attempts = 0;
+    const waits: number[] = [];
+    let now = 0;
+    f.deps.now = () => now;
+    f.deps.sleep = async (ms) => {
+      waits.push(ms);
+      now += ms;
+    };
+    board.set = async (input, operation) => {
+      if (input.itemId === "pr" && input.field === "Status" && attempts++ < failures) {
+        throw new Error("Could not resolve to a node with the global id 'pr'");
+      }
+      const result = await set(input, operation);
+      if (input.itemId === "pr") {
+        values[input.field] = input.value;
+        if (input.progress !== undefined) {
+          values.Progress = input.progress;
+        }
+      }
+      return result;
+    };
+    f.host.board = () => board;
+    const result = await f.flow().open({ issue: "8", model: "sol", hold: true });
+    expect(waits).toEqual([1000, 2000, 4000, 8000, 16000].slice(0, Math.min(failures, 5)));
+    expect(now).toBe(waits.reduce((sum, ms) => sum + ms, 0));
+    expect(f.events.filter((event) => event === "board-add pr")).toHaveLength(1);
+    expect(f.touched).toContainEqual(
+      expect.objectContaining({ id: "issue", field: "Status", progress: null })
+    );
+    expect(f.events).toContain("GET /repos/example/project/issues/27");
+    if (failures === 6) {
+      expect(result).toContain("recover with: vmethod open-task 8 --model 'sol' --hold");
+      await expect(f.flow().open({ issue: "8", model: "sol", hold: true })).resolves.toBe(
+        "Resumed draft PR #27 (8-task)"
+      );
+      expect(
+        f.writes.filter((write) => write.path === "/repos/example/project/pulls")
+      ).toHaveLength(1);
+      expect(
+        f.events.filter((event) => event.startsWith("git") && event.includes("push"))
+      ).toHaveLength(1);
+      expect(f.writes.filter((write) => write.path.endsWith("/labels"))).toHaveLength(0);
+      expect(
+        f.writes.filter(
+          (write) =>
+            write.path === "/graphql" &&
+            String(write.body.query).includes("addCloseIssueReferences")
+        )
+      ).toHaveLength(1);
+      expect(values).toEqual({ Status: "Executing", Progress: "⛔", Model: "sol" });
+      const touched = [...f.touched];
+      await expect(f.flow().open({ issue: "8" })).resolves.toBe("Resumed draft PR #27 (8-task)");
+      expect(f.touched).toEqual(touched);
+    } else {
+      expect(result).not.toContain("recover with:");
+    }
+    expect(f.touched).toContainEqual(
+      expect.objectContaining({ id: "pr", field: "Model", value: "sol" })
+    );
+    f.done();
+  }
+);
+
+test.each(["permission denied", "Could not resolve to a node with the global id 'other'"])(
+  "open-task fails immediately for %s",
+  async (message) => {
+    const f = fixture();
+    const board = f.host.board();
+    board.set = async () => {
+      throw new Error(message);
+    };
+    f.host.board = () => board;
+    await expect(f.flow().open({ issue: "8", model: "sol" })).rejects.toThrow(message);
+    expect(f.events).not.toContain("GET /repos/example/project/issues/27");
+    f.done();
+  }
+);
+
+test.each(["ready", "unrelated", "base", "fork"])(
+  "open-task refuses to resume an existing %s PR",
+  async (kind) => {
+    const f = fixture();
+    await f.flow().open({ issue: "8", model: "sol" });
+    const thread = f.host.thread;
+    f.host.thread = async (ref, type) => {
+      const value = await thread(ref, type);
+      if (type !== "pr") {
+        return value;
+      }
+      return {
+        ...value,
+        ...(kind === "ready"
+          ? { isDraft: false }
+          : kind === "unrelated"
+            ? { body: '<!-- vmethod-task {"issues":[9]} -->' }
+            : kind === "base"
+              ? { baseRefName: "other" }
+              : { headRepository: { nameWithOwner: "other/project" } }),
+      };
+    };
+    await expect(f.flow().open({ issue: "8", model: "sol" })).rejects.toThrow(
+      kind === "fork" ? "fork" : "Existing PR"
+    );
+    expect(f.writes.filter((write) => write.path === "/repos/example/project/pulls")).toHaveLength(
+      1
+    );
+    f.done();
+  }
+);
 
 test("open-task creates a draft with a manual Development link, clears issue Progress and never estimates PRs", async () => {
   const f = fixture();
@@ -4263,7 +4481,7 @@ test.each(["cardConflict", "cardRestore"] as const)(
   "board-disabled configuration still moves the %s assignees without board writes",
   async (verb) => {
     const f = fixture();
-    f.config.board = { ...object(f.config.board), enabled: false };
+    f.config.board = { ...f.config.board, enabled: false };
     f.set({ assignees: verb === "cardRestore" ? ["worker"] : ["owner"] });
     await f.flow()[verb]("27", {
       status: "Owner review",
@@ -4291,7 +4509,7 @@ test.each(["cardConflict", "cardRestore"] as const)(
 
 test("card prior reads only the PR when the board is disabled", async () => {
   const f = fixture();
-  f.config.board = { ...object(f.config.board), enabled: false };
+  f.config.board = { ...f.config.board, enabled: false };
   f.set({ boardValues: { Status: "Owner review" }, assignees: ["owner"] });
   expect(await f.flow().cardPrior("27")).toEqual({
     status: null,
@@ -4405,12 +4623,11 @@ test("failed install resumes with original trigger delta even though checkout al
   f.done();
 });
 
-test("button merge with bad historical title and only Closes header still finishes legacy follow-up", async () => {
+test("button merge with bad historical title still finishes structured-task follow-up", async () => {
   const f = fixture();
-  f.set({ state: "MERGED", title: "Old task title", body: "Closes #8\n\nLegacy prompt." });
+  f.set({ state: "MERGED", title: "Old task title", body: '<!-- vmethod-task {"issues":[8]} -->' });
   await f.flow().merge("27");
   expect(f.events.some((event) => event.includes("warning: already-merged"))).toBe(true);
-  expect(f.events.some((event) => event.includes("legacy link"))).toBe(true);
   expect(f.touched.some((write) => write.id === "issue" && write.value === "Done")).toBe(true);
   expect(f.writes.some((w) => w.path.endsWith("/merge"))).toBe(false);
   f.done();

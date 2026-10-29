@@ -1,11 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  realpathSync,
-  rmdirSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Config } from "../config.js";
 import type { Dependencies } from "./client.js";
@@ -15,6 +8,7 @@ import { runVerifyHook } from "./verify-hook.js";
 import type { Operations, Verdict } from "./transport.js";
 import { liveBaseHead } from "./base-head.js";
 import { reference } from "./refs.js";
+import { DirLock } from "../journal/locks.js";
 
 /** Orchestrator integration work; project recipes receive no gateway credentials. */
 export class VerificationService {
@@ -30,29 +24,28 @@ export class VerificationService {
   ) {}
 
   async verify(input: Operations["verify"]["input"]): Promise<Verdict> {
-    const branches = this.config.branches as
-      { mainCheckout?: string; worktreeRoot?: string } | undefined;
+    const branches = this.config.branches;
     const parent = resolve(
       branches?.mainCheckout ?? this.root,
       branches?.worktreeRoot ?? ".worktrees"
     );
     mkdirSync(parent, { recursive: true });
-    const lock = join(parent, ".vmethod-review-lock");
+    const lock = new DirLock(join(parent, ".vmethod-review-lock"));
     try {
-      mkdirSync(lock);
+      lock.acquire();
     } catch {
       throw new Error("verify: review worktree is locked; another verify may be running");
     }
     try {
       return await this.runVerify(input);
     } finally {
-      rmdirSync(lock);
+      lock.release();
     }
   }
 
   async refresh(ref: string): Promise<Verdict> {
     const target = reference(ref, this.config);
-    if (target.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+    if (target.repo.toLowerCase() !== this.config.repo.toLowerCase()) {
       throw new Error("CI operations require the configured repository");
     }
     // #373: hold the conflict lock from the snapshot through the push, so the
@@ -142,8 +135,7 @@ export class VerificationService {
     if (prs.some((pr) => pr.base !== base || pr.baseSha !== prs[0].baseSha)) {
       throw new Error("verify requires PRs sharing the same base");
     }
-    const branches = this.config.branches as
-      { mainCheckout?: string; worktreeRoot?: string } | undefined;
+    const branches = this.config.branches;
     const parent = resolve(
       branches?.mainCheckout ?? this.root,
       branches?.worktreeRoot ?? ".worktrees"

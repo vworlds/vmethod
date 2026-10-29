@@ -9,7 +9,7 @@ import { object, type ObjectData } from "../../src/gateway/people.js";
 import issueResponse from "../fixtures/github/issue-response.json" with { type: "json" };
 import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import { WatchFake } from "./watch-fake.js";
-import { bodyHash } from "../../src/gateway/scope.js";
+import { bodyHash } from "../../src/evidence/scope.js";
 import autopilotWire from "../fixtures/github/autopilot-wire.json" with { type: "json" };
 import { scopeGraph, scopeMove } from "./scope-fixture.js";
 
@@ -257,7 +257,7 @@ test.each(
               json: { number: issueResponse.number, node_id: issueResponse.node_id },
             },
             ...createBoardReads(recording),
-            ...boardReads(recording),
+            ...boardReads(recording).slice(2),
             mutation,
           ]
         : verb === "issue close"
@@ -496,7 +496,7 @@ test("issue create sends validated file content and repeated labels to the confi
       json: { number: issueResponse.number, node_id: issueResponse.node_id },
     },
     ...createBoardReads(recording),
-    ...boardReads(recording),
+    ...boardReads(recording).slice(2),
     {
       ...boardGraph({
         m0: { projectV2Item: { id: card.id } },
@@ -548,7 +548,7 @@ test("issue create without --status sets the first column (Backlog) on the new c
       json: { number: issueResponse.number, node_id: issueResponse.node_id },
     },
     ...createBoardReads(recording),
-    ...boardReads(recording),
+    ...boardReads(recording).slice(2),
     {
       ...boardGraph({
         m0: { projectV2Item: { id: card.id } },
@@ -623,7 +623,7 @@ test("issue create applies optional estimate/status in one ordered operation wit
       json: { number: issueResponse.number, node_id: issueResponse.node_id },
     },
     ...createBoardReads(recording),
-    ...boardReads(recording),
+    ...boardReads(recording).slice(2),
     {
       // Estimate and Status ride one ordered mutation (#199): Estimate first, then
       // the Status write with its progress companion, Status last.
@@ -1342,7 +1342,7 @@ test("issue create names the board add retry command on a failed follow-up and b
     ...boardReads(recording).slice(0, 2),
     membershipRead(recording, false),
     ...createBoardReads(recording),
-    ...boardReads(recording),
+    ...boardReads(recording).slice(2),
     {
       ...boardGraph({
         m0: { projectV2Item: { id: card.id } },
@@ -1416,7 +1416,6 @@ test("board add on an on-board issue writes only its passed field and keeps the 
     ...boardReads(recording).slice(0, 2),
     boardGraph({ node: { __typename: "Issue", repository: { nameWithOwner: "example/project" } } }),
     membershipRead(recording),
-    ...boardReads(recording),
     {
       ...boardGraph({ m0: { projectV2Item: { id: card.id } } }),
       checkQuery(query, variables) {
@@ -1451,7 +1450,6 @@ test("board add --status is the only re-run form that moves an on-board card's S
     ...boardReads(recording).slice(0, 2),
     boardGraph({ node: { __typename: "Issue", repository: { nameWithOwner: "example/project" } } }),
     membershipRead(recording),
-    ...boardReads(recording),
     {
       ...boardGraph({
         m0: { projectV2Item: { id: card.id } },

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { MIGRATION_LOCK_MAX_AGE_MS } from "../core/time.js";
 import { compatibility, readState, writeState } from "./readme.js";
 import { validateMigrations } from "./migrations.js";
 import type {
@@ -215,6 +216,10 @@ export class MigrationRunner {
     await this.io.readme(snapshot.id, writeState(snapshot.readme, state));
   }
 
+  // FieldLock stays here rather than in journal/locks.ts: field creation, README
+  // holder writes, recovery snapshots and release must keep their remote ordering.
+  // Host/boot/PID/start proves death; otherwise a fresh holder or holder-less
+  // field refuses recovery, and old/unknown holders require explicit --steal.
   private async acquire(steal: boolean, login: string): Promise<void> {
     let snapshot = await this.io.snapshot();
     const state = readState(snapshot.readme);
@@ -224,7 +229,7 @@ export class MigrationRunner {
       const since = holderTime(state.lock);
       const identity = state.lock?.split(" identity ")[1];
       const dead = identity !== undefined && this.io.lockDead?.(identity) === true;
-      if (!dead && Number.isFinite(since) && this.io.now() - since <= 60 * minute) {
+      if (!dead && Number.isFinite(since) && this.io.now() - since <= MIGRATION_LOCK_MAX_AGE_MS) {
         throw new Error("Migration lock held; stale locks require --steal");
       }
       // No holder line (or a stale one): only the field's own age can tell a
@@ -359,7 +364,6 @@ export class MigrationRunner {
     await this.update((current) => {
       current.migrating = `${from}→${this.boardVersion} by ${login} since ${new Date(this.io.now()).toISOString()}`;
       current.paused = undefined;
-      current.optionUpdate = undefined;
     });
     await this.io.announce(`[vmethod] board migration ${from}→${this.boardVersion}`);
     try {
@@ -388,7 +392,6 @@ export class MigrationRunner {
           await this.apply(op);
           await this.update((current) => {
             current.completed = [...(current.completed ?? []), this.position];
-            current.optionUpdate = undefined;
           });
         }
         if (this.io.budgetStopped()) {
@@ -814,9 +817,6 @@ export class MigrationRunner {
     const cards = await this.io.allCards(snapshot.id);
     const output: string[] = [];
     const state = readState(snapshot.readme);
-    if (state.optionUpdate) {
-      output.push("Discard legacy option restore journal; use current live values");
-    }
     if (state.archivedMove) {
       const intent = state.archivedMove;
       const card = cards.find(({ id }) => id === intent.id);

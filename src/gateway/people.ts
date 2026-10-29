@@ -1,15 +1,6 @@
 import type { Digest } from "./digest.js";
-
-export interface Person {
-  login: string;
-  id: number;
-  type: "User" | "Bot";
-  role: "owner" | "orchestrator" | "worker" | "collaborator" | "system";
-  events?: ("check_run" | "status" | "workflow_run")[];
-  appIds?: number[];
-  /** Central, owner-approved project bindings for learning submissions. */
-  repos?: string[];
-}
+import type { Person } from "../core/config.js";
+export type { Person } from "../core/config.js";
 export type ObjectData = Record<string, unknown>;
 export function object(value: unknown): ObjectData {
   return value !== null && typeof value === "object" && !Array.isArray(value)

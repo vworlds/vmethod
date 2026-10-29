@@ -4,7 +4,7 @@ import type { Config } from "../config.js";
 import { compatibility, readState } from "../board/readme.js";
 import { MigrationRunner } from "../board/runner.js";
 import { loadMigrations } from "../board/migrations.js";
-import { progressStates, parseProgress } from "../board/progress.js";
+import { progressStates, parseProgress, expectedTurn } from "../core/progress.js";
 import type {
   BoardIO,
   Card,
@@ -17,18 +17,18 @@ import type {
 import { GitHubClient, GitHubHttpError, type Dependencies } from "./client.js";
 import { object, type ObjectData, type PeopleFilter } from "./people.js";
 import { ownerForTurn, sameAssignees, setTurn, turnAssignees } from "./turn.js";
-import { ScopeReader } from "./scope.js";
+import { ScopeReader } from "../evidence/scope.js";
 import { migrationIdentity, migrationHolderDead } from "./process-identity.js";
 import packageInfo from "../../package.json" with { type: "json" };
+import { batchPages, pages, pageCursor } from "../github/pages.js";
+import {
+  fieldSelection,
+  pageInfo,
+  contentSelection,
+  valueSelection,
+  initialValues,
+} from "../github/selections.js";
 
-const fieldSelection =
-  "... on ProjectV2Field { id name dataType createdAt } ... on ProjectV2IterationField { id name dataType createdAt } ... on ProjectV2SingleSelectField { id name dataType createdAt options { id name color description } }";
-const pageInfo = "pageInfo { hasNextPage endCursor }";
-const contentSelection =
-  "content { __typename ... on Issue { id number closedAt repository { nameWithOwner } assignees(first: 100) { nodes { login } } } ... on PullRequest { id number closedAt repository { nameWithOwner } assignees(first: 100) { nodes { login } } } }";
-const valueSelection =
-  "... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldNumberValue { number field { ... on ProjectV2Field { name } } } ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { name } } }";
-const initialValues = `fieldValues(first: 100) { nodes { ${valueSelection} } ${pageInfo} }`;
 function nodes(value: unknown): ObjectData[] {
   const connection = object(value);
   if (!Array.isArray(connection.nodes)) {
@@ -62,19 +62,17 @@ function created(value: unknown): number {
 }
 
 function nextCursor(connection: ObjectData, seen: Set<string>): string | null {
-  const info = object(connection.pageInfo);
-  if (info.hasNextPage === false) {
-    return null;
-  }
-  if (info.hasNextPage !== true || typeof info.endCursor !== "string" || seen.has(info.endCursor)) {
-    throw new Error("Invalid board pagination cursor");
-  }
-  seen.add(info.endCursor);
-  return info.endCursor;
+  return pageCursor(connection, seen, { cursorError: "Invalid board pagination cursor" });
+}
+
+/** Explicitly scoped to one verb's card choreography; never retained on the service. */
+export interface BoardOperation {
+  membership?: { snapshot: Snapshot; node?: ObjectData; itemId: string };
+  card?: Card;
 }
 
 export class BoardService implements BoardIO {
-  private readonly settings: ObjectData;
+  private readonly settings: NonNullable<Config["board"]>;
   private readonly runner: MigrationRunner;
   constructor(
     private config: Config,
@@ -84,7 +82,7 @@ export class BoardService implements BoardIO {
     private boardVersion = packageInfo.boardVersion,
     private filter?: PeopleFilter
   ) {
-    this.settings = object(config.board);
+    this.settings = config.board ?? {};
     if (this.settings.enabled === false) {
       throw new Error("Board is disabled");
     }
@@ -139,18 +137,14 @@ export class BoardService implements BoardIO {
   }
 
   private async pages(read: (cursor: string | null) => Promise<ObjectData>): Promise<ObjectData[]> {
-    let cursor: string | null = null;
-    const seen = new Set<string>();
     const output: ObjectData[] = [];
-    for (;;) {
-      const connection = await read(cursor);
+    for await (const connection of pages(read, {
+      connectionError: "Missing board connection",
+      cursorError: "Invalid board pagination cursor",
+    })) {
       output.push(...nodes(connection));
-      const next = nextCursor(connection, seen);
-      if (next === null) {
-        return output;
-      }
-      cursor = next;
     }
+    return output;
   }
 
   async snapshot(): Promise<Snapshot> {
@@ -320,37 +314,40 @@ export class BoardService implements BoardIO {
       const seen = new Set<string>();
       return { entry, values: nodes(connection), seen, cursor: nextCursor(connection, seen) };
     });
-    while (pending.some(({ cursor }) => cursor !== null)) {
-      const batch = pending.filter(({ cursor }) => cursor !== null).slice(0, 25);
-      const declarations: string[] = [];
-      const selections: string[] = [];
-      const variables: ObjectData = {};
-      batch.forEach(({ entry, cursor }, index) => {
-        declarations.push(`$id${index}: ID!`, `$cursor${index}: String!`);
-        variables[`id${index}`] = text(entry.id);
-        variables[`cursor${index}`] = cursor;
-        const connection =
-          field === "projectItems"
-            ? `projectItems(first: 25, after: $cursor${index}, includeArchived: true) { nodes { id isArchived project { id } ${contentSelection} ${initialValues} } ${pageInfo} }`
-            : `fieldValues(first: 100, after: $cursor${index}) { nodes { ${valueSelection} } ${pageInfo} }`;
-        const fragments =
-          field === "projectItems"
-            ? `... on Issue { ${connection} } ... on PullRequest { ${connection} }`
-            : `... on ProjectV2Item { ${connection} }`;
-        selections.push(`n${index}: node(id: $id${index}) { ${fragments} }`);
-      });
-      const data = object(
-        await this.github.graphql(
-          `query BoardCardConnections(${declarations.join(", ")}) { ${selections.join(" ")} }`,
-          variables
-        )
-      );
-      batch.forEach((entry, index) => {
-        const connection = object(object(data[`n${index}`])[field]);
-        entry.values.push(...nodes(connection));
-        entry.cursor = nextCursor(connection, entry.seen);
-      });
-    }
+    await batchPages(
+      pending,
+      async (batch) => {
+        const declarations: string[] = [];
+        const selections: string[] = [];
+        const variables: ObjectData = {};
+        batch.forEach(({ entry, cursor }, index) => {
+          declarations.push(`$id${index}: ID!`, `$cursor${index}: String!`);
+          variables[`id${index}`] = text(entry.id);
+          variables[`cursor${index}`] = cursor;
+          const connection =
+            field === "projectItems"
+              ? `projectItems(first: 25, after: $cursor${index}, includeArchived: true) { nodes { id isArchived project { id } ${contentSelection} ${initialValues} } ${pageInfo} }`
+              : `fieldValues(first: 100, after: $cursor${index}) { nodes { ${valueSelection} } ${pageInfo} }`;
+          const fragments =
+            field === "projectItems"
+              ? `... on Issue { ${connection} } ... on PullRequest { ${connection} }`
+              : `... on ProjectV2Item { ${connection} }`;
+          selections.push(`n${index}: node(id: $id${index}) { ${fragments} }`);
+        });
+        const data = object(
+          await this.github.graphql(
+            `query BoardCardConnections(${declarations.join(", ")}) { ${selections.join(" ")} }`,
+            variables
+          )
+        );
+        batch.forEach((entry, index) => {
+          const connection = object(object(data[`n${index}`])[field]);
+          entry.values.push(...nodes(connection));
+          entry.cursor = nextCursor(connection, entry.seen);
+        });
+      },
+      { size: 25, strategy: "drain", initial: "pending" }
+    );
     for (const { entry, values } of pending) {
       entry[field] = { nodes: values, pageInfo: { hasNextPage: false, endCursor: null } };
     }
@@ -366,7 +363,7 @@ export class BoardService implements BoardIO {
           if (
             typeof repo !== "string" ||
             !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
-            repo.split("/")[0].toLowerCase() !== String(this.config.org).toLowerCase()
+            repo.split("/")[0].toLowerCase() !== this.config.org.toLowerCase()
           ) {
             throw new Error("Invalid board repository scope");
           }
@@ -495,8 +492,12 @@ export class BoardService implements BoardIO {
         { id: itemId }
       )
     );
-    const node = object(data.node);
-    if (object(node.project).id !== snapshot.id) {
+    return this.projectCard(object(data.node), snapshot.id);
+  }
+  /** One card shape for the writer: the configured-board check, then only the five
+   * operation fields with null defaults (no arbitrary custom field text). */
+  private async projectCard(node: ObjectData, projectId: string): Promise<Card> {
+    if (object(node.project).id !== projectId) {
       throw new Error("Card is not on configured board");
     }
     const card = await this.decodeCard(node);
@@ -512,12 +513,29 @@ export class BoardService implements BoardIO {
     };
   }
   private scope(card: Card): void {
-    if (card.repo?.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+    if (card.repo?.toLowerCase() !== this.config.repo.toLowerCase()) {
       throw new Error("Refusing write to a foreign repository card");
     }
   }
-  /** Return an issue/PR's configured-project membership from the content side, adding it if absent. */
-  async ensure(contentId: string): Promise<string> {
+  /** Return an issue/PR's configured-project membership from the content side, adding
+   * it if absent. An optional operation shares that resolution with subsequent `set`s. */
+  async ensure(contentId: string, operation?: BoardOperation): Promise<string> {
+    const membership = await this.ensureCard(contentId);
+    if (operation) {
+      operation.membership = membership;
+      operation.card = undefined;
+    }
+    return membership.itemId;
+  }
+  /** Resolve membership once per operation, validating content before adding it.
+   * Pass the result to `setIssueFields` to reuse its snapshot and existing issue-side
+   * membership. After an add the writer still reads the new card's actual values:
+   * workflow defaults must not be replaced with a synthetic empty card. */
+  async ensureCard(contentId: string): Promise<{
+    snapshot: Snapshot;
+    node?: ObjectData;
+    itemId: string;
+  }> {
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
     // Validate repository and kind before an add mutation, just as ordinary writes do.
@@ -536,7 +554,7 @@ export class BoardService implements BoardIO {
     }
     const existing = await this.issueSideItem(contentId, snapshot.id);
     if (existing) {
-      return text(existing.id);
+      return { snapshot, node: existing, itemId: text(existing.id) };
     }
     const result = object(
       await this.github.graphql(
@@ -544,7 +562,10 @@ export class BoardService implements BoardIO {
         { input: { projectId: snapshot.id, contentId } }
       )
     );
-    return text(object(object(result.addProjectV2ItemById).item).id);
+    return {
+      snapshot,
+      itemId: text(object(object(result.addProjectV2ItemById).item).id),
+    };
   }
 
   /** The configured-board issue card for a content ID, or null when the issue has no
@@ -596,25 +617,39 @@ export class BoardService implements BoardIO {
         (a, b) => String(b.closedAt).localeCompare(String(a.closedAt)) || a.id.localeCompare(b.id)
       );
     for (const card of cards.slice(6)) {
-      if (card.repo?.toLowerCase() === String(this.config.repo).toLowerCase()) {
+      if (card.repo?.toLowerCase() === this.config.repo.toLowerCase()) {
         await this.archive(card.id);
       }
     }
   }
-  /** Write a scoped card field; Estimate is issue-only, Cost is per PR. */
-  async set(input: {
-    itemId: string;
-    field: "Status" | "Estimate" | "Model" | "Progress" | "Cost";
-    value: string | number | null;
-    progress?: string | null;
-  }): Promise<string> {
+  /** Write a scoped card field; Estimate is issue-only, Cost is per PR. The ordered
+   * commit goes through `setFields`, the single board writer (B1: a Status write
+   * carries its Progress companion in the same mutation, Progress first). Reuse an
+   * explicit `BoardOperation` from `ensure` only within the same verb; successful
+   * writes update its card values for subsequent writes, without merging batches. */
+  async set(
+    input: {
+      itemId: string;
+      field: "Status" | "Estimate" | "Model" | "Progress" | "Cost";
+      value: string | number | null;
+      progress?: string | null;
+    },
+    operation?: BoardOperation
+  ): Promise<string> {
     if (!["Status", "Estimate", "Model", "Progress", "Cost"].includes(input.field)) {
       throw new Error("Unsupported board field");
     }
     if (input.field === "Estimate" && input.value !== null) {
       assertEstimate(input.value);
     }
-    const card = await this.item(input.itemId);
+    const membership =
+      operation?.membership?.itemId === input.itemId ? operation.membership : undefined;
+    const card = membership
+      ? (operation?.card ??
+        (membership.node
+          ? await this.projectCard(membership.node, membership.snapshot.id)
+          : await this.item(input.itemId)))
+      : await this.item(input.itemId);
     this.scope(card);
     if (input.field === "Estimate" && card.kind === "PullRequest") {
       throw new Error(`Never set ${input.field} on a PR`);
@@ -625,31 +660,39 @@ export class BoardService implements BoardIO {
     if (input.field === "Status" && input.progress === undefined) {
       throw new Error("Status writes require Progress");
     }
-    const snapshot = await this.snapshot();
+    const snapshot = membership?.snapshot ?? (await this.snapshot());
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
     const field = snapshot.fields.find((field) => field.name === input.field);
     if (!field) {
       throw new Error("Missing board field");
     }
-    const changes = [{ id: card.id, field, value: input.value }];
-    if (input.field === "Status") {
-      const progress = snapshot.fields.find((field) => field.name === "Progress");
-      if (!progress) {
-        throw new Error("Missing Progress field");
-      }
-      changes.unshift({ id: card.id, field: progress, value: input.progress! });
-    }
-    await this.setChanges(snapshot.id, changes);
-    await this.orderAfterEntries(
+    await this.setFields(
       card,
+      snapshot,
+      [
+        {
+          field,
+          value: input.value,
+          ...(input.field === "Status" ? { progress: input.progress } : {}),
+        },
+      ],
       input.field === "Status"
         ? [
             { field: "Progress", value: input.progress! },
             { field: "Status", value: input.value },
           ]
-        : [{ field: input.field, value: input.value }],
-      snapshot.id
+        : [{ field: input.field, value: input.value }]
     );
+    if (membership && operation) {
+      operation.card = {
+        ...card,
+        values: {
+          ...card.values,
+          ...(input.field === "Status" ? { Progress: input.progress! } : {}),
+          [input.field]: input.value,
+        },
+      };
+    }
     return "Board field updated";
   }
   /** #267: grade writes through an archived card without touching it while archived.
@@ -705,11 +748,14 @@ export class BoardService implements BoardIO {
    * journaling the verb's board writes as one operation (#199). A Status entry keeps
    * its progress companion: the progress change rides the same mutation before Status
    * (the #178 scope handoff order). Estimates must use the shared points scale; Cost
-   * is refused. Membership is read from the issue side, never the project listing.
+   * is refused. Membership is read from the issue side, never the project listing —
+   * or reused from the operation's `ensureCard` resolution. A newly added card still
+   * needs an issue-side read of its actual values before the ordering hooks run.
    */
   async setIssueFields(
     contentId: string,
-    entries: { name: string; value: string | null; progressValue?: string }[]
+    entries: { name: string; value: string | null; progressValue?: string }[],
+    membership?: { snapshot: Snapshot; node?: ObjectData }
   ): Promise<string> {
     if (entries.some((entry) => entry.name === "Cost")) {
       throw new Error("Never set Cost on an issue");
@@ -732,7 +778,7 @@ export class BoardService implements BoardIO {
         throw new Error("Progress override is supported only for Status writes");
       }
     }
-    const snapshot = await this.snapshot();
+    const snapshot = membership?.snapshot ?? (await this.snapshot());
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
     const resolved = entries.map((entry) => {
       const field = snapshot.fields.find((candidate) => candidate.name === entry.name);
@@ -761,7 +807,7 @@ export class BoardService implements BoardIO {
       }
       return { field, value: entry.value, progressValue: entry.progressValue };
     });
-    const node = await this.issueSideItem(contentId, snapshot.id);
+    const node = membership?.node ?? (await this.issueSideItem(contentId, snapshot.id));
     if (!node) {
       throw new Error("Issue is not on configured board");
     }
@@ -770,7 +816,11 @@ export class BoardService implements BoardIO {
       throw new Error("Issue is not on configured board");
     }
     this.scope(card);
-    const changes: { id: string; field: Field; value: string | number | null }[] = [];
+    const writes: {
+      field: Field;
+      value: string | number | null;
+      progress?: string | null;
+    }[] = [];
     for (const entry of resolved) {
       let parsed: string | number | null = entry.value;
       if (entry.field.name === "Estimate" && entry.value !== null) {
@@ -785,27 +835,30 @@ export class BoardService implements BoardIO {
         }
         parsed = Number(entry.value);
       }
-      if (entry.field.name === "Status") {
-        const progressField = snapshot.fields.find((candidate) => candidate.name === "Progress");
-        if (!progressField) {
-          throw new Error("Missing Progress field");
-        }
-        // The progress companion rides the same mutation before Status (#178/#199).
-        changes.push({ id: card.id, field: progressField, value: entry.progressValue ?? null });
+      // Preserve validation precedence for a missing companion before later entries.
+      if (
+        entry.field.name === "Status" &&
+        !snapshot.fields.some((candidate) => candidate.name === "Progress")
+      ) {
+        throw new Error("Missing Progress field");
       }
-      changes.push({ id: card.id, field: entry.field, value: parsed });
+      writes.push({
+        field: entry.field,
+        value: parsed,
+        ...(entry.field.name === "Status" ? { progress: entry.progressValue ?? null } : {}),
+      });
     }
-    await this.setChanges(snapshot.id, changes);
     // The batch decides order once: the last Status entry wins the column and
     // carries the effective Progress (progress-only entries never queue).
-    await this.orderAfterEntries(
+    await this.setFields(
       card,
+      snapshot,
+      writes,
       resolved.map((entry) =>
         entry.field.name === "Status"
           ? { field: "Status", value: entry.value, progress: entry.progressValue ?? null }
           : { field: String(entry.field.name), value: entry.value }
-      ),
-      snapshot.id
+      )
     );
     return "Board field updated";
   }
@@ -825,7 +878,7 @@ export class BoardService implements BoardIO {
     if (!this.filter) {
       throw new Error("Assignee housekeeping requires the authenticated people filter");
     }
-    const repo = String(this.config.repo);
+    const repo = this.config.repo;
     const snapshot = await this.snapshot();
     compatibility(readState(snapshot.readme), this.boardVersion, this.report);
     const item = object(await this.github.rest(`/repos/${repo}/issues/${number}`));
@@ -845,16 +898,10 @@ export class BoardService implements BoardIO {
       throw new Error("Refusing assignee housekeeping on an archived board item");
     }
     const { people } = this.filter;
-    const state = parseProgress(card.values.Progress).state ?? "";
-    const expected = ["owner-review", "owner-question"].includes(state)
-      ? "owner"
-      : ["ready", "question", "blocked", "verifying", "design", "handoff"].includes(state)
-        ? "orchestrator"
-        : state === "working"
-          ? null
-          : ["Spec review", "Owner review"].includes(String(card.values.Status ?? ""))
-            ? "owner"
-            : null;
+    const expected = expectedTurn(
+      parseProgress(card.values.Progress).state,
+      String(card.values.Status ?? "")
+    );
     const owner =
       expected === "owner" ? await ownerForTurn(this.github, people, repo, number) : undefined;
     const describe = (role: "owner" | "orchestrator" | null): string =>
@@ -933,6 +980,34 @@ export class BoardService implements BoardIO {
       { input: { projectId, itemId, afterId } }
     );
   }
+  /** The single ordered write for card fields: every write path (`set`,
+   * `setIssueFields`, and with them the watcher's board writes, the archived-card
+   * sequence and TaskFlow's card choreography) commits here. Each write names a
+   * resolved field; a Status write carries its Progress companion value, and the
+   * companion field write rides the same mutation immediately before Status,
+   * Progress first (B1, the #178 order). `order` is the same writes in the
+   * caller's entry shape for the card-order hooks. The card and snapshot are the
+   * operation's cached membership reads, so the write itself re-reads nothing. */
+  private async setFields(
+    card: Card,
+    snapshot: Snapshot,
+    writes: { field: Field; value: string | number | null; progress?: string | null }[],
+    order: { field: string; value: string | number | null; progress?: string | number | null }[]
+  ): Promise<void> {
+    const changes: { id: string; field: Field; value: string | number | null }[] = [];
+    for (const write of writes) {
+      if (write.field.name === "Status") {
+        const progress = snapshot.fields.find((field) => field.name === "Progress");
+        if (!progress) {
+          throw new Error("Missing Progress field");
+        }
+        changes.push({ id: card.id, field: progress, value: write.progress ?? null });
+      }
+      changes.push({ id: card.id, field: write.field, value: write.value });
+    }
+    await this.setChanges(snapshot.id, changes);
+    await this.orderAfterEntries(card, order, snapshot.id);
+  }
   /** Card order caused by Progress/Status entries: a changed Executing-Progress or a
    * Status entry into Executing moves the card to the top; a Status entry into Owner
    * review queues it after the column's last card. All other target columns are
@@ -979,10 +1054,8 @@ export class BoardService implements BoardIO {
     if (!this.settings.announce) {
       return;
     }
-    const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(
-      String(this.settings.announce)
-    );
-    if (!match || match[1].split("/")[0].toLowerCase() !== String(this.config.org).toLowerCase()) {
+    const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#([1-9]\d*)$/.exec(this.settings.announce);
+    if (!match || match[1].split("/")[0].toLowerCase() !== this.config.org.toLowerCase()) {
       throw new Error("Invalid board announcement scope");
     }
     await this.github.rest(`/repos/${match[1]}/issues/${match[2]}/comments`, "POST", { body });
@@ -1030,9 +1103,9 @@ export class BoardService implements BoardIO {
       if (doc.errors.length) {
         throw new Error("Invalid adoption configuration");
       }
-      const config = object(doc.toJS());
-      const base = text(config.baseBranch);
-      const prefixes = object(config.branches);
+      const adoptionConfig = object(doc.toJS());
+      const base = text(adoptionConfig.baseBranch);
+      const prefixes = object(adoptionConfig.branches);
       const branches = new Set([base]);
       // Include all extant track/pack refs, not only branches with a PR. This
       // deliberately fails closed for an unadopted long-lived branch.

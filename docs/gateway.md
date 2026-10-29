@@ -189,7 +189,7 @@ accepted issue or PR. It posts the stop in the thread; the next watcher poll
 reconciles the owner's turn without reverting completed steps. There is no agent
 grant command, and `issue create --label autopilot` is refused. The typed operation
 is `autopilotStop({ref, kind: "issue" | "pr"}) → string`. Owner-event authentication
-and `open-task` inheritance live in `src/gateway/autopilot.ts`; see
+and `open-task` inheritance live in `src/evidence/autopilot.ts`; see
 [autopilot procedure](orchestrator-guide.md#autopilot). Under current delegation,
 `scope-review` and `review <pr> owner` explicitly record and advance their owner
 gates. `merge-task` rechecks delegation after normal verification.
@@ -500,7 +500,6 @@ live in `scripts/orchestrator/`. Commands are:
 ```text
 worker start <pr> [--model family|provider/id] [--owner-approved] [--replace]
 worker adopt <pr> <session-id>
-worker adopt --from-legacy
 worker send <pr> <file> [--queue|--now]
 worker status [pr]
 worker log <pr> [n]
@@ -574,22 +573,10 @@ worker checkout; adoption never creates a worktree. The
 actual session model must match a configured opencode model (or the `other` policy).
 Existing records are never overwritten, including their grading history. Adoption
 does not apply launch gates because it does not start or change the existing model.
-`worker adopt --from-legacy` reads bare-id bash records keyed by encoded worktree
-paths and `<pr>.json` files containing `{"sessionId":"ses_…"}` (or
-`{"id":"ses_…"}`) under each safe relative `legacyWorkers` directory in
-`$XDG_STATE_HOME` (default `~/.local/state`). The same `-<track>` suffix convention
-as `legacyState` applies. Optional JSON `repo` and `pr` fields must match but never
-authorize adoption. The importer requires the task's existing worktree in the worker
-checkout; missing worktrees are not created.
-Only this legacy import may snapshot the linked issue's current board Estimate
-when the PR has no opening snapshot. It records `legacy snapshot at adoption` in
-the saved segment, preserved by grading. Missing issue Estimates produce an
-actionable skip; normal explicit adoption still requires the PR snapshot.
-Every skipped record is reported with its reason, including non-task filenames.
-Unconfigured directories are never scanned and source files are unchanged.
-Records of the removed `claude -p` backend are reported as non-adoptable skips,
-never sent to opencode. See [legacy worker transition](adoption.md#legacy-worker-transition)
-for formats, path constraints and the relaunch procedure.
+Worker records require model kind `opencode`. If an old record uses another kind,
+stop its old process, move the record named in the error out of `workers/`, and
+run `worker start <pr>` for the open draft task. In `models.tsv`, use kind
+`opencode` and a full provider/model ID; Claude models use the `claude-code` provider.
 
 Capture `<!-- points_open: 8 -->` **when creating the task PR**, using the issue's
 Estimate then; do not revise this snapshot. Legacy prompts can retain their original
@@ -683,6 +670,19 @@ rendered on its own, a failed record prints `#<pr> error: <reason>` and the loop
 continues to the later records, and the command exits non-zero when any record
 failed.
 
+For lifecycle changes, use the pure `plan` and `staleWakes` functions in
+`src/sessions/lifecycle.ts`; `WorkerService.status()` observes OpenCode and executes
+the plan. A plan lists ordered effects and, when another observation is needed,
+a read with a pure continuation. Keep those reads lazy: quota failures and model
+syncs must be saved before later operations can fail. Usage accounting stays in
+`src/sessions/usage.ts`. The record, wake and lock file formats are unchanged.
+
+The idle drain sends a pending CONFLICT before wakes and records its actual send
+time. Replies at or after that boundary cannot answer queued wakes. A merged PR
+silently drops both queues once idle; an owner summons silently drops wakes only
+when no pending conflict holds the drain. Explicit `resume` owns the refusal
+message. Busy sessions retain both queues and are never steered by the drain.
+
 ### Subscription headroom and quota recovery
 
 Run `vmethod limits` as the orchestrator to inspect each family's provider, windows,
@@ -727,6 +727,10 @@ user prompt when no wakes remain. It records the `quota` switch reason and emits
 QUOTA #378: glm quota-stopped; switched to sol and resumed
 QUOTA #378: glm quota-stopped; no eligible fallback
 ```
+
+The watcher delivers each recovery notice through its event stream only, not as
+an additional plain report. CLI calls such as `worker status` and `worker model`
+retain plain reporting because they have no watcher event stream.
 
 No eligible fallback changes nothing. Other provider errors do not automatically
 switch. Recovery respects closed/merged tasks, holds, blockers and owner summons;
@@ -1051,19 +1055,22 @@ are supported for legacy wrappers. Mutes use the configured session (set
 login lifts a mute. Foreign-board cards can report assignments but are never mutated.
 
 First run records baselines, not historical events; current actionable conditions
-such as GRADE still wake. To import legacy markers once (including board grades),
-set `legacyState: [spacerocks-watch, spacerocks-watch-audit, rebase-watch]` in your
-project's `vmethod.yaml`. Without this key nothing is imported. Names are directories
-under `$XDG_STATE_HOME` (default `~/.local/state`); track sessions import only
-`<name>-<track>`. The sources are read-only and their locks are never opened.
-Numbered PR and issue markers are validated against `repo` in batches through the
-gateway before copying; missing items and PR markers naming issues are dropped,
-with one dropped-count log line. Validation respects gateway budget resets and
-fails closed on other API errors, leaving the import retryable.
+such as GRADE still wake. Bash watcher state and obsolete completion/turn stamps
+are not imported; stop the bash watcher, remove its import configuration, and start
+`vmethod watch` with fresh state. Existing current-format watcher state remains supported.
 The exclusive lock holds PID **and**
 Linux `/proc/<pid>/stat` start time, preventing reused PIDs (including container
 PID 1) from blocking adoption. Another live watcher for that state fails clearly.
 State, pending events and cursors survive restart; do not delete them to reconnect.
+
+Watcher files are named by `PrState`, `CardState` and `LoopState` in
+`src/watch/state.ts`; typed markers preserve the existing file names, bytes and
+write modes, so no migration is needed. When a PR closes, or its merge follow-up
+completes, the watcher clears its PR baselines, including base-head, worker
+protocol/stop/check-in/metric, cost, unanswered-worker and conflict/base dispatch
+markers. Incomplete merge follow-up retains these baselines. Once-event history
+and pending Progress retain their existing acknowledgement and board lifecycles;
+card absence pruning and delivery-reminder metadata are unchanged.
 
 ## CI and integration commands
 
@@ -1144,6 +1151,22 @@ The typed operations are `waitChecks({ref, maxMinutes?, graceSeconds?})`,
 `graceSeconds` is a server/test interface (default 120). An orchestrator's internal
 `push` call may additionally select a full frozen `commit` SHA; workers cannot.
 All regular push policy still applies, and refresh pins the task PR in its call.
+
+## Shared GitHub readers
+
+Use `src/github/pages.ts` for connection pagination and numbered REST pages. Pass
+the existing reader's error text, cursor policy and bounds; keep query strings,
+variables, page sizes, identity filtering and special stop conditions at the call
+site. Alias readers use its batch scheduler to retain round-based or first-batch
+draining order. Watcher nested-list size checks stay with the adaptive reader.
+
+Cursor validation normally follows page processing, so a reader's early return
+still avoids further requests. Review-thread readers validate before processing;
+their bounded previous-cursor check is intentionally distinct from full cycle
+detection. Missing connections and malformed cursors throw, never imply completion.
+
+Shared wire selections live in `src/github/selections.ts`; the `gh-read`
+diagnostic enrichment and filtering live in `src/github/diagnostic.ts`.
 
 ## Credentials and budget
 
@@ -1254,6 +1277,14 @@ These commands require `VMETHOD_ROLE=orchestrator`:
   closing link appears in Development and the board's linked-PR field; GitHub closes
   the issue when the completing PR merges into the repository's default branch.
   No closing-keyword or association-reference text is added to the PR description.
+  A newly added PR card that GitHub cannot yet resolve is retried after 1, 2, 4, 8
+  and 16 seconds; unrelated errors still fail immediately. If it remains unresolved,
+  independent opening steps finish and the output gives the exact recovery command.
+  Re-run that command: an existing open draft task PR for the same issue, branch,
+  repository, track and base resumes only missing card and turn writes, without
+  creating another branch, PR, label or Development link. Existing card values are
+  preserved, except the default Backlog status advances to Executing. Issue-less
+  direct tasks still fail if all card retries are exhausted.
   Gates and expensive-only Handoff breakpoints are enforced server-side; an
   owner-gated `--model` (or its issue-card Model hint) additionally requires
   `--owner-approved` and the owner's verified approval on the issue — the
@@ -1400,7 +1431,26 @@ resume to the recorded opencode session. Only the merge guard treats missing
 records as stopped; ordinary worker status still reports a missing session as
 unknown.
 
+For implementation changes, follow the delegating `src/gateway/task-flow.ts`
+facade into `src/tasks/open.ts` (opening, ancestry and model advice), `review.ts`
+(reviews, questions, hold release and wakes), `merge.ts` (merge gates, the
+`merge-<pr>.json` follow-up journal and closure), or `link.ts` (Development links).
+`src/tasks/common.ts` contains only the shared host contract, gates and helpers;
+marker decoding stays in `src/tasks/markers.ts` and approval evidence in
+`src/evidence/`. These modules preserve the verb and board-write ordering; the
+dependency reinstall remains the last merge follow-up action.
+
 ### Conflict resolution
+
+The implementation separates decisions in `src/conflicts/machine.ts` from the
+lock and I/O runner in `src/gateway/conflicts.ts`. `step(record, observation)`
+returns the next record, ordered effects and result line. Its ephemeral `next`
+continuation requests fresh observations after effects; it is never persisted.
+The durable phases and `conflicts/<pr>.json` schema are unchanged. In particular,
+the runner keeps the lock across update/wait/proof and pre-dispatch re-snapshots.
+Its card/lifecycle hooks live in `src/conflicts/cards.ts` (`cardPrior`,
+`cardConflict`, `cardRestore`, `escalateConflict`, `conflictTask` and
+`pullLifecycle`), reached through the same task-flow facade.
 
 Use `resolve-conflicts <pr>` to take the cheapest applicable action. The watcher
 dispatches it automatically for a conflicting head or GitHub's behind-base state,
@@ -1408,9 +1458,15 @@ then reconciles the persisted operation without launching another fixer.
 Reconciliation errors are contained per PR and reported once per head; they do
 not interrupt polling other PRs. Inspect the reported gateway state before retrying.
 
-A record whose PR is merged or closed closes quietly with
-`conflict on #n resolved outside the fixer`, removing `conflicts/<n>.json` before
-any snapshot could fail it. A record that dispatched no fixer closes the same way
+A PR that is merged, closed or no longer a task PR closes its record quietly,
+removing `conflicts/<n>.json` without a result line or watcher event. This also
+applies when the lifecycle changes between the listing, task gate and CI read.
+Expected races are typed outcomes (`src/conflicts/outcomes.ts`), not reconciliation
+failures. A head or base that moves during the fetched preview returns a quiet
+`PENDING` result and leaves dispatch to the next poll; genuine read/fetch failures
+still produce the per-head reconciliation error.
+
+A record that dispatched no fixer reports `conflict on #n resolved outside the fixer`
 once its PR stands mergeable with its current base behind a change the resolution
 cannot attribute — a worker's review-round fix, a manual merge, or the stale state
 of an interrupted process. The report is a terminal conflict result: it supersedes
@@ -1663,11 +1719,10 @@ checkout fast-forward. Installation remains last. Watcher merge events name
 `merged_by` and suggest `run merge-task`; the watcher never performs follow-up.
 Issue resolution prefers the structured task header, including its partial flag,
 then the existing task marker. Without either, a legacy `Part of #n` line prevents
-issue completion; otherwise same-repository GitHub closing references take
-precedence over legacy `Closes #n` and `Agent task for #n` lines. Legacy lines
-accept a leading blockquote, bold markers and a trailing period. Branch numbers
-are never issue relations and no sibling-PR scan is performed. Explicit legacy
-relations emit a `legacy link` notice; absent relations report `no linked issue`
+issue completion; otherwise same-repository GitHub closing references supply the
+relation. `Closes #n` and `Agent task for #n` prose headers are not decoded. Branch
+numbers are never issue relations and no sibling-PR scan is performed. Native
+closing-reference fallbacks retain the `legacy link` notice; absent relations report `no linked issue`
 and leave issues unchanged. Old empty journals reconcile newly discoverable issues.
 Completed follow-up is checkpointed as `follow-up` in `merge-<pr>.json` before any
 reinstall; failed follow-up does not mark completion. For same-account merges,
@@ -1680,7 +1735,10 @@ session with `follow-up complete`. Owner button
 merges notify normally; after follow-up completes they stop repeating.
 Obsolete `.turn-*` and `merged-*` stamps are imported once to preserve old
 suppression state, not written by verbs anymore. Done capping ranks all board repositories but archives
-only this repository's cards after the newest six. Keep the main checkout clean on
+only this repository's cards after the newest six. Merge follow-up leaves an
+already-archived Done PR card untouched while still clearing its turn. A PR card
+archived in another column is unarchived before moving to Done; the normal Done
+cap then re-archives it if it falls outside the newest six. Keep the main checkout clean on
 the configured base branch before retrying its fast-forward. Install is the final
 effect, after all follow-up is checkpointed, with no token environment or second
 CLI process. Pending installs may safely repeat after an interrupted run.

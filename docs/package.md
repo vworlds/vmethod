@@ -46,6 +46,28 @@ and `link-task <pr> [--complete|--unlink]` Development-link backfill and plan ch
 See [conflict resolution](gateway.md#conflict-resolution) for `resolve-conflicts <pr>`,
 automatic watcher dispatch, cheap-model turns and `conflicts.escalatePaths`.
 
+## Typed project configuration
+
+Use the typed loaders in [`src/core/config.ts`](../src/core/config.ts) when reading
+`vmethod.yaml`, `models.yaml` or `people.yaml`. `src/config.ts` retains the existing
+loader entry points; `ConfigInput` is an alias of core `Config`, so services use the
+same required fields, closed keys and enum values as validated file loads. Each load applies the corresponding schema once, preserving
+YAML line diagnostics, defaults and `VMETHOD_*` overrides (including `VMETHOD_BASE`
+and the boolean `VMETHOD_BOARD` alias). Provide `repo`, `org`, `baseBranch` and
+`board` with its required `owner`, `number` and `repos` fields when constructing
+settings in memory. `stateName`, `releaseBranch` and `learningsPrivacy` remain optional:
+state directories retain their existing per-service names (including the legacy
+identity-check digest name), branch guards retain their historical protected name
+when no release branch is configured, and learning submission requires explicit
+privacy. Tests use `test/config.ts`'s `testConfig()` for small, typed overrides.
+
+The gateway shares one lazy `ModelRegistry` snapshot between task opening, workers
+(including quota advice) and learning generation. A failed initial load is not
+cached. Start a new gateway to use edited model entries. People and project settings
+still reload at watcher poll boundaries; a bad edit keeps the last valid version.
+The named `DEFAULT_MODEL_FAMILY` owns the existing `sol` task default, not the
+separate learning-generation selection policy.
+
 ## Worker worktree configuration
 
 Workers run in their own clone of the repository, the **worker checkout**, never in
@@ -88,7 +110,7 @@ Supported `VMETHOD_` switches:
 Board-writing verbs honour `board.enabled: false`.
 `VMETHOD_OWNER` and `VMETHOD_BOARD_PROJECT` are ignored. Owner authority comes only from numeric ids and roles in `people.yaml`, never from environment variables. Select the board with `VMETHOD_BOARD_OWNER` (the org) and `VMETHOD_BOARD_NUMBER` (the number), not an owner login or project node id.
 
-`models.tsv` conversion accepts a plain or `#`-commented tab-separated header with `family`, `provider/id` (or `model`), `kind` and `gate`. TSV gate `-` becomes YAML `none`; `none` and `owner` are preserved. Required YAML `tier` is copied when present, otherwise derived as `expensive` for owner-gated rows and `standard` for other rows. `kind: opencode` requires `provider/id`; `kind: claude` requires a bare model id. Other comment lines are ignored. It validates before writing, preserves the TSV, and never converts again once `models.yaml` exists. Existing YAML files must explicitly add `tier: expensive|standard|cheap`; `vmethod check` rejects missing tiers.
+`models.tsv` conversion accepts a plain or `#`-commented tab-separated header with `family`, `provider/id` (or `model`), `kind` and `gate`. TSV gate `-` becomes YAML `none`; `none` and `owner` are preserved. Required YAML `tier` is copied when present, otherwise derived as `expensive` for owner-gated rows and `standard` for other rows. Use `kind: opencode` and a full `provider/id`; for Claude models, use the `claude-code` provider. Other comment lines are ignored. It validates before writing, preserves the TSV, and never converts again once `models.yaml` exists. Existing YAML files must explicitly add `tier: expensive|standard|cheap`; `vmethod check` rejects missing tiers.
 
 ## Development and releases
 

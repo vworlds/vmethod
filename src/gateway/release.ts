@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { RELEASE_PROPAGATION_MS, RELEASE_WAIT_MINUTES } from "../core/time.js";
+import { restPages } from "../github/pages.js";
 import { join } from "node:path";
 import type { Config } from "../config.js";
 import { liveBaseHead } from "./base-head.js";
@@ -7,7 +9,6 @@ import { GitTransport, validateBranch } from "./git.js";
 import { object, type ObjectData } from "./people.js";
 
 const workflow = "publish.yml";
-const boundMinutes = 30;
 const jobPages = 10;
 const success = ["success", "neutral", "skipped"];
 
@@ -26,8 +27,8 @@ export async function releaseNext(
   deps: Dependencies,
   github: () => GitHubClient
 ): Promise<string> {
-  const repo = String(config.repo);
-  const base = String(config.baseBranch);
+  const repo = config.repo;
+  const base = config.baseBranch;
   validateBranch(base);
   const git = new GitTransport(config, env, deps, root);
   const branch = (await git.run("rev-parse", "--abbrev-ref", "HEAD")).trim();
@@ -116,7 +117,6 @@ export async function releaseNext(
   ].join("\n");
 }
 
-const propagationBound = 600000;
 const propagationInterval = 15000;
 const versionShape = /^\d+\.\d+\.\d+(?:-rc\.\d+)?$/;
 const tagName = /^v\d+\.\d+\.\d+(?:-rc\.\d+)?$/;
@@ -133,7 +133,7 @@ async function nextVersion(
   name: string,
   remote: string
 ): Promise<string | undefined> {
-  const deadline = deps.now() + propagationBound;
+  const deadline = deps.now() + RELEASE_PROPAGATION_MS;
   for (;;) {
     let data: ObjectData | undefined;
     try {
@@ -257,7 +257,7 @@ async function dispatchedRun(
   before: number
 ): Promise<ObjectData> {
   const started = deps.now();
-  const deadline = started + boundMinutes * 60000;
+  const deadline = started + RELEASE_WAIT_MINUTES * 60000;
   let run: ObjectData | undefined;
   let reason = "the dispatched run is not registered yet";
   for (;;) {
@@ -287,7 +287,7 @@ async function dispatchedRun(
     const remaining = deadline - deps.now();
     if (remaining <= 0) {
       throw new Error(
-        `the publish run did not complete within ${boundMinutes} minutes (${reason}); run: ${run ? runUrl(repo, run) : "(not registered)"} and run release next again`
+        `the publish run did not complete within ${RELEASE_WAIT_MINUTES} minutes (${reason}); run: ${run ? runUrl(repo, run) : "(not registered)"} and run release next again`
       );
     }
     await deps.sleep(Math.min(10000, remaining));
@@ -312,14 +312,16 @@ function runUrl(repo: string, run: ObjectData): string {
 /** Failed step names per job, bounded; a failed job without steps names itself. */
 async function failedSteps(github: GitHubClient, repo: string, runId: number): Promise<string[]> {
   const output: string[] = [];
-  for (let page = 1; ; page++) {
-    const result = object(
-      await github.rest(`/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&page=${page}`)
-    );
-    if (!Array.isArray(result.jobs)) {
-      throw new Error("Invalid publish run job list");
-    }
-    for (const value of result.jobs) {
+  for await (const jobs of restPages(
+    async (page) => {
+      const result = object(
+        await github.rest(`/repos/${repo}/actions/runs/${runId}/jobs?per_page=100&page=${page}`)
+      );
+      return result.jobs;
+    },
+    { error: "Invalid publish run job list", size: 100, limit: jobPages }
+  )) {
+    for (const value of jobs) {
       const job = object(value);
       if (!Number.isSafeInteger(job.id) || Number(job.id) < 1 || typeof job.name !== "string") {
         throw new Error("Invalid publish run job");
@@ -331,9 +333,6 @@ async function failedSteps(github: GitHubClient, repo: string, runId: number): P
         .filter((step) => step.conclusion != null && !success.includes(String(step.conclusion)))
         .map((step) => `${job.name} / ${step.name}`.slice(0, 200));
       output.push(...(steps.length ? steps : [`${job.name} / no failed step reported`]));
-    }
-    if (result.jobs.length < 100 || page >= jobPages) {
-      break;
     }
   }
   return output;

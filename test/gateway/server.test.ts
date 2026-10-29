@@ -492,7 +492,7 @@ test.each([actor(), actor(2), null])(
                 status: "Approved",
                 actor: eventActor,
                 createdAt: "2026-01-01T01:00:00Z",
-                previousStatus: "In review",
+                previousStatus: "Owner review",
                 project: { number: 1 },
               },
             ],

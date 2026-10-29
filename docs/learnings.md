@@ -21,8 +21,9 @@ incoming submission authority. Only the owner changes these bindings; missing bi
 Submission creates or reuses your `vmethod` fork and creates a deterministic records
 branch using GitHub's Git database/ref operations. It keeps one open learning PR
 per project, appending new immutable files to that PR's head with a non-force
-fast-forward. It refuses ambiguous multiple open project submissions and legacy
-non-add-only PRs when new data needs appending; reconcile those before retrying.
+fast-forward. It refuses ambiguous multiple open project submissions. Non-add-only
+and pre-layout PRs are not pending inputs; reconcile them before resubmitting
+delivery records through `.vmethod/model-log.jsonl` and notes through `--notes <file>`.
 After a confirmed ref update, submission polls the PR head up to ten times, one
 second apart. If the PR still shows the old head, it reports
 "pushed; PR head not yet updated" as success, not a failed submission. A different
@@ -54,7 +55,7 @@ the ordinary task review process, so they can implement this tooling and seed da
 Central `dev` is authoritative for submitted records: union the legacy seed
 `learnings/models/<owner>-<repo>.jsonl` with every JSONL file in its project directory,
 keyed by delivery PR. Records in this author's open learning submissions are pending
-and are not sent again; this includes legacy seed-file submissions during migration.
+and are not sent again when their files follow the current add-only layout.
 Records found only in closed-unmerged submissions are eligible again. You can submit
 another increment to the same PR while it is open. After it merges, the next
 submission starts a fresh branch from fork `dev`, without resending merged records.
@@ -98,11 +99,11 @@ review every owner-cleared text field before sending it.
 
 ## Read and compare
 
-| Command                                             | Result                                                                                                                                                                                                                                                                                   |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `learnings show [<family>]`                         | Current family page (when selected), general lessons, model records from both layouts (filtered by family), and legacy/new notes from central `dev`, fenced as untrusted data. Failed reads use the bundled snapshot; a successful read with no page explicitly reports central absence. |
-| `learnings report [--family f] [--kind k] [--json]` | Aggregate local legacy seed JSONL and project-directory JSONL under `learnings/models/`, or the bundled records if that directory is absent. Missing inputs and malformed records fail visibly.                                                                                          |
-| `suggest-model <issue>`                             | Existing model/gate recommendation plus the matching current learning page and lessons. Advice cannot override a model gate.                                                                                                                                                             |
+| Command                                             | Result                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `learnings show [<family>]`                         | Current family page (when selected), general lessons, model seed files and immutable submissions (filtered by family), and current-layout notes from central `dev`, fenced as untrusted data. Failed reads use the bundled snapshot; a successful read with no page explicitly reports central absence. |
+| `learnings report [--family f] [--kind k] [--json]` | Aggregate local legacy seed JSONL and project-directory JSONL under `learnings/models/`, or the bundled records if that directory is absent. Missing inputs and malformed records fail visibly.                                                                                                         |
+| `suggest-model <issue>`                             | Existing model/gate recommendation plus the matching current learning page and lessons. Advice cannot override a model gate.                                                                                                                                                                            |
 
 Delivery reads also include `.vmethod/model-log.jsonl` when present. Show, report
 and open-task's family evidence use the same delivery union: null or absent fields

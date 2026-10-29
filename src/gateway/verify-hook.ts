@@ -50,7 +50,7 @@ export async function runVerifyHook(
   const parent = resolve(
     state,
     "vmethod",
-    String(config.stateName ?? String(config.repo).replace("/", "-")),
+    config.stateName ?? config.repo.replace("/", "-"),
     "verify"
   );
   mkdirSync(parent, { recursive: true, mode: 0o700 });

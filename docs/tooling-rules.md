@@ -18,8 +18,8 @@ new columns. Normalize numeric values before comparing them.
 
 The watcher takes a lock before reading or advancing state. A second reader refuses
 the same directory; distinct tracks have distinct state. Preserve `stateName`, once
-and graded state during adoption so old events do not replay. Obsolete merged/turn
-writer stamps are imported once; new writes are attributed through the
+and graded state during upgrades so old events do not replay. Bash watcher and
+obsolete merged/turn stamps are not imported; writes are attributed through the
 gateway journal, never by a verb writing watcher state directly. State and caches
 belong under the OS user's state/cache roots, not the package tree.
 The orchestrator and workers each run the package from their own checkout; never

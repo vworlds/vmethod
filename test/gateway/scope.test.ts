@@ -1,7 +1,8 @@
 import { expect, test } from "vitest";
+import { testConfig } from "../config.js";
 import { join } from "node:path";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { bodyHash, scopeApproved, ScopeReader } from "../../src/gateway/scope.js";
+import { bodyHash, scopeApproved, ScopeReader } from "../../src/evidence/scope.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { GitHubClient } from "../../src/gateway/client.js";
@@ -23,7 +24,7 @@ import recordedScope from "../fixtures/github/issue-scope.json" with { type: "js
 
 const filter = () =>
   new PeopleFilter(people, "example", new Digest({ XDG_STATE_HOME: fixture() }, "scope", () => 0));
-const config = { board: { number: 1 } };
+const config = testConfig({ board: { number: 1 } });
 const review = (overrides: ObjectData = {}) =>
   scopeComment({
     body: `[orchestrator] SCOPE REVIEW\n\nUpdated scope.\n\nbody sha256: ${bodyHash("Final scope")}`,
@@ -76,8 +77,8 @@ test.each([
     const f = filter();
     const issue = scopeIssue();
     const timeline = [scopeMove({ status: "Executing", previousStatus })];
-    expect(scopeApproved(issue, reviewed ? [review()] : [], timeline, config, f, 0)).toBe(valid);
-    expect(scopeApproved({ ...issue, body: "changed" }, [review()], timeline, config, f, 0)).toBe(
+    expect(scopeApproved(issue, reviewed ? [review()] : [], timeline, config, f)).toBe(valid);
+    expect(scopeApproved({ ...issue, body: "changed" }, [review()], timeline, config, f)).toBe(
       false
     );
     expect(
@@ -86,29 +87,14 @@ test.each([
         reviewed ? [review()] : [],
         [scopeMove({ status: "Executing", previousStatus, actor: actor(2) })],
         config,
-        f,
-        0
+        f
       )
     ).toBe(false);
   }
 );
 
-test("v6 grandfathers only approval evidence preceding migration and a left bounce revokes it", () => {
+test("a later owner move away revokes current scope approval", () => {
   const f = filter();
-  const before = Date.parse("2026-01-04T00:00:00Z");
-  const move = scopeMove({ previousStatus: "Backlog" });
-  expect(scopeApproved(scopeIssue(), [], [move], config, f, before)).toBe(true);
-  expect(scopeApproved(scopeIssue(), [], [move], config, f, 0)).toBe(false);
-  expect(
-    scopeApproved(
-      scopeIssue(),
-      [review()],
-      [scopeMove({ createdAt: "2026-01-05T00:00:00Z" })],
-      config,
-      f,
-      before
-    )
-  ).toBe(false);
   expect(
     scopeApproved(
       scopeIssue(),
@@ -122,8 +108,7 @@ test("v6 grandfathers only approval evidence preceding migration and a left boun
         }),
       ],
       config,
-      f,
-      before
+      f
     )
   ).toBe(false);
 });
@@ -176,7 +161,7 @@ test("scope is bound to the latest authenticated review body and a strictly late
 test("the orchestrator shortcut requires an owner move after the last body edit", () => {
   const f = filter(),
     issue = scopeIssue(),
-    move = scopeMove();
+    move = scopeMove({ previousStatus: "Scoping" });
   expect(scopeApproved(issue, [], [move], config, f)).toBe(true);
   expect(
     scopeApproved(issue, [scopeComment({ author: { databaseId: 99999 } })], [move], config, f)
@@ -205,7 +190,7 @@ test("the orchestrator shortcut requires an owner move after the last body edit"
 test("trusted orchestrator OWNER QUESTION comments preserve the trivial shortcut; other commenters or editors void it", () => {
   const f = filter(),
     issue = scopeIssue(),
-    timeline = [scopeMove()];
+    timeline = [scopeMove({ previousStatus: "Scoping" })];
   const question = scopeComment({
     body: "[orchestrator] OWNER QUESTION\n\nMove this to Approved to start.",
   });
@@ -243,7 +228,7 @@ test("the role is per repository: the bound orchestrator keeps the shortcut and 
       "example",
       new Digest({ XDG_STATE_HOME: fixture() }, "scope-foreign", () => 0)
     );
-  const move = [scopeMove()];
+  const move = [scopeMove({ previousStatus: "Scoping" })];
   const question = scopeComment({
     body: "[orchestrator] OWNER QUESTION\n\nMove this to Approved to start.",
   });
@@ -259,8 +244,15 @@ test("the role is per repository: the bound orchestrator keeps the shortcut and 
   expect(scopeApproved(scopeIssue(), [], move, config, filter())).toBe(true);
   for (const comment of peerVotes) {
     const issue = scopeIssue();
-    expect(scopeApproved(issue, [question, comment], move, config, filter())).toBe(true);
-    expect(scopeApproved(issue, [question, comment], move, config, foreign())).toBe(false);
+    const timeline = [
+      scopeMove({
+        previousStatus: String(comment.body).startsWith("[orchestrator] SCOPE REVIEW")
+          ? "Spec review"
+          : "Scoping",
+      }),
+    ];
+    expect(scopeApproved(issue, [question, comment], timeline, config, filter())).toBe(true);
+    expect(scopeApproved(issue, [question, comment], timeline, config, foreign())).toBe(false);
   }
   // An issue written by a peer orchestrator (a collaborator here) has no shortcut.
   expect(scopeApproved(scopeIssue(), [], move, config, foreign())).toBe(false);
@@ -347,7 +339,10 @@ test("the real recording decodes through a batched filtered reader; rejected com
     }),
     scopeGraph({
       n0: { ...issue, timelineItems: scopeConnection([scopeMove()]) },
-      n1: scopeIssue({ id: "issue-2", timelineItems: scopeConnection([scopeMove()]) }),
+      n1: scopeIssue({
+        id: "issue-2",
+        timelineItems: scopeConnection([scopeMove({ previousStatus: "Scoping" })]),
+      }),
     }),
   ]);
   const settings = getConfig(f.root, {});
@@ -386,7 +381,13 @@ test.each([false, true])(
       author: actor(2),
       editor: null,
     });
-    const move = scopeMove({ ...recordedMove, actor: actor(), project: { number: 1 } });
+    const move = scopeMove({
+      ...recordedMove,
+      status: "Executing",
+      previousStatus: "Spec review",
+      actor: actor(),
+      project: { number: 1 },
+    });
     const f = fixtureServer([
       scopeGraph({ nodes: [issue] }),
       scopeGraph({ nodes: [issue] }),

@@ -179,6 +179,10 @@ counts as their approval; see [Security](security.md#authority-and-filtering).
 
 ## Scope review
 
+Use [the architecture](architecture.md) as the reference for further features. If a
+specification changes it, name the architecture change and its justification in
+the issue specification and SCOPE REVIEW summary so the owner sees it.
+
 While an issue is under discussion, leave its body alone. Acknowledge and reason
 about each point (yours, the owner's, other orchestrators') in comments, so the
 thread shows how the ideas fit together. Do not fold each comment into the body as
@@ -245,7 +249,7 @@ resolve contradictions before launch. Never delegate an unsettled owner decision
 as worker discretion. Execution instructions belong in the pinned
 [worker guide](worker-guide.md), not repeated PR boilerplate.
 
-Use `open-task` (vmethod 1.0, #8) and `start-worker` (vmethod 1.0, #9).
+Use `open-task` (vmethod 1.0, #8) and `worker start` (vmethod 1.0, #9).
 When the agreed work already exists on another branch — for example the owner's —
 do not merge it into the task by hand: open the task with `open-task <issue>
 --from <branch>` instead. It merges that branch into the task branch with a merge

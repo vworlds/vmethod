@@ -1,9 +1,60 @@
 import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "vitest";
-import { configValue, getConfig, loadYaml } from "../src/config.js";
+import { expect, expectTypeOf, test } from "vitest";
+import { parse, stringify } from "yaml";
+import { configValue, getConfig, loadYaml, validateYaml } from "../src/config.js";
+import type { Config, ConfigInput } from "../src/core/config.js";
+import { testConfig } from "./config.js";
 import { validProject } from "./helpers.js";
 import { check } from "../src/check.js";
+
+test("service settings have closed keys and the same required fields as validated Config", () => {
+  expectTypeOf<ConfigInput>().toEqualTypeOf<Config>();
+  expectTypeOf<string>().not.toExtend<keyof ConfigInput>();
+  expectTypeOf<"reop">().not.toExtend<keyof ConfigInput>();
+  expectTypeOf<Omit<ConfigInput, "repo">>().not.toExtend<ConfigInput>();
+  expectTypeOf<Omit<ConfigInput, "org">>().not.toExtend<ConfigInput>();
+  expectTypeOf<Omit<ConfigInput, "baseBranch">>().not.toExtend<ConfigInput>();
+  expectTypeOf<Omit<ConfigInput, "board">>().not.toExtend<ConfigInput>();
+  expectTypeOf<Partial<ConfigInput["board"]>>().not.toExtend<ConfigInput["board"]>();
+  expectTypeOf<ConfigInput["learningsPrivacy"]>().toEqualTypeOf<"public" | "private" | undefined>();
+});
+
+test("minimal valid files omit stateName, releaseBranch and privacy without synthetic values", () => {
+  const config = validateYaml(stringify(testConfig()), "vmethod", "vmethod.yaml");
+  expect(config.repo).toBe("example/project");
+  expect(config.org).toBe("example");
+  expect(config.baseBranch).toBe("dev");
+  expect(config.board).toEqual({
+    owner: "example",
+    number: 1,
+    repos: ["example/project"],
+    enabled: true,
+  });
+  expect(config).not.toHaveProperty("stateName");
+  expect(config).not.toHaveProperty("releaseBranch");
+  expect(config).not.toHaveProperty("learningsPrivacy");
+});
+
+test.each(["repo", "org", "baseBranch", "board"])("schema still requires %s", (key) => {
+  const config = { ...testConfig() };
+  Reflect.deleteProperty(config, key);
+  expect(() => validateYaml(stringify(config), "vmethod", "vmethod.yaml")).toThrow(
+    `required property '${key}'`
+  );
+});
+
+test("testConfig merges board overrides and never shares mutable defaults", () => {
+  const config = testConfig({ repo: "other/repo", board: { enabled: false } });
+  expect(config.board).toEqual({
+    owner: "other",
+    number: 1,
+    repos: ["other/repo"],
+    enabled: false,
+  });
+  config.board.repos.push("other/second");
+  expect(testConfig({ repo: "other/repo" }).board.repos).toEqual(["other/repo"]);
+});
 
 test("quota configuration defaults, overrides and validation", () => {
   const root = validProject();
@@ -119,60 +170,21 @@ test("YAML 1.2 strings, nested keys, explicit validation and unknown keys", () =
   expect(() => getConfig(root, {})).toThrow(new RegExp(`vmethod.yaml:${numberLine}:.*integer`));
 }, 15000);
 
-test.each(["legacyState", "legacyWorkers"])(
-  "%s is an optional list of safe, unique directory names",
-  (key) => {
-    const root = validProject();
-    const path = join(root, "vmethod.yaml");
-    const original = readFileSync(path, "utf8");
-    expect(getConfig(root, {})[key]).toBeUndefined();
-    for (const value of ["[]", "[spacerocks-watch, spacerocks-watch-audit, rebase-watch]"]) {
-      writeFileSync(path, `${original}\n${key}: ${value}\n`);
-      expect(Array.isArray(getConfig(root, {})[key])).toBe(true);
-    }
-    for (const value of [
-      "vecs-watch",
-      "[../vecs-watch]",
-      "[/tmp/watch]",
-      "[vecs-watch, vecs-watch]",
-      "[null]",
-    ]) {
-      writeFileSync(path, `${original}\n${key}: ${value}\n`);
-      expect(() => getConfig(root, {})).toThrow(key);
-    }
-  },
-  15000
-);
+test.each(["legacyState", "legacyWorkers"])("removed %s configuration is refused", (key) => {
+  const root = validProject();
+  const path = join(root, "vmethod.yaml");
+  writeFileSync(path, `${readFileSync(path, "utf8")}\n${key}: []\n`);
+  expect(() => getConfig(root, {})).toThrow("must NOT have additional properties");
+});
 
-test("legacyWorkers accepts nested relative paths but rejects traversal and empty segments", () => {
+test("checks.release stays valid after compatibility removal", () => {
   const root = validProject();
   const path = join(root, "vmethod.yaml");
   const original = readFileSync(path, "utf8");
-  writeFileSync(
-    path,
-    `${original}\nlegacyWorkers: [vecs-orchestrator/workers, spacerocks-orchestrator/claude-workers]\n`
-  );
-  expect(getConfig(root, {}).legacyWorkers).toEqual([
-    "vecs-orchestrator/workers",
-    "spacerocks-orchestrator/claude-workers",
-  ]);
-  for (const value of [
-    "../workers",
-    "a/../workers",
-    "a/./workers",
-    "a//workers",
-    "a/",
-    "/a",
-    "a\\workers",
-    ".",
-    "..",
-    "",
-  ]) {
-    writeFileSync(path, `${original}\nlegacyWorkers: ${JSON.stringify([value])}\n`);
-    expect(() => getConfig(root, {})).toThrow("legacyWorkers");
-  }
-  writeFileSync(path, `${original}\nlegacyState: [vecs-orchestrator/workers]\n`);
-  expect(() => getConfig(root, {})).toThrow("legacyState");
+  const config = parse(original);
+  config.checks = { ...config.checks, release: ["npm run build"] };
+  writeFileSync(path, stringify(config));
+  expect(getConfig(root, {}).checks?.release).toEqual(["npm run build"]);
 });
 
 test("VMETHOD overrides config; VECS, SPACEROCKS and bare BASE are ignored", () => {

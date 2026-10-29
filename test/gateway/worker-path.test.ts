@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { testConfig } from "../config.js";
 import { execFileSync } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { expect, test } from "vitest";
@@ -18,10 +19,12 @@ import { fixture, ghConfig, validProject } from "../helpers.js";
 
 test("workerCheckout resolves relative to the orchestrator checkout and refuses the checkout itself", () => {
   const root = fixture();
-  expect(workerCheckout(root, { workerCheckout: "../worker" })).toBe(resolve(root, "../worker"));
-  expect(workerCheckout(root, { workerCheckout: "/srv/worker" })).toBe("/srv/worker");
-  expect(() => workerCheckout(root, {})).toThrow("Set workerCheckout in vmethod.yaml");
-  expect(() => workerCheckout(root, { workerCheckout: "." })).toThrow("separate clone");
+  expect(workerCheckout(root, testConfig({ workerCheckout: "../worker" }))).toBe(
+    resolve(root, "../worker")
+  );
+  expect(workerCheckout(root, testConfig({ workerCheckout: "/srv/worker" }))).toBe("/srv/worker");
+  expect(() => workerCheckout(root, testConfig())).toThrow("Set workerCheckout in vmethod.yaml");
+  expect(() => workerCheckout(root, testConfig({ workerCheckout: "." }))).toThrow("separate clone");
 });
 
 test("VMETHOD_WORKER_CHECKOUT overrides workerCheckout per machine", () => {
@@ -51,8 +54,12 @@ test("workerCheckout resolves relative to the main checkout from a linked worktr
 
   expect(mainCheckoutRoot(root)).toBe(root);
   expect(mainCheckoutRoot(linked)).toBe(root);
-  expect(workerCheckout(root, { workerCheckout: "../worker" })).toBe(resolve(root, "../worker"));
-  expect(workerCheckout(linked, { workerCheckout: "../worker" })).toBe(resolve(root, "../worker"));
+  expect(workerCheckout(root, testConfig({ workerCheckout: "../worker" }))).toBe(
+    resolve(root, "../worker")
+  );
+  expect(workerCheckout(linked, testConfig({ workerCheckout: "../worker" }))).toBe(
+    resolve(root, "../worker")
+  );
 });
 
 test("check from a linked worktree accepts a worker clone beside the main checkout", () => {
@@ -104,18 +111,20 @@ test("check from a linked worktree accepts a worker clone beside the main checko
 
 test("workerCheckoutIsSelf reports a worker checkout's own config and never a missing value", () => {
   const root = fixture();
-  expect(workerCheckoutIsSelf(root, { workerCheckout: `../${basename(root)}` })).toBe(true);
-  expect(workerCheckoutIsSelf(root, { workerCheckout: root })).toBe(true);
-  expect(workerCheckoutIsSelf(root, { workerCheckout: "../worker" })).toBe(false);
-  expect(workerCheckoutIsSelf(root, {})).toBe(false);
+  expect(workerCheckoutIsSelf(root, testConfig({ workerCheckout: `../${basename(root)}` }))).toBe(
+    true
+  );
+  expect(workerCheckoutIsSelf(root, testConfig({ workerCheckout: root }))).toBe(true);
+  expect(workerCheckoutIsSelf(root, testConfig({ workerCheckout: "../worker" }))).toBe(false);
+  expect(workerCheckoutIsSelf(root, testConfig())).toBe(false);
 });
 
 test("worker worktree names carry the prefix and flatten branch slashes", () => {
-  expect(workerWorktreeName({}, "12-fix")).toBe("auto-12-fix");
-  expect(workerWorktreeName({ branches: { worktreePrefix: "w-" } }, "track/12-fix")).toBe(
-    "w-track-12-fix"
-  );
-  expect(() => workerWorktreePrefix({ branches: { worktreePrefix: "a/b" } })).toThrow(
+  expect(workerWorktreeName(testConfig(), "12-fix")).toBe("auto-12-fix");
+  expect(
+    workerWorktreeName(testConfig({ branches: { worktreePrefix: "w-" } }), "track/12-fix")
+  ).toBe("w-track-12-fix");
+  expect(() => workerWorktreePrefix(testConfig({ branches: { worktreePrefix: "a/b" } }))).toThrow(
     "Invalid branches.worktreePrefix"
   );
 });

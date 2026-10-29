@@ -1,4 +1,7 @@
 import type { Config } from "../config.js";
+import { ConflictOutcome } from "../conflicts/outcomes.js";
+import { CHECKS_WAIT_MINUTES } from "../core/time.js";
+import { restPages } from "../github/pages.js";
 import { stripVTControlCharacters } from "node:util";
 import { GitHubClient, type Dependencies } from "./client.js";
 import { object, untrusted, type ObjectData, type PeopleFilter } from "./people.js";
@@ -30,7 +33,7 @@ export class ChecksService {
   ) {}
 
   async wait(input: Operations["waitChecks"]["input"]): Promise<Verdict> {
-    const minutes = input.maxMinutes ?? 30;
+    const minutes = input.maxMinutes ?? CHECKS_WAIT_MINUTES;
     const grace = input.graceSeconds ?? 120;
     if (
       ![minutes, grace].every((n) => Number.isFinite(n) && n >= 0) ||
@@ -162,13 +165,15 @@ export class ChecksService {
     return { ...pr, runs, green, stale };
   }
 
-  /** Only read-only waiting may authorize a central learning submission's fork head. */
+  /** Only read-only waiting may authorize a central learning submission's fork head.
+   * A not-open PR throws a terminal ConflictOutcome so conflict reconciliation can
+   * discard its record even when the PR closes between task and CI reads. */
   async pull(
     ref: string,
     learningFork = false
   ): Promise<Omit<CiSnapshot, "runs" | "green" | "stale">> {
     const target = reference(ref, this.config);
-    if (target.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+    if (target.repo.toLowerCase() !== this.config.repo.toLowerCase()) {
       throw new Error("CI operations require the configured repository");
     }
     const pr = object(await this.github.rest(`/repos/${target.repo}/pulls/${target.number}`));
@@ -177,7 +182,7 @@ export class ChecksService {
       throw new Error("No accepted task PR");
     }
     if (pr.state !== "open") {
-      throw new Error("Task PR is not open");
+      throw new ConflictOutcome("closed", "Task PR is not open");
     }
     const head = object(pr.head);
     const base = object(pr.base);
@@ -215,16 +220,18 @@ export class ChecksService {
 
   private async runs(target: ThreadRef, head: string): Promise<ObjectData[]> {
     const latest = new Map<string, ObjectData>();
-    for (let page = 1; ; page++) {
-      const result = object(
-        await this.github.rest(
-          `/repos/${target.repo}/commits/${head}/check-runs?filter=all&per_page=100&page=${page}`
-        )
-      );
-      if (!Array.isArray(result.check_runs)) {
-        throw new Error("Missing check runs");
-      }
-      for (const value of result.check_runs) {
+    for await (const runs of restPages(
+      async (page) => {
+        const result = object(
+          await this.github.rest(
+            `/repos/${target.repo}/commits/${head}/check-runs?filter=all&per_page=100&page=${page}`
+          )
+        );
+        return result.check_runs;
+      },
+      { error: "Missing check runs", size: 100 }
+    )) {
+      for (const value of runs) {
         const run = object(value);
         if (!this.filter.check(run, target.owner, target.link)) {
           continue;
@@ -240,10 +247,8 @@ export class ChecksService {
           latest.set(key, run);
         }
       }
-      if (result.check_runs.length < 100) {
-        return [...latest.values()];
-      }
     }
+    return [...latest.values()];
   }
 
   private async suitesComplete(target: ThreadRef, runs: ObjectData[]): Promise<boolean> {

@@ -1,16 +1,18 @@
+import { parseFirstLine } from "../core/protocol.js";
 import { createHash, randomUUID } from "node:crypto";
+import { DirLock } from "../journal/locks.js";
 import {
   existsSync,
   linkSync,
   mkdirSync,
   readFileSync,
   readdirSync,
-  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { loadYaml, type Config } from "../config.js";
+import type { Config } from "../config.js";
+import { ModelRegistry } from "../core/config.js";
 import type { ModelRecord } from "../learnings.js";
 import type { ExactMetrics, ThreadEvent } from "../learning-metrics.js";
 import { OpencodeClient, type Dependencies } from "./client.js";
@@ -189,7 +191,8 @@ export class LearningAnnotations {
     private env: NodeJS.ProcessEnv,
     private deps: Dependencies,
     private records: () => ModelRecord[],
-    private bundle: (pr: number) => Promise<LearningBundle>
+    private bundle: (pr: number) => Promise<LearningBundle>,
+    private models = new ModelRegistry(root)
   ) {}
 
   async command(input: AnnotationInput): Promise<string> {
@@ -206,17 +209,14 @@ export class LearningAnnotations {
     if (input.pr && input.since) {
       throw new Error("Choose --pr or --since");
     }
-    if (!["public", "private"].includes(String(this.config.learningsPrivacy))) {
+    if (this.config.learningsPrivacy !== "public" && this.config.learningsPrivacy !== "private") {
       throw new Error("Set learningsPrivacy explicitly");
     }
-    const state = stateRoot(
-      this.env,
-      String(this.config.stateName ?? String(this.config.repo).replace("/", "-"))
-    );
+    const state = stateRoot(this.env, this.config.stateName ?? this.config.repo.replace("/", "-"));
     mkdirSync(state, { recursive: true });
-    const lock = join(state, "learning-generation.lock");
+    const lock = new DirLock(join(state, "learning-generation.lock"));
     try {
-      mkdirSync(lock);
+      lock.acquire();
     } catch (error) {
       throw new Error(
         "Learning generation locked; confirm no writer is running before removing a stale lock",
@@ -226,15 +226,14 @@ export class LearningAnnotations {
     try {
       return input.action === "annotate" ? await this.annotate(input) : await this.aggregate(input);
     } finally {
-      rmdirSync(lock);
+      lock.release();
     }
   }
 
   private async annotate(input: AnnotationInput): Promise<string> {
     const records = this.records().filter(
       (r) =>
-        r.repo.toLowerCase() === String(this.config.repo).toLowerCase() &&
-        (!input.pr || r.pr === input.pr)
+        r.repo.toLowerCase() === this.config.repo.toLowerCase() && (!input.pr || r.pr === input.pr)
     );
     if (input.pr && !records.length) {
       throw new Error(`#${input.pr}: No delivery record for requested PR`);
@@ -267,9 +266,16 @@ export class LearningAnnotations {
           (c) =>
             c.role === "owner" ||
             (c.role === "worker" &&
-              /^\[worker\] (READY FOR REVIEW|QUESTION|BLOCKED)\b/.test(c.body)) ||
+              parseFirstLine(c.body, {
+                role: "worker",
+                tags: ["READY", "QUESTION", "BLOCKED"],
+                ready: "full",
+              })) ||
             (c.role === "orchestrator" &&
-              /^\[orchestrator\] (REVIEW|ANSWER|OWNER REVIEW|NOTE|GRADE)\b/.test(c.body))
+              parseFirstLine(c.body, {
+                role: "orchestrator",
+                tags: ["REVIEW", "ANSWER", "OWNER REVIEW", "NOTE", "GRADE"],
+              }))
         );
         const data = {
           deliveryUrl: prUrl(record.repo, record.pr),
@@ -531,7 +537,7 @@ export class LearningAnnotations {
           .map((line) => {
             try {
               const a = annotation(JSON.parse(line));
-              if (!all && a.repo.toLowerCase() !== String(this.config.repo).toLowerCase()) {
+              if (!all && a.repo.toLowerCase() !== this.config.repo.toLowerCase()) {
                 throw new Error("Foreign annotation in project directory");
               }
               return a;
@@ -545,20 +551,10 @@ export class LearningAnnotations {
       );
   }
   private directory(): string {
-    return join(
-      this.root,
-      "learnings/models",
-      String(this.config.repo).toLowerCase().replace("/", "-")
-    );
+    return join(this.root, "learnings/models", this.config.repo.toLowerCase().replace("/", "-"));
   }
   private model(input: AnnotationInput): { model: string } {
-    const models = loadYaml(this.root, "models") as {
-      family: string;
-      model: string;
-      kind: string;
-      gate: string;
-      price?: { input: number; output: number };
-    }[];
+    const models = this.models.entries();
     const selected =
       input.model ??
       this.config.learningsModel ??

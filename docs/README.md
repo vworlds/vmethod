@@ -9,6 +9,7 @@ Read the guide for your role, then follow the linked rules for the work at hand.
 - [Worker guide](worker-guide.md)
 - [Orchestrator guide](orchestrator-guide.md)
 - [Tooling incident rules](tooling-rules.md)
+- [Lock policies](locks.md)
 - [Security and permission boundary](security.md)
 - [Changing the methodology and sharing learnings](change-process.md)
 - [Shared learning commands and privacy](learnings.md)
@@ -21,5 +22,6 @@ verbs are labelled with their planned release and tracking issue; do not substit
 raw API access while waiting for them.
 
 Project identity, paths, credentials, commands and domain rules stay in consumer
-configuration and local guides. The [architecture](architecture.md) records the
-design and its decisions; these guides are the generic consumer-facing process.
+configuration and local guides. The [architecture](architecture.md) is the reference
+for the current architecture and further features; these guides are the generic
+consumer-facing process.

@@ -46,6 +46,21 @@ named, and never touches worker assignees. Every change is journaled in the gate
 write journal, so the session's own watcher stays quiet about it and turn
 bookkeeping remains the board's single source of truth.
 
+The shared [Progress policy](../src/core/progress.ts) owns parsing, rendering,
+turn selection and queued-change guards. Housekeeping falls back to the owner in
+Spec review/Owner review for empty, stuck or unknown Progress; an explicit working
+state still clears the turn. Watcher reconciliation deliberately leaves those
+fallback states' existing assignees untouched. Its guarded arrows limit worker
+activity/stall updates, while protocol changes are unguarded; the writer separately
+preserves an Executing owner summons until an explicit release.
+
+Card field writes share `BoardService.setFields` in [the board service](../src/gateway/board.ts):
+each Status carries Progress first in the same ordered mutation. Task-card operations,
+issue creation and board-add repairs reuse operation-local membership metadata from
+the issue side, never a board listing. After an add, the actual card values are still
+read before deciding its position. Archived-card writes retain the journaled
+unarchive, set, re-archive and verify sequence.
+
 The owner moves Backlog → Scoping to start discussion, then Scoping → Spec review
 to agree conclusions. The orchestrator gets `🧭🔍` to rewrite the scope. After
 SCOPE REVIEW the owner gets `👤🔍`; Spec review → Executing approves the exact body.
@@ -350,8 +365,8 @@ GitHub's API treats options without IDs as new options and clears values referen
 removed IDs. Option updates pass every existing option's ID, including through renames.
 The runner snapshots values before each option-list write and checks every item
 (including archived and unset items) afterwards. Any mismatch fails visibly; it never
-automatically restores values or journals a snapshot for replay. On resume, legacy
-restore journals are discarded and current live values are used, so cards moved since
+automatically restores values or journals a snapshot for replay. On resume,
+current live values are used, so cards moved since
 a failed attempt cannot be reverted. Explicit workflow remaps still write changed
 cards in batches (archived cards use the journaled sequence above); unchanged cards
 are never rewritten. Dry runs list each item to check and

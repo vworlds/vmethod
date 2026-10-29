@@ -25,7 +25,7 @@ export function resolveSession(config: Config, input: SessionInput): ResolvedSes
   if ([track !== null, only !== null, skip !== null].filter(Boolean).length > 1) {
     throw new Error("Choose one session: --track, --only or --skip");
   }
-  const base = String(config.stateName ?? String(config.repo).replace("/", "-"));
+  const base = config.stateName ?? config.repo.replace("/", "-");
   const suffix =
     track !== null
       ? `-${track}`
