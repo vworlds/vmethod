@@ -1,8 +1,8 @@
+import { LoopState, Marker } from "../watch/state.js";
 import { lockHolder } from "./lock-holder.js";
 import { renderPermissions } from "./permission-detail.js";
 import { QuotaCrossings, limitsConfig, type ProviderLimits } from "./limits.js";
 import {
-  appendFileSync,
   closeSync,
   copyFileSync,
   existsSync,
@@ -10,7 +10,6 @@ import {
   openSync,
   readdirSync,
   readFileSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -261,33 +260,6 @@ function parseThreadRef(config: Config, ref: string): ThreadRef {
   return { repo: match[2] ? `${match[2]}/${match[3]}` : String(config.repo), number: parsed };
 }
 
-function readLines(path: string): string[] {
-  try {
-    return readFileSync(path, "utf8").split("\n").filter(Boolean);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
-}
-
-function atomicWrite(path: string, text: string): void {
-  const temporary = `${path}.tmp`;
-  writeFileSync(temporary, text, { mode: 0o600 });
-  renameSync(temporary, path);
-}
-
-function remove(path: string): void {
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-}
-
 function safeJson(text: string): unknown {
   try {
     return JSON.parse(text);
@@ -333,16 +305,15 @@ function changeMute(
   add: boolean
 ): string {
   const dir = stateRoot(env, resolveSession(config, {}).stateName);
-  const path = join(dir, "mutes");
+  const marker = new LoopState(dir).mutes;
   const entry = `${thread.repo.toLowerCase()}#${thread.number}`;
-  const current = readLines(path);
+  const current = marker.lines();
   const present = current.includes(entry);
   if (add === present) {
     return `${thread.repo}#${thread.number} is ${add ? "already muted" : "not muted"}`;
   }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  atomicWrite(
-    path,
+  marker.write(
     `${(add ? [...current, entry] : current.filter((line) => line !== entry)).sort().join("\n")}\n`
   );
   return `${add ? "muted" : "unmuted"} ${thread.repo}#${thread.number}`;
@@ -357,7 +328,7 @@ export function unmuteThread(config: Config, env: NodeJS.ProcessEnv, ref: string
 }
 
 export function listMutes(config: Config, env: NodeJS.ProcessEnv): string {
-  const lines = readLines(join(stateRoot(env, resolveSession(config, {}).stateName), "mutes"));
+  const lines = new LoopState(stateRoot(env, resolveSession(config, {}).stateName)).mutes.lines();
   return [`Muted: ${lines.length}`, ...lines].join("\n");
 }
 
@@ -443,6 +414,7 @@ export class EventLoop {
     string,
     { message: string; since: number; reminded: number; step: string }
   >();
+  private readonly state: LoopState;
   private reading = false;
   private budgetDeferred = false;
   private releaseLock?: () => void;
@@ -465,6 +437,7 @@ export class EventLoop {
     const config = host.config;
     this.session = session ?? resolveSession(config, input);
     this.dir = stateRoot(host.env, this.session.stateName);
+    this.state = new LoopState(this.dir);
     this.writes = new WriteJournal(config, host.env, host.deps.now, this.session.stateName);
     this.own = String(config.repo);
     this.org = String(config.org);
@@ -501,7 +474,7 @@ export class EventLoop {
       if (input.replay === undefined) {
         new WatchDelivery(this.dir, this.host.deps.now).append(result.events);
       }
-      if (input.watchStart && !this.marked(`guide-seen-${VERSION}`)) {
+      if (input.watchStart && !this.marked(this.state.once(`guide-seen-${VERSION}`))) {
         const projectRoot = resolve(this.host.env.VMETHOD_ROOT || this.host.root);
         const packageGuide = join(
           projectRoot,
@@ -569,11 +542,15 @@ export class EventLoop {
       delivery.start();
     }
     if (input.guideSeen) {
-      this.mark(`guide-seen-${VERSION}`);
+      this.mark(this.state.once(`guide-seen-${VERSION}`));
     }
     this.applyAck((input.ack ?? []) as string[]);
     // Deliver onboarding immediately rather than hiding it behind a five-minute long poll.
-    if (input.watchStart && !input.pollOnce && !this.marked(`guide-seen-${VERSION}`)) {
+    if (
+      input.watchStart &&
+      !input.pollOnce &&
+      !this.marked(this.state.once(`guide-seen-${VERSION}`))
+    ) {
       return { events: this.buildBatch() };
     }
     // Zero timeout is the ack-only operation used by --once; do not fetch unprinted events.
@@ -608,11 +585,11 @@ export class EventLoop {
     if (!events.length) {
       return undefined;
     }
-    const last = Date.parse(this.readMarker("chat-reminder"));
+    const last = Date.parse(this.readMarker(this.state.chatReminder));
     if (Number.isFinite(last) && this.host.deps.now() - last < CHAT_REMINDER_EVERY_MS) {
       return undefined;
     }
-    atomicWrite(join(this.dir, "chat-reminder"), new Date(this.host.deps.now()).toISOString());
+    this.state.chatReminder.write(new Date(this.host.deps.now()).toISOString());
     return CHAT_REMINDER;
   }
 
@@ -624,19 +601,16 @@ export class EventLoop {
 
   // ---------------------------------------------------------------- state files
 
-  private mark(name: string): void {
+  private mark(marker: Marker<unknown>): void {
+    const name = marker.path.slice(this.dir.length + 1);
     if (!ID.test(name)) {
       throw new Error(`Invalid watcher state marker: ${name}`);
     }
-    writeFileSync(
-      join(this.dir, name),
-      this.windowMarker(name) ? new Date(this.host.deps.now()).toISOString() : "",
-      { mode: 0o600 }
-    );
+    marker.stamp(this.windowMarker(name) ? new Date(this.host.deps.now()).toISOString() : "");
   }
 
-  private marked(name: string): boolean {
-    return existsSync(join(this.dir, name));
+  private marked(marker: Marker<unknown>): boolean {
+    return marker.exists();
   }
 
   private windowMarker(name: string): boolean {
@@ -649,32 +623,25 @@ export class EventLoop {
       if (!this.windowMarker(name)) {
         continue;
       }
-      const stamp = this.readMarker(name);
-      const at = stamp ? Date.parse(stamp) : statSync(join(this.dir, name)).mtimeMs;
+      const stamp = this.readMarker(this.state.once(name));
+      const at = stamp ? Date.parse(stamp) : statSync(this.state.once(name).path).mtimeMs;
       if (!Number.isFinite(at)) {
         throw new Error(`Invalid watcher marker timestamp: ${name}`);
       }
       if (at < cutoff) {
-        remove(join(this.dir, name));
+        this.state.once(name).remove();
       }
     }
   }
 
-  private readMarker(name: string): string {
-    try {
-      return readFileSync(join(this.dir, name), "utf8").trim();
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return "";
-      }
-      throw error;
-    }
+  private readMarker(marker: Marker<unknown>): string {
+    return marker.text();
   }
 
   private pending(): PendingEvent[] {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(readFileSync(join(this.dir, "pending.json"), "utf8"));
+      parsed = JSON.parse(readFileSync(this.state.pending.path, "utf8"));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return [];
@@ -700,11 +667,11 @@ export class EventLoop {
   }
 
   private savePending(events: PendingEvent[]): void {
-    atomicWrite(join(this.dir, "pending.json"), JSON.stringify(events));
+    this.state.pending.write(JSON.stringify(events));
   }
 
   private produceOnce(id: string, kind: string, line: string): boolean {
-    if (this.marked(id) || this.pending().some((event) => event.id === id)) {
+    if (this.marked(this.state.once(id)) || this.pending().some((event) => event.id === id)) {
       return false;
     }
     this.savePending([...this.pending(), { id, kind, line, once: true }]);
@@ -728,7 +695,7 @@ export class EventLoop {
     for (const event of this.pending()) {
       if (ids.includes(event.id)) {
         if (event.once) {
-          this.mark(event.id);
+          this.mark(this.state.once(event.id));
         }
       } else {
         keep.push(event);
@@ -738,15 +705,15 @@ export class EventLoop {
   }
 
   private quiet(line: string): void {
-    appendFileSync(join(this.dir, "quiet"), `${line}\n`, { mode: 0o600 });
+    this.state.quiet.append(`${line}\n`);
   }
 
   private quietOnce(id: string, line: string): void {
-    if (this.marked(id)) {
+    if (this.marked(this.state.once(id))) {
       return;
     }
     this.quiet(line);
-    this.mark(id);
+    this.mark(this.state.once(id));
   }
 
   private buildBatch(): WatchEvent[] {
@@ -756,7 +723,7 @@ export class EventLoop {
       const quiet = (event.quiet ?? []).filter((line) => !this.journaledCommentLine(line));
       if (this.journaledCommentLine(event.line)) {
         if (event.once) {
-          this.mark(event.id);
+          this.mark(this.state.once(event.id));
         }
         orphanedQuiet.push(...quiet);
       } else {
@@ -767,13 +734,11 @@ export class EventLoop {
       this.quiet(line);
     }
     if (events.length) {
-      const lines = readLines(join(this.dir, "quiet")).filter(
-        (line) => !this.journaledCommentLine(line)
-      );
+      const lines = this.state.quiet.lines().filter((line) => !this.journaledCommentLine(line));
       if (lines.length) {
         events[0] = { ...events[0], quiet: [...(events[0].quiet ?? []), ...lines] };
       }
-      writeFileSync(join(this.dir, "quiet"), "", { mode: 0o600 });
+      this.state.quiet.stamp("");
     }
     this.savePending(events);
     return events.map(({ id, kind, line, quiet }) => ({
@@ -816,7 +781,7 @@ export class EventLoop {
   }
 
   private readCursor(): string | null {
-    const value = this.readMarker("cursor");
+    const value = this.readMarker(this.state.cursor);
     if (!value) {
       return null;
     }
@@ -827,7 +792,7 @@ export class EventLoop {
   }
 
   private mutes(): Set<string> {
-    return new Set(readLines(join(this.dir, "mutes")));
+    return new Set(this.state.mutes.lines());
   }
 
   private muted(repo: string, number: number): boolean {
@@ -836,10 +801,10 @@ export class EventLoop {
 
   private unmuteThread(repo: string, number: number): void {
     const entry = `${repo.toLowerCase()}#${number}`;
-    const path = join(this.dir, "mutes");
-    atomicWrite(
-      path,
-      `${readLines(path)
+    const marker = this.state.mutes;
+    marker.write(
+      `${marker
+        .lines()
         .filter((line) => line !== entry)
         .sort()
         .join("\n")}\n`
@@ -851,7 +816,7 @@ export class EventLoop {
   }
 
   private activityAt(number: number): string {
-    const value = this.readMarker(`activity-${number}`);
+    const value = this.readMarker(this.state.pr(number).activity);
     return /^\d{4}-\d{2}-\d{2}T/.test(value) ? value : "";
   }
 
@@ -859,18 +824,18 @@ export class EventLoop {
     if (!at || at <= this.activityAt(number)) {
       return;
     }
-    atomicWrite(join(this.dir, `activity-${number}`), `${at}\n`);
+    this.state.pr(number).activity.write(`${at}\n`);
   }
 
   private readReview(number: number): { at: string; id: string } | null {
-    const parsed = object(safeJson(this.readMarker(`review-${number}`)));
+    const parsed = this.state.pr(number).review.read();
     return typeof parsed.at === "string" && typeof parsed.id === "string"
       ? { at: parsed.at, id: parsed.id }
       : null;
   }
 
   private writeReview(number: number, review: { at: string; id: string }): void {
-    atomicWrite(join(this.dir, `review-${number}`), JSON.stringify(review));
+    this.state.pr(number).review.write(review);
   }
 
   // ---------------------------------------------------------------- start and lock
@@ -880,7 +845,7 @@ export class EventLoop {
       return;
     }
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    mkdirSync(join(this.dir, "board"), { recursive: true, mode: 0o700 });
+    mkdirSync(this.state.boardDir, { recursive: true, mode: 0o700 });
     this.acquireLock();
     try {
       await this.importLegacy();
@@ -895,11 +860,11 @@ export class EventLoop {
 
   /** Import obsolete writer stamps once; future writers only use the gateway journal. */
   private migrateActions(): void {
-    if (this.marked("actions-migrated")) {
+    if (this.marked(this.state.actionsMigrated)) {
       return;
     }
-    const completed = object(safeJson(this.readMarker("legacy-completed.json")));
-    const turns = object(safeJson(this.readMarker("legacy-turns.json")));
+    const completed = object(safeJson(this.readMarker(this.state.legacyCompleted)));
+    const turns = object(safeJson(this.readMarker(this.state.legacyTurns)));
     const obsolete: string[] = [];
     const shared = stateRoot(
       this.host.env,
@@ -917,25 +882,25 @@ export class EventLoop {
       const match = /^merged-(\d+)$/.exec(name);
       if (match) {
         completed[match[1]] = true;
-        obsolete.push(join(this.dir, name));
+        obsolete.push(this.state.once(name).path);
       }
     }
-    for (const name of readdirSync(join(this.dir, "board"))) {
+    for (const name of readdirSync(this.state.boardDir)) {
       if (name.startsWith(".turn-")) {
         turns[name] = true;
-        obsolete.push(join(this.dir, "board", name));
+        obsolete.push(this.state.legacyBoard(name).path);
       }
     }
-    this.writeMarker("legacy-completed.json", JSON.stringify(completed));
-    this.writeMarker("legacy-turns.json", JSON.stringify(turns));
+    this.writeMarker(this.state.legacyCompleted, JSON.stringify(completed));
+    this.writeMarker(this.state.legacyTurns, JSON.stringify(turns));
     for (const file of obsolete) {
-      remove(file);
+      new Marker(file).remove();
     }
-    this.mark("actions-migrated");
+    this.mark(this.state.actionsMigrated);
   }
 
   private acquireLock(): void {
-    const path = join(this.dir, "lock");
+    const path = this.state.lock.path;
     const start = procStart(this.host.deps.readProc(this.host.deps.pid));
     if (start === null) {
       throw new Error("watcher lock requires /proc/<pid>/stat (Linux)");
@@ -1010,8 +975,8 @@ export class EventLoop {
     if (!names.length) {
       return;
     }
-    const marker = join(this.dir, "legacy-imported");
-    if (existsSync(marker)) {
+    const marker = this.state.legacyImported;
+    if (marker.exists()) {
       return;
     }
     const root = dirname(dirname(this.dir));
@@ -1069,7 +1034,7 @@ export class EventLoop {
           !skipTop.has(entry.name) &&
           !/^(?:mine-|theirs-|merge-(?:attempt|error)-)/.test(entry.name)
         ) {
-          collect(join(source, entry.name), join(this.dir, entry.name), entry.name);
+          collect(join(source, entry.name), this.state.once(entry.name).path, entry.name);
         }
       }
       const board = join(source, "board");
@@ -1082,7 +1047,7 @@ export class EventLoop {
           (entry.name.startsWith(".turn-") ||
             (!entry.name.startsWith(".") && !skipBoard.has(entry.name)))
         ) {
-          collect(join(board, entry.name), join(this.dir, "board", entry.name), entry.name);
+          collect(join(board, entry.name), this.state.legacyBoard(entry.name).path, entry.name);
         }
       }
     }
@@ -1109,7 +1074,7 @@ export class EventLoop {
         `watcher: legacy import dropped ${dropped} markers not belonging to ${this.own}`
       );
     }
-    atomicWrite(marker, `${sources.join("\n")}\n`);
+    marker.write(`${sources.join("\n")}\n`);
   }
 
   private async validateLegacy(numbers: number[]): Promise<Map<number, string>> {
@@ -1170,7 +1135,7 @@ export class EventLoop {
   }
 
   private loadTracksCache(): void {
-    for (const line of readLines(join(this.dir, "tracks"))) {
+    for (const line of this.state.tracks.lines()) {
       const [number, track] = line.split("\t");
       const parsed = count(number);
       if (parsed !== null) {
@@ -1356,8 +1321,8 @@ export class EventLoop {
     await this.start();
     this.firstRun = this.readCursor() === null;
     const startedAt = new Date(this.host.deps.now()).toISOString();
-    if (this.firstRun && !this.marked("listing-baseline")) {
-      this.writeMarker("listing-baseline", startedAt);
+    if (this.firstRun && !this.marked(this.state.listingBaseline)) {
+      this.writeMarker(this.state.listingBaseline, startedAt);
     }
     this.cycle++;
     this.cycleStale.clear();
@@ -1398,7 +1363,7 @@ export class EventLoop {
     await this.step("budget", () => this.checkBudget());
     const boardOk = await this.step("board", () => this.pollBoard(pullsOk));
     if (!boardOk) {
-      remove(join(this.dir, "unestimated.json"));
+      this.state.unestimated.remove();
     }
     const workersOk = await this.step("worker sessions", () => this.pollWorkers());
     await this.step("worker quotas", () => this.pollQuotas());
@@ -1406,7 +1371,7 @@ export class EventLoop {
     ok = ok && pullsOk && commentsOk && itemsOk && assignedOk && boardOk && workersOk;
     if (commentsOk && itemsOk && (!this.firstRun || ok)) {
       // Do not leave first-run mode until every baseline succeeded.
-      this.writeMarker("cursor", startedAt);
+      this.writeMarker(this.state.cursor, startedAt);
       this.pruneWindowMarkers(startedAt);
     }
     if (!ok && !this.budgetDeferred) {
@@ -1427,11 +1392,12 @@ export class EventLoop {
     }
   }
 
-  private writeMarker(name: string, text: string): void {
+  private writeMarker(marker: Marker<unknown>, text: string): void {
+    const name = marker.path.slice(this.dir.length + 1);
     if (!ID.test(name)) {
       throw new Error(`Invalid watcher state marker: ${name}`);
     }
-    atomicWrite(join(this.dir, name), `${text}\n`);
+    marker.writeText(`${text}\n`);
   }
 
   private async refreshTracks(): Promise<void> {
@@ -1476,7 +1442,7 @@ export class EventLoop {
       }
       rows.push(`${number}\t${track ?? ""}`);
     }
-    atomicWrite(join(this.dir, "tracks"), `${rows.join("\n")}\n`);
+    this.state.tracks.write(`${rows.join("\n")}\n`);
     this.tracksRead = this.host.deps.now();
   }
 
@@ -1595,27 +1561,27 @@ export class EventLoop {
   private async processOpenPr(pr: PrInfo): Promise<void> {
     const url = this.threadUrl(this.own, pr.number, "PR");
     if (pr.baseSha && /^[a-f\d]{40}$/i.test(pr.baseSha)) {
-      const oldBase = this.readMarker(`base-head-${pr.number}`);
+      const oldBase = this.readMarker(this.state.pr(pr.number).baseHead);
       pr.baseMoved ||= !!oldBase && oldBase !== pr.baseSha;
-      this.writeMarker(`base-head-${pr.number}`, pr.baseSha);
+      this.writeMarker(this.state.pr(pr.number).baseHead, pr.baseSha);
     }
-    atomicWrite(join(this.dir, `branch-${pr.number}`), `${pr.branch}\n`);
-    if (!this.marked(`open-${pr.number}`)) {
-      this.mark(`open-${pr.number}`);
-      atomicWrite(join(this.dir, `head-${pr.number}`), `${pr.sha}\n`);
+    this.state.pr(pr.number).branch.write(`${pr.branch}\n`);
+    if (!this.marked(this.state.pr(pr.number).open)) {
+      this.mark(this.state.pr(pr.number).open);
+      this.state.pr(pr.number).head.write(`${pr.sha}\n`);
       this.touchActivity(pr.number, pr.created);
     }
     if (
-      (this.firstRun && !this.marked(`seeded-${pr.number}`)) ||
-      !this.marked(`worker-prompts-seeded-${pr.number}`) ||
-      !this.marked(`worker-protocol-seeded-${pr.number}`)
+      (this.firstRun && !this.marked(this.state.pr(pr.number).seeded)) ||
+      !this.marked(this.state.pr(pr.number).promptsSeeded) ||
+      !this.marked(this.state.pr(pr.number).protocolSeeded)
     ) {
       await this.seedPrComments(pr);
-      this.mark(`seeded-${pr.number}`);
-      this.mark(`worker-prompts-seeded-${pr.number}`);
-      this.mark(`worker-protocol-seeded-${pr.number}`);
+      this.mark(this.state.pr(pr.number).seeded);
+      this.mark(this.state.pr(pr.number).promptsSeeded);
+      this.mark(this.state.pr(pr.number).protocolSeeded);
     }
-    const oldHead = this.readMarker(`head-${pr.number}`);
+    const oldHead = this.readMarker(this.state.pr(pr.number).head);
     if (oldHead !== pr.sha) {
       if (oldHead && !this.writes.pushed(this.own, pr.number, pr.sha)) {
         if (!this.host.conflictFixing?.(pr.number)) {
@@ -1623,7 +1589,7 @@ export class EventLoop {
         }
         this.touchActivity(pr.number, new Date(this.host.deps.now()).toISOString());
       }
-      atomicWrite(join(this.dir, `head-${pr.number}`), `${pr.sha}\n`);
+      this.state.pr(pr.number).head.write(`${pr.sha}\n`);
     }
     try {
       await this.reconcileConflicts(pr, url);
@@ -1652,15 +1618,15 @@ export class EventLoop {
       /^(?:RESOLVED|MERGED|BLOCKED)\b/.test(result) ||
       /^conflict on #\d+ resolved outside the fixer$/.test(result)
     ) {
-      remove(join(this.dir, `pending-progress-${pr.number}`));
+      this.state.pr(pr.number).pendingProgress.remove();
     }
   }
 
   private async reconcileConflicts(pr: PrInfo, url: string): Promise<void> {
     if (pr.mergeable === "CONFLICTING") {
       if (this.host.resolveConflicts) {
-        if (this.readMarker(`conflict-${pr.number}`) !== pr.sha) {
-          this.writeMarker(`conflict-${pr.number}`, pr.sha);
+        if (this.readMarker(this.state.pr(pr.number).conflict) !== pr.sha) {
+          this.writeMarker(this.state.pr(pr.number).conflict, pr.sha);
           this.queueProgress(pr.number, { state: "conflict" });
         }
       } else if (
@@ -1670,34 +1636,34 @@ export class EventLoop {
           `CONFLICT #${pr.number} (${pr.branch}): its worker must merge origin/${pr.base} and push${this.previewFromSubject(this.own, pr.number)} ${url}`
         )
       ) {
-        this.writeMarker(`conflict-${pr.number}`, pr.sha);
+        this.writeMarker(this.state.pr(pr.number).conflict, pr.sha);
         this.queueProgress(pr.number, { state: "conflict" });
       }
       if (
         this.host.resolveConflicts &&
-        !this.marked(`conflict-dispatched-${pr.number}-${pr.sha}`)
+        !this.marked(this.state.pr(pr.number).conflictDispatched.at(pr.sha))
       ) {
         const result = await this.host.resolveConflicts(pr.number);
         // #373: mark after the call, and only once a resolution landed: a busy or
         // failed dispatch left no pending record and retries on the next poll.
         if (!result.startsWith("PENDING") || this.host.conflictPending?.(pr.number) !== false) {
-          this.mark(`conflict-dispatched-${pr.number}-${pr.sha}`);
+          this.mark(this.state.pr(pr.number).conflictDispatched.at(pr.sha));
         }
         this.settleConflicts(pr, result);
       }
-    } else if (pr.mergeable === "MERGEABLE" && this.marked(`conflict-${pr.number}`)) {
-      remove(join(this.dir, `conflict-${pr.number}`));
+    } else if (pr.mergeable === "MERGEABLE" && this.marked(this.state.pr(pr.number).conflict)) {
+      this.state.pr(pr.number).conflict.remove();
       this.queueProgress(pr.number, { state: "working", if: ["conflict"] });
     }
     if (
       pr.baseMoved &&
       this.host.resolveConflicts &&
-      !this.marked(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`)
+      !this.marked(this.state.pr(pr.number).baseDispatched.at(`${pr.sha}-${pr.baseSha}`))
     ) {
       const result = await this.host.resolveConflicts(pr.number);
       // Like the conflict dispatch: an unfinished base automation retries next poll.
       if (!result.startsWith("PENDING") || this.host.conflictPending?.(pr.number) !== false) {
-        this.mark(`base-dispatched-${pr.number}-${pr.sha}-${pr.baseSha}`);
+        this.mark(this.state.pr(pr.number).baseDispatched.at(`${pr.sha}-${pr.baseSha}`));
       }
       this.settleConflicts(pr, result);
     }
@@ -1724,7 +1690,7 @@ export class EventLoop {
         const stop = this.workerStop(pr.number, worker);
         if (
           stop.state === "failed" &&
-          this.readMarker(`worker-stop-${pr.number}`) === this.stopKey(stop, worker.updated)
+          this.readMarker(this.state.pr(pr.number).stop) === this.stopKey(stop, worker.updated)
         ) {
           this.cycleStale.add(pr.number);
           return;
@@ -1788,14 +1754,14 @@ export class EventLoop {
         str(object(commit.committer).date) || str(object(commit.author).date)
       );
     }
-    if (commits.length > 1 && !this.marked(`picked-${number}`)) {
+    if (commits.length > 1 && !this.marked(this.state.pr(number).picked)) {
       if (!this.firstRun) {
         this.quietOnce(
           `picked-${number}`,
           `NOTE PR #${number} (${branch}): picked up (${commits.length} commits)`
         );
       } else {
-        this.mark(`picked-${number}`);
+        this.mark(this.state.pr(number).picked);
       }
     }
     const url = this.threadUrl(this.own, number, "PR");
@@ -1809,8 +1775,8 @@ export class EventLoop {
         RED_CI.includes(str(run.conclusion).toUpperCase())
     );
     const state = red ? "red" : "ok";
-    if (this.readMarker(`ci-${number}`) !== state) {
-      atomicWrite(join(this.dir, `ci-${number}`), `${state}\n`);
+    if (this.readMarker(this.state.pr(number).ci) !== state) {
+      this.state.pr(number).ci.write(state);
       this.queueProgress(number, { ci: state });
     }
   }
@@ -1824,7 +1790,7 @@ export class EventLoop {
       return;
     }
     if (!this.inScope(number)) {
-      remove(join(this.dir, `open-${number}`));
+      this.state.pr(number).open.remove();
       return;
     }
     const url = this.threadUrl(this.own, number, "PR");
@@ -1836,9 +1802,9 @@ export class EventLoop {
       this.host.env,
       resolveSession(this.host.config, { track: this.session.track ?? undefined }).stateName
     );
-    const sharedLegacy = join(shared, "legacy-completed.json");
+    const sharedLegacy = new LoopState(shared).legacyCompleted.path;
     const legacy =
-      object(safeJson(this.readMarker("legacy-completed.json")))[String(number)] === true ||
+      object(safeJson(this.readMarker(this.state.legacyCompleted)))[String(number)] === true ||
       (existsSync(sharedLegacy) &&
         object(JSON.parse(readFileSync(sharedLegacy, "utf8")))[String(number)] === true);
     const mergeFile = join(
@@ -1870,7 +1836,7 @@ export class EventLoop {
       { kind: "merged", repo: this.own, number },
       str(data.merged_at)
     );
-    const notified = this.marked(`merge-notified-${number}`);
+    const notified = this.marked(this.state.pr(number).mergeNotified);
     if (data.merged === true && (legacy || (complete && (!self || matched || notified)))) {
       this.clearPrState(number);
       this.queueProgress(number, { state: null, round: null, ci: "ok" });
@@ -1879,7 +1845,7 @@ export class EventLoop {
     if (data.merged === true) {
       // Never run follow-up from the watcher. A sibling's same-account merge is
       // still work unless this session recorded it AND recovery is complete.
-      const attempted = Number(this.readMarker(`merge-attempt-${number}`)) * 1000;
+      const attempted = Number(this.readMarker(this.state.pr(number).mergeAttempt)) * 1000;
       if (this.host.deps.now() - attempted < BUTTON_RETRY_MS) {
         return;
       }
@@ -1909,8 +1875,8 @@ export class EventLoop {
         "button-merge",
         `PR #${number} MERGED by ${/^[\w-]+$/.test(merger) ? merger : "unknown"}${sibling}: ${action}${holds}${this.previewText(person, str(data.title))} ${url}`
       );
-      this.mark(`merge-notified-${number}`);
-      atomicWrite(join(this.dir, `merge-attempt-${number}`), `${at}\n`);
+      this.mark(this.state.pr(number).mergeNotified);
+      this.state.pr(number).mergeAttempt.write(`${at}\n`);
       this.queueProgress(number, { state: null, round: null, ci: "ok" });
       if (complete) {
         this.clearPrState(number);
@@ -1930,22 +1896,7 @@ export class EventLoop {
   }
 
   private clearPrState(number: number): void {
-    for (const name of [
-      `open-${number}`,
-      `head-${number}`,
-      `branch-${number}`,
-      `ci-${number}`,
-      `conflict-${number}`,
-      `merge-attempt-${number}`,
-      `merge-pending-${number}`,
-      `activity-${number}`,
-      `review-${number}`,
-      `seeded-${number}`,
-      `worker-prompt-${number}`,
-      `worker-prompts-seeded-${number}`,
-    ]) {
-      remove(join(this.dir, name));
-    }
+    this.state.pr(number).clear();
   }
 
   private queueProgress(
@@ -1962,13 +1913,13 @@ export class EventLoop {
     if (!this.inScope(number)) {
       return;
     }
-    const path = join(this.dir, `pending-progress-${number}`);
-    const current = existsSync(path) ? object(safeJson(readFileSync(path, "utf8"))) : {};
+    const marker = this.state.pr(number).pendingProgress;
+    const current = marker.exists() ? marker.readRequired() : {};
     const pending = { ...current, ...change };
     if (change.state !== undefined && change.if === undefined) {
       delete pending.if;
     }
-    atomicWrite(path, JSON.stringify(pending));
+    marker.write(pending);
   }
 
   // ---------------------------------------------------------------- comments
@@ -2016,7 +1967,7 @@ export class EventLoop {
       }
       const comments = await this.reviewThreadComments(thread);
       const seen = `rt-${key(str(thread.id))}`;
-      const suppress = thread.isResolved && !this.marked(seen);
+      const suppress = thread.isResolved && !this.marked(this.state.once(seen));
       observed.push(seen);
       entries.push(...comments.map((comment) => ({ comment, thread, suppress })));
     }
@@ -2036,12 +1987,16 @@ export class EventLoop {
       // reviewThreads connection is read again on subsequent polls and restarts.
       if (
         suppress ||
-        Date.parse(str(comment.createdAt)) <= Date.parse(this.readMarker("listing-baseline"))
+        Date.parse(str(comment.createdAt)) <=
+          Date.parse(this.readMarker(this.state.listingBaseline))
       ) {
-        this.mark(commentKey);
+        this.mark(this.state.once(commentKey));
         continue;
       }
-      if (this.marked(commentKey) || this.pending().some((event) => event.id === commentKey)) {
+      if (
+        this.marked(this.state.once(commentKey)) ||
+        this.pending().some((event) => event.id === commentKey)
+      ) {
         continue;
       }
       const url = `${this.threadUrl(this.own, number, "PR")}#discussion_r${id}`;
@@ -2078,7 +2033,7 @@ export class EventLoop {
       });
     }
     for (const seen of observed) {
-      this.mark(seen);
+      this.mark(this.state.once(seen));
     }
   }
 
@@ -2129,7 +2084,7 @@ export class EventLoop {
     const cursor = this.readCursor();
     const since = cursor
       ? new Date(Date.parse(cursor) - CURSOR_OVERLAP_MS).toISOString()
-      : this.readMarker("listing-baseline") || new Date(this.host.deps.now()).toISOString();
+      : this.readMarker(this.state.listingBaseline) || new Date(this.host.deps.now()).toISOString();
     for (const repo of this.subscriptions) {
       const incoming: { comment: ObjectData; inline?: InlineComment["inline"] }[] = this.isOwn(repo)
         ? [...this.cycleInlineComments]
@@ -2142,9 +2097,9 @@ export class EventLoop {
       for (const comment of comments) {
         if (
           Date.parse(str(comment.created_at)) <=
-          Date.parse(this.readMarker("listing-baseline") || (this.firstRun ? since : ""))
+          Date.parse(this.readMarker(this.state.listingBaseline) || (this.firstRun ? since : ""))
         ) {
-          this.mark(`c-${key(str(comment.html_url))}`);
+          this.mark(this.state.once(`c-${key(str(comment.html_url))}`));
           continue;
         }
         incoming.push({ comment });
@@ -2201,7 +2156,8 @@ export class EventLoop {
     const commentKey = inline ? `rc-${inline.id}` : `c-${key(url)}`;
     if (
       !this.isSelf(comment) &&
-      (this.marked(commentKey) || this.pending().some((event) => event.id === commentKey))
+      (this.marked(this.state.once(commentKey)) ||
+        this.pending().some((event) => event.id === commentKey))
     ) {
       return;
     }
@@ -2219,7 +2175,7 @@ export class EventLoop {
           ? " (edited)"
           : " (edited: verify editor)"
         : "";
-    const taskPr = own && this.marked(`open-${number}`);
+    const taskPr = own && this.marked(this.state.pr(number).open);
     if (taskPr) {
       // Task PRs always belong to the configured repository; the role is per repo (#186).
       this.rememberWorkerProtocol(number, comment, repo);
@@ -2245,17 +2201,21 @@ export class EventLoop {
       // Separate from delivery acknowledgement: even journaled own comments
       // must apply Progress once, but never replay it over a later human move.
       const progressKey = inline ? `rc-progress-${inline.id}` : `c-${key(`progress:${url}`)}`;
-      if (own && !this.marked(progressKey) && /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)) {
+      if (
+        own &&
+        !this.marked(this.state.once(progressKey)) &&
+        /^\[orchestrator\] (?:ANSWER|GO)\b/.test(firstLine)
+      ) {
         this.queueProgress(number, {
           state: taskPr ? "working" : null,
           ...(taskPr ? { status: "Executing" } : {}),
         });
-        this.mark(progressKey);
+        this.mark(this.state.once(progressKey));
       }
       if (
         own &&
         !edited &&
-        !this.marked(progressKey) &&
+        !this.marked(this.state.once(progressKey)) &&
         /^\[orchestrator\] OWNER (?:QUESTION|REVIEW)\b/.test(firstLine)
       ) {
         this.queueProgress(number, {
@@ -2264,7 +2224,7 @@ export class EventLoop {
             ? { status: firstLine.includes("QUESTION") ? "Executing" : "Owner review" }
             : {}),
         });
-        this.mark(progressKey);
+        this.mark(this.state.once(progressKey));
       }
       if (selfWrite) {
         return;
@@ -2375,7 +2335,7 @@ export class EventLoop {
   }
 
   private branchOf(number: number): string {
-    return this.readMarker(`branch-${number}`);
+    return this.readMarker(this.state.pr(number).branch);
   }
 
   // ---------------------------------------------------------------- subscribed items
@@ -2402,7 +2362,7 @@ export class EventLoop {
           number === null ||
           !created ||
           Date.parse(created) < Date.parse(since) ||
-          Date.parse(created) <= Date.parse(this.readMarker("listing-baseline"))
+          Date.parse(created) <= Date.parse(this.readMarker(this.state.listingBaseline))
         ) {
           continue;
         }
@@ -2460,18 +2420,18 @@ export class EventLoop {
         }
         const marker = own ? `mine-${number}` : `mine-${slug(repo)}#${number}`;
         keep.add(marker);
-        if (this.marked(marker)) {
+        if (this.marked(this.state.once(marker))) {
           continue;
         }
         const kind = item.pull_request === undefined ? "ISSUE" : "PR";
         const person = this.host.filter.identity(restActor(item.user));
         const line = `ASSIGNED ${this.ref(repo, number)} (${kind})${this.previewText(person, str(item.title))} ${this.threadUrl(repo, number, kind)}`;
         if (this.firstRun) {
-          this.mark(marker);
+          this.mark(this.state.once(marker));
         } else {
           const event = await this.assignmentEvent(repo, number, "AssignedEvent", [this.me ?? ""]);
           if (this.ownAssignment(event, repo, number, "assigned")) {
-            this.mark(marker);
+            this.mark(this.state.once(marker));
           } else {
             this.produceOnce(marker, "assigned", `${line}${this.siblingActor(event)}`);
           }
@@ -2480,7 +2440,7 @@ export class EventLoop {
     }
     for (const name of readdirSync(this.dir)) {
       if (name.startsWith("mine-") && !keep.has(name)) {
-        remove(join(this.dir, name));
+        this.state.once(name).remove();
       }
     }
   }
@@ -2579,7 +2539,7 @@ export class EventLoop {
 
   private async pollBoard(pullsOk: boolean): Promise<void> {
     if (!this.boardAllowed()) {
-      remove(join(this.dir, "unestimated.json"));
+      this.state.unestimated.remove();
       return;
     }
     const settings = object(this.host.config.board);
@@ -2623,7 +2583,7 @@ export class EventLoop {
     const currentCards: CardInfo[] = [];
     const present = new Set<string>();
     const theirs = new Set<string>();
-    const unestimated = object(safeJson(this.readMarker("unestimated.json")));
+    const unestimated = object(safeJson(this.readMarker(this.state.unestimated)));
     const nextUnestimated: Record<string, number> = {};
     for (const card of cards.list) {
       present.add(card.id);
@@ -2668,7 +2628,7 @@ export class EventLoop {
         card.assignees = next;
         card.column = "Done";
         card.progress = "";
-        atomicWrite(join(this.dir, "board", card.id), "Done\n");
+        this.state.card(card.id).column.write("Done\n");
         this.produceOnce(
           `epic-done-${card.id}@${key(card.subIssueIds.join(","))}`,
           "board",
@@ -2681,7 +2641,7 @@ export class EventLoop {
       }
       if (
         card.ownerReview &&
-        !this.marked(`owner-review-${card.number}@${key(card.ownerReview)}`)
+        !this.marked(this.state.once(`owner-review-${card.number}@${key(card.ownerReview)}`))
       ) {
         if (!this.firstRun) {
           this.queueProgress(card.number, { state: "verifying" });
@@ -2691,9 +2651,9 @@ export class EventLoop {
             `OWNER REVIEW #${card.number}: orchestrator's move ${this.threadUrl(card.repo, card.number, card.kind)}`
           );
         }
-        this.mark(`owner-review-${card.number}@${key(card.ownerReview)}`);
+        this.mark(this.state.once(`owner-review-${card.number}@${key(card.ownerReview)}`));
       }
-      const pendingProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
+      const pendingProgress = this.state.pr(card.number).pendingProgress.exists();
       if (!waiting) {
         await this.applyProgress(card);
       }
@@ -2709,7 +2669,7 @@ export class EventLoop {
         continue;
       }
       currentCards.push(card);
-      const columnProgress = existsSync(join(this.dir, `pending-progress-${card.number}`));
+      const columnProgress = this.state.pr(card.number).pendingProgress.exists();
       if (!waiting) {
         await this.applyProgress(card);
       }
@@ -2737,7 +2697,7 @@ export class EventLoop {
         card.progress = "👤🔍";
       }
       if (!waiting && card.autopilotStopped) {
-        remove(join(this.dir, `autopilot-${card.number}-stop`));
+        this.state.autopilot(card.number).stop.remove();
       }
       if (!waiting) {
         await this.reconcileTurn(card, pullsOk && !pendingProgress && !columnProgress);
@@ -2747,9 +2707,9 @@ export class EventLoop {
         card.state === "OPEN" &&
         card.column !== "Done" &&
         card.estimate === null &&
-        !this.marked(`graded-${card.number}`) &&
-        !existsSync(join(this.dir, "board", `graded-${card.number}`)) &&
-        !this.marked(`grade-${card.number}`)
+        !this.marked(this.state.once(`graded-${card.number}`)) &&
+        !this.state.legacyBoard(`graded-${card.number}`).exists() &&
+        !this.marked(this.state.once(`grade-${card.number}`))
       ) {
         const now = this.host.deps.now();
         const previous = unestimated[card.id];
@@ -2785,10 +2745,10 @@ export class EventLoop {
     }
     await this.clearStaleOwnerMirrors(currentCards);
     this.watchOrchestratorTurns(currentCards);
-    this.writeMarker("unestimated.json", JSON.stringify(nextUnestimated));
+    this.writeMarker(this.state.unestimated, JSON.stringify(nextUnestimated));
     for (const name of readdirSync(this.dir)) {
       if (name.startsWith("theirs-") && !theirs.has(name)) {
-        remove(join(this.dir, name));
+        this.state.once(name).remove();
       }
     }
     await this.watchNext(ready, approved, specReview, legacyScopeCutoff(cards.readme));
@@ -2808,11 +2768,11 @@ export class EventLoop {
    * or partial poll; reappearance resets both the window and the count.
    */
   private pruneBoardBaselines(present: Set<string>): void {
-    const absences = object(safeJson(this.readMarker("board-absences.json")));
+    const absences = object(safeJson(this.readMarker(this.state.absences)));
     const nextAbsences: Record<string, { first: number; count: number }> = {};
     const now = this.host.deps.now();
     const absent = new Set<string>();
-    for (const name of readdirSync(join(this.dir, "board"))) {
+    for (const name of readdirSync(this.state.boardDir)) {
       if (
         (!/^PVTI_/.test(name) && !/\.who$/.test(name)) ||
         present.has(name.replace(/\.who$/, ""))
@@ -2833,13 +2793,13 @@ export class EventLoop {
       const missed = (valid ? recordedCount : 0) + 1;
       const firstAt = valid ? recordedFirst : now;
       if (missed >= BOARD_ABSENT_POLLS && now - firstAt >= BOARD_ABSENT_MS) {
-        remove(join(this.dir, "board", id));
-        remove(join(this.dir, "board", `${id}.who`));
+        this.state.card(id).column.remove();
+        this.state.card(id).who.remove();
         continue;
       }
       nextAbsences[id] = { first: firstAt, count: missed };
     }
-    this.writeMarker("board-absences.json", JSON.stringify(nextAbsences));
+    this.writeMarker(this.state.absences, JSON.stringify(nextAbsences));
   }
 
   /** A partial relation page cannot prove that the last blocker has closed. */
@@ -2854,15 +2814,14 @@ export class EventLoop {
 
   /** Persist dependency transitions across restarts without extra GitHub reads. */
   private watchBlockers(card: CardInfo): void {
-    const marker = `blockers-${card.id}.json`;
+    const marker = this.state.card(card.id).blockers;
     const previous = object(safeJson(this.readMarker(marker)));
     const open = (card.blockedBy ?? []).filter((blocker) => blocker.state === "OPEN");
     const incomplete = (card.blockerCount ?? 0) > (card.blockedBy?.length ?? 0);
-    const quietPath = join(this.dir, "quiet");
-    const quiet = readLines(quietPath);
+    const quiet = this.state.quiet.lines();
     const retained = quiet.filter((line) => !line.startsWith(`WAITING #${card.number} on `));
     if (quiet.length !== retained.length) {
-      atomicWrite(quietPath, retained.length ? `${retained.join("\n")}\n` : "");
+      this.state.quiet.write(retained.length ? `${retained.join("\n")}\n` : "");
     }
     if (this.waiting(card)) {
       const known = incomplete ? [...this.list(previous.open), ...open] : open;
@@ -2896,14 +2855,16 @@ export class EventLoop {
 
   /** Backstop unanswered worker protocol at five minutes; other turns settle for thirty. */
   private watchOrchestratorTurns(cards: CardInfo[]): void {
-    const previous = object(safeJson(this.readMarker("orchestrator-turns.json")));
+    const previous = object(safeJson(this.readMarker(this.state.orchestratorTurns)));
     const next: Record<string, { since: number; reminded?: number; request?: string }> = {};
     const now = this.host.deps.now();
     for (const card of cards) {
       if (this.waiting(card)) {
         continue;
       }
-      const protocol = object(safeJson(this.readMarker(`unhandled-worker-${card.number}`)));
+      const protocol = object(
+        safeJson(this.readMarker(this.state.pr(card.number).unhandledWorker))
+      );
       const unanswered =
         protocol.tag && !protocol.handled && Number.isFinite(Date.parse(str(protocol.at)));
       const assigned = card.assignees.some(
@@ -2928,7 +2889,7 @@ export class EventLoop {
       }
       const old = object(previous[card.id]);
       const request = unanswered ? str(protocol.at) : undefined;
-      const resumed = object(safeJson(this.readMarker(`blockers-${card.id}.json`))).resumed;
+      const resumed = object(safeJson(this.readMarker(this.state.card(card.id).blockers))).resumed;
       const since = Math.max(
         typeof resumed === "number" ? resumed : 0,
         unanswered
@@ -2957,7 +2918,7 @@ export class EventLoop {
       }
       next[card.id] = turn;
     }
-    this.writeMarker("orchestrator-turns.json", JSON.stringify(next));
+    this.writeMarker(this.state.orchestratorTurns, JSON.stringify(next));
   }
 
   /** Observe label changes in the same scoped board poll. The orchestrator still
@@ -2972,8 +2933,8 @@ export class EventLoop {
         .filter(
           (card) =>
             card.autopilotLabel ||
-            this.readMarker(`autopilot-${card.number}`) === "on" ||
-            this.marked(`autopilot-${card.number}-stop`)
+            this.readMarker(this.state.autopilot(card.number).active) === "on" ||
+            this.marked(this.state.autopilot(card.number).stop)
         )
         .map((card) => card.number)
     );
@@ -3077,20 +3038,23 @@ export class EventLoop {
       // untouched, since unknown history never removes a label or stops a task.
       // An already recorded stop from earlier polls keeps being reported.
       if (state.unknown) {
-        card.autopilotStopped = this.marked(`${name}-stop`);
+        card.autopilotStopped = this.marked(this.state.autopilot(card.number).stop);
         continue;
       }
-      const old = this.readMarker(name);
+      const old = this.readMarker(this.state.autopilot(card.number).active);
       const value = state.active ? "on" : "off";
       if (old === "on" && !state.active) {
-        this.mark(`${name}-stop`);
+        this.mark(this.state.autopilot(card.number).stop);
       }
       if (state.active) {
-        remove(join(this.dir, `${name}-stop`));
+        this.state.autopilot(card.number).stop.remove();
       }
-      card.autopilotStopped = this.marked(`${name}-stop`);
+      card.autopilotStopped = this.marked(this.state.autopilot(card.number).stop);
       const step = `${value}:${card.column}:${state.grant ?? ""}`;
-      if (this.readMarker(`${name}-step`) !== step && (state.active || old === "on")) {
+      if (
+        this.readMarker(this.state.autopilot(card.number).step) !== step &&
+        (state.active || old === "on")
+      ) {
         this.emit(
           `${name}@${key(step)}`,
           "autopilot",
@@ -3098,8 +3062,8 @@ export class EventLoop {
         );
         this.nextSignature = "";
       }
-      this.writeMarker(name, value);
-      this.writeMarker(`${name}-step`, step);
+      this.writeMarker(this.state.autopilot(card.number).active, value);
+      this.writeMarker(this.state.autopilot(card.number).step, step);
     }
   }
 
@@ -3186,19 +3150,19 @@ export class EventLoop {
   }
 
   private async watchAssignees(card: CardInfo): Promise<void> {
-    const path = join(this.dir, "board", `${card.id}.who`);
+    const marker = this.state.card(card.id).who;
     const next = card.assignees.join(",");
-    const old = readLines(path).join(",");
+    const old = marker.lines().join(",");
     if (old === next) {
       return;
     }
-    const remember = () => atomicWrite(path, `${next}\n`);
+    const remember = () => marker.write(`${next}\n`);
     const turn = `.turn-${slug(card.repo)}-${card.number}`;
-    const turns = object(safeJson(this.readMarker("legacy-turns.json")));
+    const turns = object(safeJson(this.readMarker(this.state.legacyTurns)));
     const stamped = turns[turn] === true;
     if (stamped) {
       delete turns[turn];
-      this.writeMarker("legacy-turns.json", JSON.stringify(turns));
+      this.writeMarker(this.state.legacyTurns, JSON.stringify(turns));
     }
     const hadOwner = old
       .split(",")
@@ -3241,8 +3205,8 @@ export class EventLoop {
   }
 
   private async watchColumn(card: CardInfo, migration: boolean): Promise<boolean> {
-    const path = join(this.dir, "board", card.id);
-    const old = readLines(path).join("");
+    const marker = this.state.card(card.id).column;
+    const old = marker.lines().join("");
     if (old === card.column) {
       return true;
     }
@@ -3252,7 +3216,7 @@ export class EventLoop {
     if (!card.column && old) {
       return false;
     }
-    const remember = () => atomicWrite(path, `${card.column}\n`);
+    const remember = () => marker.write(`${card.column}\n`);
     const progress = () => {
       if (this.waiting(card)) {
         return;
@@ -3376,7 +3340,7 @@ export class EventLoop {
       await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
       card.assignees = next;
     }
-    remove(join(this.dir, `pending-progress-${card.number}`));
+    this.state.pr(card.number).pendingProgress.remove();
     if (card.column !== "Done") {
       await this.host.board.set({
         itemId: card.id,
@@ -3390,7 +3354,7 @@ export class EventLoop {
       await this.host.board.set({ itemId: card.id, field: "Progress", value: null });
       card.progress = "";
     }
-    atomicWrite(join(this.dir, "board", card.id), "Done\n");
+    this.state.card(card.id).column.write("Done\n");
     if (card.kind === "ISSUE") {
       await this.notifyClosedIssue(card);
     }
@@ -3399,7 +3363,7 @@ export class EventLoop {
   private async notifyClosedIssue(card: CardInfo): Promise<void> {
     const closure = key(`${card.repo}#${card.number}@${card.closedAt}`);
     const observed = `closure-observed-${closure}`;
-    if (this.marked(observed)) {
+    if (this.marked(this.state.once(observed))) {
       return;
     }
     const reason = card.stateReason === "NOT_PLANNED" ? "not planned" : "completed";
@@ -3433,7 +3397,7 @@ export class EventLoop {
         `CLOSED #${card.number} (${reason}) by ${/^[\w-]+$/.test(card.closedBy) ? card.closedBy : "unknown"}${taskNote} ${this.threadUrl(card.repo, card.number, card.kind)}`
       );
     }
-    this.mark(observed);
+    this.mark(this.state.once(observed));
   }
 
   private async issueClosedByMerge(card: CardInfo): Promise<boolean> {
@@ -3594,7 +3558,7 @@ export class EventLoop {
       return false;
     }
     const marker = `theirs-${slug(card.repo)}-${card.number}`;
-    if (this.marked(marker)) {
+    if (this.marked(this.state.once(marker))) {
       return true;
     }
     if (!this.firstRun) {
@@ -3602,7 +3566,7 @@ export class EventLoop {
         this.me ?? "",
       ]);
       if (this.ownAssignment(event, card.repo, card.number, "assigned")) {
-        this.mark(marker);
+        this.mark(this.state.once(marker));
         return true;
       }
       this.produceOnce(
@@ -3611,17 +3575,17 @@ export class EventLoop {
         `ASSIGNED ${card.repo}#${card.number} (${card.kind})${this.siblingActor(event)}${this.previewText(card.person, card.title)} ${this.threadUrl(card.repo, card.number, card.kind)}`
       );
     } else {
-      this.mark(marker);
+      this.mark(this.state.once(marker));
     }
     return true;
   }
 
   private async applyProgress(card: CardInfo): Promise<void> {
-    const path = join(this.dir, `pending-progress-${card.number}`);
-    if (!existsSync(path)) {
+    const marker = this.state.pr(card.number).pendingProgress;
+    if (!marker.exists()) {
       return;
     }
-    const pending = object(safeJson(readFileSync(path, "utf8")));
+    const pending = marker.readRequired();
     const current = parseProgress(card.progress);
     const ownerPaused =
       card.column === "Executing" &&
@@ -3662,7 +3626,7 @@ export class EventLoop {
           progress: text || null,
         });
         card.column = str(pending.status);
-        atomicWrite(join(this.dir, "board", card.id), `${card.column}\n`);
+        this.state.card(card.id).column.write(`${card.column}\n`);
         wroteBoard = true;
       } else if (text !== card.progress) {
         await this.host.board.set({ itemId: card.id, field: "Progress", value: text || null });
@@ -3680,7 +3644,7 @@ export class EventLoop {
           await this.host.board.moveToTop(card.id);
         }
       }
-      remove(path);
+      marker.remove();
     } catch (error) {
       this.host.deps.report(
         `watcher: Progress update failed for #${card.number}: ${(error as Error).message}`
@@ -3802,7 +3766,7 @@ export class EventLoop {
   }
 
   private held(): boolean {
-    const path = join(this.dir, "board", ".hold-startable");
+    const path = this.state.holdStartable.path;
     if (!existsSync(path)) {
       return false;
     }
@@ -3837,7 +3801,7 @@ export class EventLoop {
     const signature = `${ready.map((card) => card.number).join(",")}|${approved
       .map((card) => card.number)
       .join(",")}|${specReview.map((card) => card.number).join(",")}`;
-    const recheck = this.marked("recheck-next");
+    const recheck = this.marked(this.state.recheckNext);
     if (
       signature === this.nextSignature &&
       !recheck &&
@@ -3848,7 +3812,7 @@ export class EventLoop {
     this.nextSignature = signature;
     this.nextAt = this.host.deps.now();
     if (recheck) {
-      remove(join(this.dir, "recheck-next"));
+      this.state.recheckNext.remove();
     }
     // Select the first Scoping card whose turn is the orchestrator's; cards
     // waiting on the owner stay unselected (#320) and rejoin the queue when the
@@ -3886,10 +3850,14 @@ export class EventLoop {
     );
   }
 
-  private recordStartable(name: string, value: StartableValue | null, ownMove: boolean): void {
-    const path = join(this.dir, "board", name);
+  private recordStartable(
+    name: "scope" | "next" | "launch",
+    value: StartableValue | null,
+    ownMove: boolean
+  ): void {
+    const marker = this.state[name];
     const stored = value ? JSON.stringify(value) : "";
-    if (readLines(path).join("") === stored) {
+    if (marker.lines().join("") === stored) {
       return;
     }
     if (!this.firstRun && value && !ownMove) {
@@ -3905,7 +3873,7 @@ export class EventLoop {
         `${line}${this.previewFromSubject(value.repo, value.number)} ${this.threadUrl(value.repo, value.number, value.kind)}`
       );
     }
-    atomicWrite(path, `${stored}\n`);
+    marker.write(`${stored}\n`);
   }
 
   private async firstUnblocked(cards: CardInfo[]): Promise<StartableValue | null> {
@@ -3960,10 +3928,10 @@ export class EventLoop {
         permissionDetails: status.permissionDetails,
       };
     }
-    const prompt = object(safeJson(this.readMarker(`worker-prompt-${number}`)));
+    const prompt = this.state.pr(number).prompt.read();
     const review = this.readReview(number);
     const at = str(prompt.at) || review?.at;
-    const protocolReply = object(safeJson(this.readMarker(`worker-protocol-${number}`)));
+    const protocolReply = this.state.pr(number).protocol.read();
     const hasReply =
       protocolReply.role === "worker" &&
       ["READY", "QUESTION", "BLOCKED", "DESIGN", "HANDOFF"].includes(str(protocolReply.tag)) &&
@@ -3984,9 +3952,9 @@ export class EventLoop {
     if (!firstLine.startsWith("[orchestrator] ")) {
       return;
     }
-    const previous = object(safeJson(this.readMarker(`worker-prompt-${number}`)));
+    const previous = this.state.pr(number).prompt.read();
     if (at >= str(previous.at)) {
-      this.writeMarker(`worker-prompt-${number}`, JSON.stringify({ at, id }));
+      this.state.pr(number).prompt.write({ at, id });
     }
   }
 
@@ -4012,12 +3980,12 @@ export class EventLoop {
       role === "orchestrator" &&
       /^\[orchestrator\] (?:REVIEW|OWNER REVIEW|ANSWER|AMENDMENT|GO)\b/.test(first);
     if (requestTag || reply) {
-      const previous = object(safeJson(this.readMarker(`unhandled-worker-${number}`)));
+      const previous = this.state.pr(number).unhandledWorker.read();
       if (at >= str(previous.at)) {
-        this.writeMarker(
-          `unhandled-worker-${number}`,
-          JSON.stringify({ at, ...(requestTag ? { tag: requestTag } : { handled: true }) })
-        );
+        this.state.pr(number).unhandledWorker.write({
+          at,
+          ...(requestTag ? { tag: requestTag } : { handled: true }),
+        });
       }
     }
     let active: boolean;
@@ -4038,19 +4006,18 @@ export class EventLoop {
     } else {
       return;
     }
-    const previous = object(safeJson(this.readMarker(`worker-protocol-${number}`)));
+    const previous = this.state.pr(number).protocol.read();
     if (at >= str(previous.at)) {
-      this.writeMarker(
-        `worker-protocol-${number}`,
-        JSON.stringify({ at, active, role, ...(workerTag ? { tag: workerTag } : {}) })
-      );
+      this.state
+        .pr(number)
+        .protocol.write({ at, active, role, ...(workerTag ? { tag: workerTag } : {}) });
       this.touchActivity(number, at);
     }
   }
 
   private workerExpectedActive(number: number, working = true): boolean {
     // Without a protocol turn, use working Progress (or the unanswered review for STALE).
-    const active = object(safeJson(this.readMarker(`worker-protocol-${number}`))).active;
+    const active = this.state.pr(number).protocol.read().active;
     return typeof active === "boolean" ? active : working;
   }
 
@@ -4095,7 +4062,7 @@ export class EventLoop {
     }
     this.quotaPolledAt = this.host.deps.now();
     if (!this.quotaCrossings) {
-      const raw = this.readMarker("quota-risk");
+      const raw = this.readMarker(this.state.quotaRisk);
       const previous: unknown = raw ? JSON.parse(raw) : [];
       if (!Array.isArray(previous) || previous.some((p) => typeof p !== "string")) {
         throw new Error("Invalid quota crossing state");
@@ -4105,7 +4072,7 @@ export class EventLoop {
     for (const line of this.quotaCrossings.update(await this.host.workerLimits(), active)) {
       this.emit(`quota-${key(line)}-${this.host.deps.now()}`, "worker", line);
     }
-    this.writeMarker("quota-risk", JSON.stringify(this.quotaCrossings.snapshot()));
+    this.writeMarker(this.state.quotaRisk, JSON.stringify(this.quotaCrossings.snapshot()));
   }
 
   private async pollWorkers(): Promise<void> {
@@ -4190,23 +4157,23 @@ export class EventLoop {
         continue;
       }
       this.workerPollErrors.delete(pr.number);
-      const stopPath = join(this.dir, `worker-stop-${pr.number}`);
+      const stopMarker = this.state.pr(pr.number).stop;
       const stop = this.stopKey(status, updated);
-      const previous = this.readMarker(`worker-stop-${pr.number}`);
+      const previous = this.readMarker(this.state.pr(pr.number).stop);
       if (stop === previous) {
         continue;
       }
       // A backend without updated timestamps can return the same idle key after recovery.
       // Persist a transition sequence before handing events off, so crash retries reuse ids.
-      const metricMarker = `worker-metric-${pr.number}`;
-      const metric = object(safeJson(this.readMarker(metricMarker)));
+      const metricMarker = this.state.pr(pr.number).metric;
+      const metric = metricMarker.read();
       const priorSequence = Number(metric.sequence ?? 0);
       if (!Number.isSafeInteger(priorSequence) || priorSequence < 0) {
         throw new Error(`Invalid worker metric sequence for #${pr.number}`);
       }
       const sequence =
         metric.stop === stop && metric.previous === previous ? priorSequence : priorSequence + 1;
-      this.writeMarker(metricMarker, JSON.stringify({ stop, previous, sequence }));
+      metricMarker.write({ stop, previous, sequence });
       const metricId = `${key(this.dir)}-${pr.number}-${sequence}`;
       if (status.state === "permission") {
         if (
@@ -4237,15 +4204,15 @@ export class EventLoop {
       } else if (status.state === "idle") {
         const at = new Date(this.host.deps.now()).toISOString();
         await this.host.workerMetric?.(pr.number, { id: `stop-${metricId}`, at, type: "stop" });
-        const prompt = object(safeJson(this.readMarker(`worker-prompt-${pr.number}`)));
+        const prompt = this.state.pr(pr.number).prompt.read();
         const round = str(prompt.id) || "unknown";
-        const count = Number(this.readMarker(`worker-checkin-${pr.number}-${key(round)}`) || 0);
+        const count = Number(this.readMarker(this.state.pr(pr.number).checkin.at(key(round))) || 0);
         if (count < 2 && this.host.workerSend) {
           await this.host.workerSend(
             pr.number,
             `[orchestrator] CHECK-IN: your turn ended without a status comment on the PR. Post exactly one of READY, QUESTION, BLOCKED or DESIGN on PR #${pr.number} with \`vmethod pr-comment\`. If you are not done, finish only the remaining acceptance steps first, adding no new scope. If you are unsure or stuck, post QUESTION or BLOCKED and stop.`
           );
-          this.writeMarker(`worker-checkin-${pr.number}-${key(round)}`, String(count + 1));
+          this.writeMarker(this.state.pr(pr.number).checkin.at(key(round)), String(count + 1));
           await this.host.workerMetric?.(pr.number, {
             id: `checkin-${metricId}`,
             at,
@@ -4260,19 +4227,19 @@ export class EventLoop {
           this.queueProgress(pr.number, { state: "idle", if: ["working", "silent"] });
         }
       }
-      atomicWrite(stopPath, `${stop}\n`);
+      stopMarker.write(`${stop}\n`);
     }
     for (const [pr, cost] of costs) {
       const id = this.prCostCards.get(pr);
       const text = boardCost(cost.usd, cost.lowerBound);
       const value = JSON.stringify({ id, text });
-      if (id && this.readMarker(`cost-${pr}`) !== value) {
+      if (id && this.readMarker(this.state.pr(pr).cost) !== value) {
         await this.host.board.set({
           itemId: id,
           field: "Cost",
           value: text,
         });
-        this.writeMarker(`cost-${pr}`, value);
+        this.writeMarker(this.state.pr(pr).cost, value);
       }
     }
   }
