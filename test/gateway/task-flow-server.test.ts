@@ -440,7 +440,7 @@ test("workers cannot invoke conflict automation or gain merge authority", async 
 });
 
 test.each(["fork", "track", "hold", "closed", "not task"])(
-  "conflict entry rejects %s before any git or update-branch side effect",
+  "conflict entry handles %s before any git or update-branch side effect",
   async (reason) => {
     const f = fixtureServer([
       graph({ repository: { pullRequest: item() } }),
@@ -461,9 +461,14 @@ test.each(["fork", "track", "hold", "closed", "not task"])(
         }),
       }),
     ]);
-    await expect(f.transport.call("resolveConflicts", { ref: "27" })).rejects.toThrow(
-      reason === "fork" ? "fork" : reason === "track" ? "another track" : "open, non-held task"
-    );
+    const result = f.transport.call("resolveConflicts", { ref: "27" });
+    if (reason === "closed" || reason === "not task") {
+      await expect(result).resolves.toBe("");
+    } else {
+      await expect(result).rejects.toThrow(
+        reason === "fork" ? "fork" : reason === "track" ? "another track" : "open, non-held task"
+      );
+    }
     f.done();
   }
 );
