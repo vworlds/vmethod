@@ -279,6 +279,10 @@ export class PullPoller {
 
   /** Terminal resolutions supersede every card move queued during the conflicted turn. */
   private settleConflicts(pr: PrInfo, result: string): void {
+    if (!result) {
+      this.state.pr(pr.number).pendingProgress.remove();
+      return;
+    }
     if (result.startsWith("PENDING")) {
       return;
     }

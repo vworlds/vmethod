@@ -5,6 +5,7 @@ import { GitHubClient } from "../../src/gateway/client.js";
 import { object } from "../../src/gateway/people.js";
 import { people } from "./helpers.js";
 import { WatchFake } from "./watch-fake.js";
+import { ConflictOutcome } from "../../src/conflicts/outcomes.js";
 
 const rows = [
   {
@@ -46,6 +47,50 @@ const rows = [
 
 test("conflict card characterization table is non-empty", () =>
   expect(rows.length).toBeGreaterThan(0));
+test.each(["MERGED", "CLOSED", "non-task", "held"])(
+  "conflict task gate distinguishes expected lifecycle races from holds: %s",
+  async (state) => {
+    const f = new WatchFake();
+    const unexpected = async (): Promise<never> => {
+      throw new Error("Unexpected task gate");
+    };
+    const flow = new TaskFlow(f.root, f.env, f.config, f.deps, {
+      people,
+      github: new GitHubClient(f.config, f.env, f.deps),
+      board: () => {
+        throw new Error("Unexpected board read");
+      },
+      thread: async () => ({
+        state: ["MERGED", "CLOSED"].includes(state) ? state : "OPEN",
+        title: state === "held" ? "[HOLD] task" : "task",
+        body: state === "non-task" ? "" : '<!-- vmethod-task {"issues":[8]} -->',
+        headRefName: "8-task",
+        baseRefName: "dev",
+        headRepository: { nameWithOwner: "example/project" },
+        labels: { nodes: [] },
+      }),
+      comments: unexpected,
+      replyTarget: unexpected,
+      approved: unexpected,
+      candidates: unexpected,
+      issueApproved: unexpected,
+      approvalRefusal: unexpected,
+      scopeRefusal: unexpected,
+      modelApproval: unexpected,
+    });
+    try {
+      const result = flow.conflictTask("27");
+      if (state === "held") {
+        await expect(result).rejects.toThrow("non-held task PR");
+      } else {
+        await expect(result).rejects.toBeInstanceOf(ConflictOutcome);
+        await expect(result).rejects.toMatchObject({ outcome: "closed" });
+      }
+    } finally {
+      f.done();
+    }
+  }
+);
 test.each(rows)("$name", async (row) => {
   const f = new WatchFake();
   f.enableWrites = true;

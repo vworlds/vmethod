@@ -1,4 +1,5 @@
 import type { Config } from "../config.js";
+import { ConflictOutcome } from "../conflicts/outcomes.js";
 import { CHECKS_WAIT_MINUTES } from "../core/time.js";
 import { restPages } from "../github/pages.js";
 import { stripVTControlCharacters } from "node:util";
@@ -164,7 +165,9 @@ export class ChecksService {
     return { ...pr, runs, green, stale };
   }
 
-  /** Only read-only waiting may authorize a central learning submission's fork head. */
+  /** Only read-only waiting may authorize a central learning submission's fork head.
+   * A not-open PR throws a terminal ConflictOutcome so conflict reconciliation can
+   * discard its record even when the PR closes between task and CI reads. */
   async pull(
     ref: string,
     learningFork = false
@@ -179,7 +182,7 @@ export class ChecksService {
       throw new Error("No accepted task PR");
     }
     if (pr.state !== "open") {
-      throw new Error("Task PR is not open");
+      throw new ConflictOutcome("closed", "Task PR is not open");
     }
     const head = object(pr.head);
     const base = object(pr.base);
