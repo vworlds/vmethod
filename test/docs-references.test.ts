@@ -78,8 +78,8 @@ test("reference validation accepts the full table and rejects wrong, unknown and
   expect(() => validateReferences("Gateway remains planned (vmethod 1.0, #4).")).toThrow(
     "must immediately follow"
   );
-  expect(() => validateReferences("Use `open-task` and `worker start` (vmethod 1.0, #8).")).toThrow(
-    "worker start"
+  expect(() => validateReferences("Use `open-task` and `worker` (vmethod 1.0, #8).")).toThrow(
+    "worker expected 9, got 8"
   );
   expect(validateReferences("Use `mute`, `mutes` and `unmute` (vmethod 1.0,\n#6).")).toBe(3);
   expect(validateReferences("Use `open-task --direct` (vmethod 1.0, #8).")).toBe(1);
