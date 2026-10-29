@@ -1440,6 +1440,13 @@ unknown.
 
 ### Conflict resolution
 
+The implementation separates decisions in `src/conflicts/machine.ts` from the
+lock and I/O runner in `src/gateway/conflicts.ts`. `step(record, observation)`
+returns the next record, ordered effects and result line. Its ephemeral `next`
+continuation requests fresh observations after effects; it is never persisted.
+The durable phases and `conflicts/<pr>.json` schema are unchanged. In particular,
+the runner keeps the lock across update/wait/proof and pre-dispatch re-snapshots.
+
 Use `resolve-conflicts <pr>` to take the cheapest applicable action. The watcher
 dispatches it automatically for a conflicting head or GitHub's behind-base state,
 then reconciles the persisted operation without launching another fixer.
