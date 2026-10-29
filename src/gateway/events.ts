@@ -1,18 +1,16 @@
 import { BoardPoller } from "../watch/board.js";
-import { checkInText } from "../core/protocol.js";
+import { PullPoller } from "../watch/pulls.js";
+import { WorkerPoller } from "../watch/workers.js";
 import { CommentStream } from "../watch/comments.js";
 import { LoopState, Marker } from "../watch/state.js";
 import {
-  BUTTON_RETRY_MS,
   CHAT_REMINDER_EVERY_MS,
   CURSOR_OVERLAP_MS,
   FAILURE_REMINDER_MS,
   MARKER_MARGIN_MS,
-  WORKER_STALE_MS,
 } from "../core/time.js";
 import { OwnedLock } from "../journal/locks.js";
-import { renderPermissions } from "./permission-detail.js";
-import { QuotaCrossings, limitsConfig, type ProviderLimits } from "./limits.js";
+import type { ProviderLimits } from "./limits.js";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -20,17 +18,13 @@ import manifest from "../../package.json" with { type: "json" };
 import { WatchDelivery } from "./watch-delivery.js";
 import { WatchPacing } from "./watch-pacing.js";
 import type { Config } from "../config.js";
-import { boardCost } from "../cost.js";
-import { progressGuards } from "../core/progress.js";
 import type { BoardService } from "./board.js";
 import {
   GitHubClient,
   BudgetPause,
   GraphQLResponseError,
-  OpencodeClient,
   type WorkerSessionStatus,
   type Dependencies,
-  type WorkerStatus,
 } from "./client.js";
 import { stateRoot, type Digest } from "./digest.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
@@ -38,20 +32,16 @@ import { restActor } from "../github/diagnostic.js";
 import { pages, restPages } from "../github/pages.js";
 import { actorFields } from "../github/selections.js";
 import { WriteJournal } from "./write-journal.js";
-import { taskHeld, taskIssueNumbers } from "../tasks/markers.js";
 import { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 export { resolveSession, type ResolvedSession, type SessionInput } from "./watch-scope.js";
 
 const INTERVAL_MS = 10_000;
-const WORKER_EVERY = 6;
-const SILENT_MS = 40 * 60_000;
 const TRACKS_TTL_MS = 30_000;
 /** The reminder's state file stores the last show time; empty delivery stays silent. */
 const CHAT_REMINDER =
   "REMINDER (owner rule): chat = #n pointers only or warnings; discuss on GitHub. Don't explain here what you will put in an issue/PR. Evidence, plans and summaries go on the issue/PR, never in chat.";
 const PAGE_LIMIT = 20;
 const PREVIEW_LIMIT = 120;
-const RED_CI = ["FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"];
 const ID = /^[A-Za-z0-9_.@#-]{1,160}$/;
 declare const __VERSION__: string;
 const VERSION = typeof __VERSION__ === "string" ? __VERSION__ : manifest.version;
@@ -111,19 +101,6 @@ interface PendingEvent {
   line: string;
   once: boolean;
   quiet?: string[];
-}
-
-interface PrInfo {
-  number: number;
-  branch: string;
-  sha: string;
-  base: string;
-  created: string;
-  title: string;
-  user: ObjectData;
-  mergeable: string;
-  baseMoved?: boolean;
-  baseSha?: string;
 }
 
 export function eventDeps(deps: Dependencies): EventDeps {
@@ -266,7 +243,6 @@ export class EventLoop {
   private readonly org: string;
   private readonly subscriptions: string[];
   private readonly taskBranch: RegExp;
-  private readonly cycleWorkers = new Map<number, WorkerSessionStatus>();
   private readonly reserve: number;
   private readonly preview: boolean;
   private readonly writes: WriteJournal;
@@ -284,13 +260,10 @@ export class EventLoop {
   private tracksRead = 0;
   private readonly tracks = new Map<number, string>();
   private readonly known = new Set<number>();
-  private readonly cycleStale = new Set<number>();
   private readonly comments: CommentStream;
   private readonly boardPoller: BoardPoller;
-  private taskIssues = new Map<number, number[]>();
-  private pendingMergedIssues = new Set<number>();
-  private heldTasks = new Map<number, string>();
-  private observedPrs: PrInfo[] = [];
+  private readonly pulls: PullPoller;
+  private readonly workers: WorkerPoller;
   private nextBoardAt = 0;
   private readonly pacing = new WatchPacing();
   private reportedShape = "";
@@ -304,17 +277,6 @@ export class EventLoop {
   private intervalStreak = 0;
   private intervalDirection = 0;
   private observedRead = 0;
-  private opencode?: OpencodeClient;
-  private quotaCrossings?: QuotaCrossings;
-  private readonly quotaWorkers = new Map<
-    number,
-    { pr: number; family: string; provider: string }
-  >();
-  private quotaPolledAt = -Infinity;
-  private opencodeError = "";
-  private workerPollErrors = new Map<number, Set<string>>();
-  /** One report per distinct failure to list the worker checkout's worktrees. */
-  private workerTreeErrors = new Set<string>();
   private reportedFailures = new Map<
     string,
     { message: string; since: number; reminded: number; step: string }
@@ -323,6 +285,11 @@ export class EventLoop {
   private reading = false;
   private budgetDeferred = false;
   private releaseLock?: () => void;
+
+  /** Preserve the loop diagnostic used by the unchanged lock-contention regression. */
+  private get workerPollErrors(): ReadonlyMap<number, ReadonlySet<string>> {
+    return this.workers.pollErrors;
+  }
 
   /** Release on a graceful server shutdown; a crash leaves the PID/start guard behind. */
   close(): void {
@@ -369,8 +336,8 @@ export class EventLoop {
       current: () => ({
         me: this.me,
         firstRun: this.firstRun,
-        taskIssues: this.taskIssues,
-        pendingMergedIssues: this.pendingMergedIssues,
+        taskIssues: this.pulls.observation.taskIssues,
+        pendingMergedIssues: this.pulls.observation.pendingMergedIssues,
         nextBoardAt: this.nextBoardAt,
       }),
       recordPoll: (cost) => this.pacing.recordPoll(cost),
@@ -413,7 +380,7 @@ export class EventLoop {
         me: this.me,
         meId: this.meId,
         firstRun: this.firstRun,
-        taskIssues: this.taskIssues,
+        taskIssues: this.pulls.observation.taskIssues,
       }),
       isOwn: (repo) => this.isOwn(repo),
       inScope: (number) => this.inScope(number),
@@ -436,6 +403,53 @@ export class EventLoop {
       produceOnce: (id, kind, line) => this.produceOnce(id, kind, line),
       quietOnce: (id, line) => this.quietOnce(id, line),
       sanitizeLine,
+    });
+    this.pulls = new PullPoller({
+      state: this.state,
+      host,
+      writes: this.writes,
+      own: this.own,
+      org: this.org,
+      session: this.session,
+      taskBranch: this.taskBranch,
+      subjectPreviews: this.subjectPreviews,
+      current: () => ({ cycle: this.cycle, firstRun: this.firstRun, meId: this.meId }),
+      updateLaunched: (launched) => this.boardPoller.updateLaunched(launched),
+      pollReviewThreads: (number) => this.comments.pollReviewThreads(number),
+      seedPrComments: (number) => this.comments.seedPrComments(number),
+      inScope: (number) => this.inScope(number),
+      muted: (...args) => this.muted(...args),
+      threadUrl: (...args) => this.threadUrl(...args),
+      restRead: (action) => this.restRead(action),
+      restPages: (path, collect) => this.restPages(path, collect),
+      readMarker: (marker) => this.readMarker(marker),
+      writeMarker: (marker, text) => this.writeMarker(marker, text),
+      marked: (marker) => this.marked(marker),
+      mark: (marker) => this.mark(marker),
+      touchActivity: (number, at) => this.touchActivity(number, at),
+      previewFromSubject: (...args) => this.previewFromSubject(...args),
+      previewText: (...args) => this.previewText(...args),
+      produceOnce: (...args) => this.produceOnce(...args),
+      emit: (...args) => this.emit(...args),
+      quietOnce: (...args) => this.quietOnce(...args),
+      queueProgress: (...args) => this.queueProgress(...args),
+    });
+    this.workers = new WorkerPoller({
+      state: this.state,
+      host,
+      own: this.own,
+      current: () => ({ cycle: this.cycle }),
+      boardObservation: () => this.boardPoller.observation,
+      readReview: (number) => this.comments.readReview(number),
+      activityAt: (number) => this.activityAt(number),
+      muted: (...args) => this.muted(...args),
+      threadUrl: (...args) => this.threadUrl(...args),
+      readMarker: (marker) => this.readMarker(marker),
+      writeMarker: (marker, text) => this.writeMarker(marker, text),
+      produceOnce: (...args) => this.produceOnce(...args),
+      emit: (...args) => this.emit(...args),
+      quietOnce: (...args) => this.quietOnce(...args),
+      queueProgress: (...args) => this.queueProgress(...args),
     });
   }
 
@@ -1225,10 +1239,9 @@ export class EventLoop {
       this.writeMarker(this.state.listingBaseline, startedAt);
     }
     this.cycle++;
-    this.cycleStale.clear();
+    this.workers.beginPoll();
     this.boardPoller.beginPoll();
     this.comments.beginPoll();
-    this.cycleWorkers.clear();
     let ok = true;
     if (this.me === null) {
       ok = await this.step("own identity", async () => {
@@ -1251,11 +1264,11 @@ export class EventLoop {
     if (this.tracksRead === 0 || this.host.deps.now() - this.tracksRead >= TRACKS_TTL_MS) {
       ok = (await this.step("track labels", () => this.refreshTracks())) && ok;
     }
-    const pullsOk = await this.step("pull requests", () => this.pollPulls());
+    const pullsOk = await this.step("pull requests", () => this.pulls.pollPulls());
     const commentsOk = await this.step("comments", () => this.comments.pollComments());
     if (commentsOk && pullsOk) {
-      for (const pr of this.observedPrs) {
-        await this.watchStale(pr);
+      for (const pr of this.pulls.observation.prs) {
+        await this.workers.watchStale(pr);
       }
     }
     const itemsOk = await this.step("subscribed items", () => this.pollSubscribedItems());
@@ -1265,8 +1278,8 @@ export class EventLoop {
     if (!boardOk) {
       this.state.unestimated.remove();
     }
-    const workersOk = await this.step("worker sessions", () => this.pollWorkers());
-    await this.step("worker quotas", () => this.pollQuotas());
+    const workersOk = await this.step("worker sessions", () => this.workers.pollWorkers());
+    await this.step("worker quotas", () => this.workers.pollQuotas());
     await this.step("budget", () => this.checkBudget());
     ok = ok && pullsOk && commentsOk && itemsOk && assignedOk && boardOk && workersOk;
     if (commentsOk && itemsOk && (!this.firstRun || ok)) {
@@ -1344,435 +1357,6 @@ export class EventLoop {
     }
     this.state.tracks.write(`${rows.join("\n")}\n`);
     this.tracksRead = this.host.deps.now();
-  }
-
-  // ---------------------------------------------------------------- pull requests
-
-  private async pollPulls(): Promise<void> {
-    const observedPrs: PrInfo[] = [];
-    const taskIssues = new Map<number, number[]>();
-    const pendingMergedIssues = new Set<number>();
-    const heldTasks = new Map<number, string>();
-    const items = await this.restPages(
-      (page) => `/repos/${this.own}/pulls?state=open&per_page=100&page=${page}`,
-      (data) => this.list(data)
-    );
-    const open = new Set<number>();
-    const launched = new Set<number>();
-    for (const item of items) {
-      if (this.host.filter.identity(restActor(item.user)) !== undefined) {
-        const number = count(item.number);
-        if (number !== null) {
-          taskIssues.set(number, taskIssueNumbers(str(item.body)) ?? []);
-          if (
-            taskIssueNumbers(str(item.body)) !== undefined &&
-            taskHeld(str(item.title), str(item.body))
-          ) {
-            heldTasks.set(number, `${str(item.title)}\n${str(item.body)}`);
-          }
-        }
-        for (const issue of taskIssueNumbers(str(item.body)) ?? []) {
-          launched.add(issue);
-        }
-      }
-    }
-    for (const item of items) {
-      const number = count(item.number);
-      const head = object(item.head);
-      const branch = str(head.ref);
-      const sha = str(head.sha);
-      if (
-        number === null ||
-        !branch ||
-        !/^[a-f\d]{40}$/i.test(sha) ||
-        (taskIssueNumbers(str(item.body)) === undefined && !this.taskBranch.test(branch))
-      ) {
-        continue;
-      }
-      if (!this.inScope(number)) {
-        continue;
-      }
-      open.add(number);
-      if (this.muted(this.own, number)) {
-        continue;
-      }
-      const detail =
-        this.cycle % WORKER_EVERY === 1
-          ? object(
-              await this.restRead(() => this.host.github.rest(`/repos/${this.own}/pulls/${number}`))
-            )
-          : {};
-      this.subjectPreviews.set(`${this.own.toLowerCase()}#${number}`, {
-        title: str(item.title),
-        person: this.host.filter.identity(restActor(item.user)),
-      });
-      if (this.host.filter.identity(restActor(item.user)) === undefined) {
-        this.host.digest.drop(this.threadUrl(this.own, number, "PR"));
-        continue;
-      }
-      const pr: PrInfo = {
-        number,
-        branch,
-        sha,
-        base: str(object(item.base).ref),
-        created: str(item.created_at),
-        title: str(item.title),
-        user: object(item.user),
-        baseMoved: detail.mergeable_state === "behind",
-        baseSha: str(object(detail.base).sha),
-        mergeable:
-          detail.mergeable === false
-            ? "CONFLICTING"
-            : detail.mergeable === true
-              ? "MERGEABLE"
-              : "UNKNOWN",
-      };
-      await this.processOpenPr(pr);
-      await this.comments.pollReviewThreads(number);
-      observedPrs.push(pr);
-    }
-    for (const name of readdirSync(this.dir)) {
-      const match = /^open-(\d+)$/.exec(name);
-      const number = match ? count(match[1]) : null;
-      if (number !== null && !open.has(number)) {
-        await this.processGonePr(number, pendingMergedIssues, heldTasks);
-      }
-    }
-    if (this.cycle % WORKER_EVERY === 1) {
-      for (const item of items) {
-        const number = count(item.number);
-        const branch = str(object(item.head).ref);
-        if (number !== null && open.has(number) && branch && !this.muted(this.own, number)) {
-          await this.pollPrDetails(number, branch, str(object(item.head).sha));
-        }
-      }
-    }
-    // Publish only a complete poll; downstream steps retain the last good links on failure.
-    this.observedPrs = observedPrs;
-    this.taskIssues = taskIssues;
-    this.pendingMergedIssues = pendingMergedIssues;
-    this.heldTasks = heldTasks;
-    this.boardPoller.updateLaunched(launched);
-  }
-
-  private async processOpenPr(pr: PrInfo): Promise<void> {
-    const url = this.threadUrl(this.own, pr.number, "PR");
-    if (pr.baseSha && /^[a-f\d]{40}$/i.test(pr.baseSha)) {
-      const oldBase = this.readMarker(this.state.pr(pr.number).baseHead);
-      pr.baseMoved ||= !!oldBase && oldBase !== pr.baseSha;
-      this.writeMarker(this.state.pr(pr.number).baseHead, pr.baseSha);
-    }
-    this.state.pr(pr.number).branch.write(`${pr.branch}\n`);
-    if (!this.marked(this.state.pr(pr.number).open)) {
-      this.mark(this.state.pr(pr.number).open);
-      this.state.pr(pr.number).head.write(`${pr.sha}\n`);
-      this.touchActivity(pr.number, pr.created);
-    }
-    if (
-      (this.firstRun && !this.marked(this.state.pr(pr.number).seeded)) ||
-      !this.marked(this.state.pr(pr.number).promptsSeeded) ||
-      !this.marked(this.state.pr(pr.number).protocolSeeded)
-    ) {
-      await this.comments.seedPrComments(pr.number);
-      this.mark(this.state.pr(pr.number).seeded);
-      this.mark(this.state.pr(pr.number).promptsSeeded);
-      this.mark(this.state.pr(pr.number).protocolSeeded);
-    }
-    const oldHead = this.readMarker(this.state.pr(pr.number).head);
-    if (oldHead !== pr.sha) {
-      if (oldHead && !this.writes.pushed(this.own, pr.number, pr.sha)) {
-        if (!this.host.conflictFixing?.(pr.number)) {
-          this.queueProgress(pr.number, { state: "working", if: progressGuards.revive });
-        }
-        this.touchActivity(pr.number, new Date(this.host.deps.now()).toISOString());
-      }
-      this.state.pr(pr.number).head.write(`${pr.sha}\n`);
-    }
-    try {
-      await this.reconcileConflicts(pr, url);
-    } catch (error) {
-      this.produceOnce(
-        `conflict-error-${pr.number}-${pr.sha}`,
-        "conflict-resolution",
-        `CONFLICT #${pr.number}: reconciliation failed (${error instanceof Error ? error.message : String(error)}); inspect gateway state before retrying`
-      );
-    }
-    this.observedPrs.push(pr);
-  }
-
-  /** Terminal resolutions supersede every card move queued during the conflicted turn. */
-  private settleConflicts(pr: PrInfo, result: string): void {
-    if (result.startsWith("PENDING")) {
-      return;
-    }
-    // The conflict service books an up-to-date PR itself; a no-op result has no
-    // news and must not wake the orchestrator (a false alarm).
-    if (result.startsWith("nothing to resolve for #")) {
-      return;
-    }
-    this.produceOnce(`conflict-result-${pr.number}-${pr.sha}`, "conflict-resolution", result);
-    if (
-      /^(?:RESOLVED|MERGED|BLOCKED)\b/.test(result) ||
-      /^conflict on #\d+ resolved outside the fixer$/.test(result)
-    ) {
-      this.state.pr(pr.number).pendingProgress.remove();
-    }
-  }
-
-  private async reconcileConflicts(pr: PrInfo, url: string): Promise<void> {
-    if (pr.mergeable === "CONFLICTING") {
-      if (this.host.resolveConflicts) {
-        if (this.readMarker(this.state.pr(pr.number).conflict) !== pr.sha) {
-          this.writeMarker(this.state.pr(pr.number).conflict, pr.sha);
-          this.queueProgress(pr.number, { state: "conflict" });
-        }
-      } else if (
-        this.produceOnce(
-          `conflict-${pr.number}-${pr.sha}`,
-          "conflict",
-          `CONFLICT #${pr.number} (${pr.branch}): its worker must merge origin/${pr.base} and push${this.previewFromSubject(this.own, pr.number)} ${url}`
-        )
-      ) {
-        this.writeMarker(this.state.pr(pr.number).conflict, pr.sha);
-        this.queueProgress(pr.number, { state: "conflict" });
-      }
-      if (
-        this.host.resolveConflicts &&
-        !this.marked(this.state.pr(pr.number).conflictDispatched.at(pr.sha))
-      ) {
-        const result = await this.host.resolveConflicts(pr.number);
-        // #373: mark after the call, and only once a resolution landed: a busy or
-        // failed dispatch left no pending record and retries on the next poll.
-        if (!result.startsWith("PENDING") || this.host.conflictPending?.(pr.number) !== false) {
-          this.mark(this.state.pr(pr.number).conflictDispatched.at(pr.sha));
-        }
-        this.settleConflicts(pr, result);
-      }
-    } else if (pr.mergeable === "MERGEABLE" && this.marked(this.state.pr(pr.number).conflict)) {
-      this.state.pr(pr.number).conflict.remove();
-      this.queueProgress(pr.number, { state: "working", if: progressGuards.conflictResolved });
-    }
-    if (
-      pr.baseMoved &&
-      this.host.resolveConflicts &&
-      !this.marked(this.state.pr(pr.number).baseDispatched.at(`${pr.sha}-${pr.baseSha}`))
-    ) {
-      const result = await this.host.resolveConflicts(pr.number);
-      // Like the conflict dispatch: an unfinished base automation retries next poll.
-      if (!result.startsWith("PENDING") || this.host.conflictPending?.(pr.number) !== false) {
-        this.mark(this.state.pr(pr.number).baseDispatched.at(`${pr.sha}-${pr.baseSha}`));
-      }
-      this.settleConflicts(pr, result);
-    }
-    if (this.host.conflictPending?.(pr.number)) {
-      this.settleConflicts(pr, await this.host.resolveConflicts!(pr.number));
-    }
-  }
-
-  private async watchStale(pr: PrInfo): Promise<void> {
-    const url = this.threadUrl(this.own, pr.number, "PR");
-    const review = this.comments.readReview(pr.number);
-    const activity = this.activityAt(pr.number);
-    if (
-      this.workerExpectedActive(pr.number) &&
-      review &&
-      activity &&
-      activity <= review.at &&
-      Date.parse(review.at) <= this.host.deps.now() - WORKER_STALE_MS
-    ) {
-      let unreachable: boolean;
-      try {
-        const worker = await this.readWorkerStatus(pr.number);
-        unreachable = worker.reason === "session unknown";
-        const stop = this.workerStop(pr.number, worker);
-        if (
-          stop.state === "failed" &&
-          this.readMarker(this.state.pr(pr.number).stop) === this.stopKey(stop, worker.updated)
-        ) {
-          this.cycleStale.add(pr.number);
-          return;
-        }
-        if (
-          worker.active &&
-          typeof worker.updated === "number" &&
-          Number.isFinite(worker.updated) &&
-          worker.updated >= this.host.deps.now() - WORKER_STALE_MS
-        ) {
-          return;
-        }
-      } catch {
-        // Transport details may contain private data; only report availability.
-        unreachable = true;
-      }
-      this.cycleStale.add(pr.number);
-      if (
-        this.produceOnce(
-          `s-${key(review.id)}`,
-          "stale",
-          `PR #${pr.number} (${pr.branch}): STALE${unreachable ? " (worker unreachable)" : ""}: no worker reply for 30+ min after my review ${url}`
-        )
-      ) {
-        this.queueProgress(pr.number, { state: "idle", if: progressGuards.stopped });
-      }
-    }
-  }
-
-  private async pollPrDetails(number: number, branch: string, sha: string): Promise<void> {
-    const commits = await this.restPages(
-      (page) => `/repos/${this.own}/pulls/${number}/commits?per_page=100&page=${page}`,
-      (data) => this.list(data)
-    );
-    const last = commits.at(-1);
-    if (last) {
-      const commit = object(last.commit);
-      this.touchActivity(
-        number,
-        str(object(commit.committer).date) || str(object(commit.author).date)
-      );
-    }
-    if (commits.length > 1 && !this.marked(this.state.pr(number).picked)) {
-      if (!this.firstRun) {
-        this.quietOnce(
-          `picked-${number}`,
-          `NOTE PR #${number} (${branch}): picked up (${commits.length} commits)`
-        );
-      } else {
-        this.mark(this.state.pr(number).picked);
-      }
-    }
-    const url = this.threadUrl(this.own, number, "PR");
-    const runs = await this.restPages(
-      (page) => `/repos/${this.own}/commits/${sha}/check-runs?per_page=100&page=${page}`,
-      (data) => this.list(object(data).check_runs)
-    );
-    const red = runs.some(
-      (run) =>
-        this.host.filter.check(run, this.org, url) !== undefined &&
-        RED_CI.includes(str(run.conclusion).toUpperCase())
-    );
-    const state = red ? "red" : "ok";
-    if (this.readMarker(this.state.pr(number).ci) !== state) {
-      this.state.pr(number).ci.write(state);
-      this.queueProgress(number, { ci: state });
-    }
-  }
-
-  private async processGonePr(
-    number: number,
-    pendingMergedIssues: Set<number>,
-    heldTasks: Map<number, string>
-  ): Promise<void> {
-    if (this.muted(this.own, number)) {
-      return;
-    }
-    if (!this.inScope(number)) {
-      this.state.pr(number).open.remove();
-      return;
-    }
-    const url = this.threadUrl(this.own, number, "PR");
-    const data = object(
-      await this.restRead(() => this.host.github.rest(`/repos/${this.own}/pulls/${number}`))
-    );
-    const person = this.host.filter.identity(restActor(data.user));
-    const shared = stateRoot(
-      this.host.env,
-      resolveSession(this.host.config, { track: this.session.track ?? undefined }).stateName
-    );
-    const sharedLegacy = new LoopState(shared).legacyCompleted.path;
-    const legacy =
-      object(safeJson(this.readMarker(this.state.legacyCompleted)))[String(number)] === true ||
-      (existsSync(sharedLegacy) &&
-        object(JSON.parse(readFileSync(sharedLegacy, "utf8")))[String(number)] === true);
-    const mergeFile = join(
-      stateRoot(this.host.env, String(this.host.config.stateName ?? this.own.replace("/", "-"))),
-      `merge-${number}.json`
-    );
-    const followUp = existsSync(mergeFile)
-      ? object(JSON.parse(readFileSync(mergeFile, "utf8")))
-      : {};
-    const complete = Array.isArray(followUp.done) && followUp.done.includes("follow-up");
-    const mergeTime = Date.parse(str(data.merged_at));
-    const journalActive =
-      existsSync(mergeFile) &&
-      !complete &&
-      this.host.deps.now() - statSync(mergeFile).mtimeMs < BUTTON_RETRY_MS;
-    // A recent checkpoint counts as a running follow-up. An interrupted journal
-    // ages out; a missing journal still gets ten minutes from the merge itself.
-    const followUpPending =
-      !complete &&
-      (journalActive ||
-        (Number.isFinite(mergeTime) && this.host.deps.now() - mergeTime < BUTTON_RETRY_MS));
-    if (data.merged === true && person !== undefined && !legacy && followUpPending) {
-      for (const issue of taskIssueNumbers(str(data.body)) ?? []) {
-        pendingMergedIssues.add(issue);
-      }
-    }
-    const self = count(object(data.merged_by).id) === this.meId;
-    const matched = this.writes.matches(
-      { kind: "merged", repo: this.own, number },
-      str(data.merged_at)
-    );
-    const notified = this.marked(this.state.pr(number).mergeNotified);
-    if (data.merged === true && (legacy || (complete && (!self || matched || notified)))) {
-      this.clearPrState(number);
-      this.queueProgress(number, { state: null, round: null, ci: "ok" });
-      return;
-    }
-    if (data.merged === true) {
-      // Never run follow-up from the watcher. A sibling's same-account merge is
-      // still work unless this session recorded it AND recovery is complete.
-      const attempted = Number(this.readMarker(this.state.pr(number).mergeAttempt)) * 1000;
-      if (this.host.deps.now() - attempted < BUTTON_RETRY_MS) {
-        return;
-      }
-      if (self && !complete && notified) {
-        return;
-      }
-      if (self && followUpPending) {
-        return;
-      }
-      const at = Math.floor(this.host.deps.now() / 1000);
-      const merger = str(object(data.merged_by).login);
-      const sibling = self && !matched ? " (this account, another session)" : "";
-      const action =
-        self && !complete
-          ? "follow-up not run: run merge-task"
-          : complete
-            ? "follow-up complete"
-            : "run merge-task";
-      const waiting = [...heldTasks]
-        .filter(
-          ([pr, reason]) => pr !== number && new RegExp(`(^|[^\\w])#${number}\\b`).test(reason)
-        )
-        .map(([pr]) => `#${pr}`);
-      const holds = waiting.length ? `; held task references: ${waiting.join(", ")}` : "";
-      this.emit(
-        `button-${number}@${at}`,
-        "button-merge",
-        `PR #${number} MERGED by ${/^[\w-]+$/.test(merger) ? merger : "unknown"}${sibling}: ${action}${holds}${this.previewText(person, str(data.title))} ${url}`
-      );
-      this.mark(this.state.pr(number).mergeNotified);
-      this.state.pr(number).mergeAttempt.write(`${at}\n`);
-      this.queueProgress(number, { state: null, round: null, ci: "ok" });
-      if (complete) {
-        this.clearPrState(number);
-      }
-      return;
-    }
-    if (data.state === "closed" && str(data.closed_at)) {
-      this.emit(
-        `closed-${number}@${key(str(data.closed_at))}`,
-        "closed",
-        `PR #${number} is now CLOSED${this.previewText(person, str(data.title))}; task worktree is a cleanup candidate: run worker stop ${number} --cleanup (safety guards apply) ${url}`
-      );
-      this.clearPrState(number);
-      this.queueProgress(number, { state: null, round: null, ci: "ok" });
-    }
-    // Still open (a listing lag): keep the marker and look again next poll.
-  }
-
-  private clearPrState(number: number): void {
-    this.state.pr(number).clear();
   }
 
   private queueProgress(
@@ -1978,285 +1562,6 @@ export class EventLoop {
   // ---------------------------------------------------------------- board
 
   // ---------------------------------------------------------------- workers and budget
-
-  private async readWorkerStatus(number: number): Promise<WorkerSessionStatus> {
-    const cached = this.cycleWorkers.get(number);
-    if (cached) {
-      return cached;
-    }
-    const status = await this.host.workerStatus(number);
-    if (status.active && status.family && status.provider) {
-      this.quotaWorkers.set(number, {
-        pr: number,
-        family: status.family,
-        provider: status.provider,
-      });
-    } else {
-      this.quotaWorkers.delete(number);
-    }
-    if (status.quotaEvent) {
-      this.emit(`quota-${number}-${this.host.deps.now()}`, "worker", status.quotaEvent);
-    }
-    this.cycleWorkers.set(number, status);
-    return status;
-  }
-
-  private workerStop(number: number, status: WorkerSessionStatus): WorkerStatus {
-    if (status.reason === "provider-error" || status.reason === "quota") {
-      return { state: "failed", detail: status.error };
-    }
-    if (status.reason === "permission-wait") {
-      return {
-        state: "permission",
-        detail: JSON.stringify(status.permissionDetails ?? []),
-        permissionDetails: status.permissionDetails,
-      };
-    }
-    const prompt = this.state.pr(number).prompt.read();
-    const review = this.comments.readReview(number);
-    const at = str(prompt.at) || review?.at;
-    const protocolReply = this.state.pr(number).protocol.read();
-    const hasReply =
-      protocolReply.role === "worker" &&
-      ["READY", "QUESTION", "BLOCKED", "DESIGN", "HANDOFF"].includes(str(protocolReply.tag)) &&
-      str(protocolReply.at) >= (at ?? "");
-    if ((status.reason === "idle without reply" || status.reason === "idle") && !hasReply) {
-      return { state: "idle", detail: str(prompt.id) || review?.id || status.updated?.toString() };
-    }
-    return { state: "other" };
-  }
-
-  private stopKey(status: WorkerStatus, updated?: number): string {
-    return status.state === "other"
-      ? ""
-      : JSON.stringify([status.state, key(status.detail ?? ""), updated ?? null]);
-  }
-
-  private workerExpectedActive(number: number, working = true): boolean {
-    // Without a protocol turn, use working Progress (or the unanswered review for STALE).
-    const active = this.state.pr(number).protocol.read().active;
-    return typeof active === "boolean" ? active : working;
-  }
-
-  private workerClient(): OpencodeClient | null {
-    if (this.opencode) {
-      return this.opencode;
-    }
-    if (this.opencodeError) {
-      return null;
-    }
-    try {
-      this.opencode = new OpencodeClient(
-        this.host.env,
-        this.host.deps.fetch,
-        this.host.deps.now,
-        this.host.deps.report
-      );
-      return this.opencode;
-    } catch (error) {
-      this.opencodeError = (error as Error).message;
-      this.host.deps.report(`watcher: worker status unavailable: ${this.opencodeError}`);
-      this.quietOnce(
-        `no-opencode-${key(this.opencodeError)}`,
-        `NOTE: worker status unavailable: ${this.opencodeError}`
-      );
-      return null;
-    }
-  }
-
-  private async pollQuotas(): Promise<void> {
-    const config = limitsConfig(this.host.config);
-    const active = [...this.quotaWorkers.values()].filter((w) =>
-      this.boardPoller.observation.executing.some((pr) => pr.number === w.pr)
-    );
-    if (
-      !config.enabled ||
-      !active.length ||
-      !this.host.workerLimits ||
-      this.host.deps.now() - this.quotaPolledAt < config.pollSeconds * 1000
-    ) {
-      return;
-    }
-    this.quotaPolledAt = this.host.deps.now();
-    if (!this.quotaCrossings) {
-      const raw = this.readMarker(this.state.quotaRisk);
-      const previous: unknown = raw ? JSON.parse(raw) : [];
-      if (!Array.isArray(previous) || previous.some((p) => typeof p !== "string")) {
-        throw new Error("Invalid quota crossing state");
-      }
-      this.quotaCrossings = new QuotaCrossings(previous);
-    }
-    for (const line of this.quotaCrossings.update(await this.host.workerLimits(), active)) {
-      this.emit(`quota-${key(line)}-${this.host.deps.now()}`, "worker", line);
-    }
-    this.writeMarker(this.state.quotaRisk, JSON.stringify(this.quotaCrossings.snapshot()));
-  }
-
-  private async pollWorkers(): Promise<void> {
-    if (this.cycle % WORKER_EVERY !== 1) {
-      return;
-    }
-    const costs = new Map<number, { usd: number | null; lowerBound?: boolean }>();
-    let trees: Map<string, string>;
-    try {
-      trees = new Map(
-        (await (this.host.workerTrees?.() ?? Promise.resolve([]))).map((tree) => [
-          tree.branch,
-          tree.path,
-        ])
-      );
-    } catch (error) {
-      const message = `watcher: worker worktrees unavailable: ${(error as Error).message}`;
-      if (!this.workerTreeErrors.has(message)) {
-        this.workerTreeErrors.add(message);
-        this.host.deps.report(message);
-      }
-      trees = new Map();
-    }
-    for (const pr of this.boardPoller.observation.executing) {
-      if (this.muted(this.own, pr.number)) {
-        continue;
-      }
-      const url = this.threadUrl(this.own, pr.number, "PR");
-      const activity = this.activityAt(pr.number);
-      if (
-        this.workerExpectedActive(pr.number, pr.working) &&
-        activity &&
-        Date.parse(activity) <= this.host.deps.now() - SILENT_MS &&
-        !this.cycleStale.has(pr.number)
-      ) {
-        if (
-          this.produceOnce(
-            `q-${pr.number}-${key(activity)}`,
-            "silent",
-            `PR #${pr.number} (${pr.branch}): SILENT: no commit or comment for 40+ min while Executing ${url}`
-          )
-        ) {
-          this.queueProgress(pr.number, { state: "silent", if: progressGuards.silent });
-        }
-      }
-      if (!pr.branch) {
-        continue;
-      }
-      const dir = trees.get(pr.branch);
-      if (!dir) {
-        continue;
-      }
-      let status: WorkerStatus;
-      let updated: number | undefined;
-      let recorded: WorkerSessionStatus;
-      try {
-        recorded = await this.readWorkerStatus(pr.number);
-        if (recorded.prCost) {
-          costs.set(pr.number, recorded.prCost);
-        }
-        status = this.workerStop(pr.number, recorded);
-        updated = recorded.updated;
-        if (recorded.reason === "session unknown") {
-          const client = this.workerClient();
-          if (!client) {
-            continue;
-          }
-          status = await client.status(dir);
-        }
-      } catch (error) {
-        const message = (error as Error).message;
-        if (/^Worker #\d+ is locked:/.test(message)) {
-          continue;
-        }
-        const signature = message.split(": ")[0];
-        const seen = this.workerPollErrors.get(pr.number) ?? new Set<string>();
-        if (!seen.has(signature)) {
-          this.host.deps.report(`watcher: worker #${pr.number} poll failed: ${message}`);
-          seen.add(signature);
-          this.workerPollErrors.set(pr.number, seen);
-        }
-        continue;
-      }
-      this.workerPollErrors.delete(pr.number);
-      const stopMarker = this.state.pr(pr.number).stop;
-      const stop = this.stopKey(status, updated);
-      const previous = this.readMarker(this.state.pr(pr.number).stop);
-      if (stop === previous) {
-        continue;
-      }
-      // A backend without updated timestamps can return the same idle key after recovery.
-      // Persist a transition sequence before handing events off, so crash retries reuse ids.
-      const metricMarker = this.state.pr(pr.number).metric;
-      const metric = metricMarker.read();
-      const priorSequence = Number(metric.sequence ?? 0);
-      if (!Number.isSafeInteger(priorSequence) || priorSequence < 0) {
-        throw new Error(`Invalid worker metric sequence for #${pr.number}`);
-      }
-      const sequence =
-        metric.stop === stop && metric.previous === previous ? priorSequence : priorSequence + 1;
-      metricMarker.write({ stop, previous, sequence });
-      const metricId = `${key(this.dir)}-${pr.number}-${sequence}`;
-      if (status.state === "permission") {
-        if (
-          this.emit(
-            `w-${pr.number}@${this.host.deps.now()}`,
-            "worker",
-            `WORKER #${pr.number} (${pr.branch}): waits for a permission; see ${dir}${renderPermissions(status.permissionDetails)}`
-          )
-        ) {
-          this.queueProgress(pr.number, {
-            state: "permission",
-            if: progressGuards.permission,
-          });
-        }
-      } else if (status.state === "failed") {
-        if (
-          this.emit(
-            `w-${pr.number}@${this.host.deps.now()}`,
-            "worker",
-            `WORKER #${pr.number} (${pr.branch}): its turn failed; see ${dir}`
-          )
-        ) {
-          this.queueProgress(pr.number, {
-            state: "failed",
-            if: progressGuards.failed,
-          });
-        }
-      } else if (status.state === "idle") {
-        const at = new Date(this.host.deps.now()).toISOString();
-        await this.host.workerMetric?.(pr.number, { id: `stop-${metricId}`, at, type: "stop" });
-        const prompt = this.state.pr(pr.number).prompt.read();
-        const round = str(prompt.id) || "unknown";
-        const count = Number(this.readMarker(this.state.pr(pr.number).checkin.at(key(round))) || 0);
-        if (count < 2 && this.host.workerSend) {
-          await this.host.workerSend(pr.number, checkInText(pr.number));
-          this.writeMarker(this.state.pr(pr.number).checkin.at(key(round)), String(count + 1));
-          await this.host.workerMetric?.(pr.number, {
-            id: `checkin-${metricId}`,
-            at,
-            type: "checkin",
-          });
-        } else {
-          this.emit(
-            `w-${pr.number}@${this.host.deps.now()}`,
-            "worker",
-            `WORKER #${pr.number}: stopped without reply; send it a nudge ${url}`
-          );
-          this.queueProgress(pr.number, { state: "idle", if: progressGuards.idle });
-        }
-      }
-      stopMarker.write(`${stop}\n`);
-    }
-    for (const [pr, cost] of costs) {
-      const id = this.boardPoller.observation.costCards.get(pr);
-      const text = boardCost(cost.usd, cost.lowerBound);
-      const value = JSON.stringify({ id, text });
-      if (id && this.readMarker(this.state.pr(pr).cost) !== value) {
-        await this.host.board.set({
-          itemId: id,
-          field: "Cost",
-          value: text,
-        });
-        this.writeMarker(this.state.pr(pr).cost, value);
-      }
-    }
-  }
 
   private async checkBudget(): Promise<void> {
     const budget = this.host.github.budget();
