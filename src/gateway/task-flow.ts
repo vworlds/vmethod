@@ -21,19 +21,19 @@ import { type BoardService } from "./board.js";
 import { object, type ObjectData, type Person } from "./people.js";
 import { checkMarkdown, guardClosingKeywords, guardProtocolHeader } from "./markdown.js";
 import { GitTransport, taskBranch, validateBranch } from "./git.js";
-import { cleanBaseMerges } from "./clean-base.js";
+import { cleanBaseMerges } from "../evidence/clean-base.js";
 import { liveBaseHead } from "./base-head.js";
-import { approvalCarryFiles } from "./carry-approval.js";
+import { approvalCarryFiles } from "../evidence/carry-approval.js";
 import type { ConflictPrior, OpenTaskInput, ReviewInput } from "./task-flow-types.js";
 import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
-import { modelGateError } from "./model-gate.js";
+import { modelGateError } from "../evidence/model-gate.js";
 import { ownerForTurn, setTurn, turnAssignees } from "./turn.js";
 import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
 import { runVerifyHook } from "./verify-hook.js";
 import { assertLockfileInSync, npmCiEnvironment } from "./lockfile.js";
 import packageInfo from "../../package.json" with { type: "json" };
 import { WorktreeService } from "./worktrees.js";
-import type { AutopilotState } from "./autopilot.js";
+import type { AutopilotState } from "../evidence/autopilot.js";
 
 interface Host {
   thread(ref: string, kind: "pr" | "issue"): Promise<ObjectData>;

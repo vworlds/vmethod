@@ -9,7 +9,7 @@ import { object, type ObjectData } from "../../src/gateway/people.js";
 import issueResponse from "../fixtures/github/issue-response.json" with { type: "json" };
 import boardRecording from "../fixtures/github/board-write-inputs.json" with { type: "json" };
 import { WatchFake } from "./watch-fake.js";
-import { bodyHash } from "../../src/gateway/scope.js";
+import { bodyHash } from "../../src/evidence/scope.js";
 import autopilotWire from "../fixtures/github/autopilot-wire.json" with { type: "json" };
 import { scopeGraph, scopeMove } from "./scope-fixture.js";
 

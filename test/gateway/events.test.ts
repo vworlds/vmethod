@@ -30,7 +30,7 @@ import { createGateway } from "../../src/gateway/server.js";
 import { stringify } from "yaml";
 import { actor, people } from "./helpers.js";
 import { scopeMove, scopeComment } from "./scope-fixture.js";
-import { bodyHash } from "../../src/gateway/scope.js";
+import { bodyHash } from "../../src/evidence/scope.js";
 import recordedActions from "../fixtures/github/watch-actions.json" with { type: "json" };
 import recordedComment from "../fixtures/github/review-comment.json" with { type: "json" };
 import { GitHubClient } from "../../src/gateway/client.js";

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import { approvalRefusal, isOwnerApproved, type ApprovalPR } from "../../src/gateway/approval.js";
-import { scopeApproved, scopeRefusal, bodyHash } from "../../src/gateway/scope.js";
+import { approvalRefusal, isOwnerApproved, type ApprovalPR } from "../../src/evidence/approval.js";
+import { scopeApproved, scopeRefusal, bodyHash } from "../../src/evidence/scope.js";
 import { guardClosingKeywords } from "../../src/gateway/markdown.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";

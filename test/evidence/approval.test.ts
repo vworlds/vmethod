@@ -1,9 +1,9 @@
 import { expect, test } from "vitest";
-import { isOwnerApproved, isIssueOwnerApproved } from "../../src/gateway/approval.js";
+import { isOwnerApproved, isIssueOwnerApproved } from "../../src/evidence/approval.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { fixture } from "../helpers.js";
-import { actor, people, sha } from "./helpers.js";
+import { actor, people, sha } from "../gateway/helpers.js";
 
 test("a second pinned owner can approve by board move or exact-head review", () => {
   const second = { ...people[0], login: "second-owner", id: 105 };

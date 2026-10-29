@@ -1,5 +1,5 @@
 import { autopilotHead, parseFirstLine } from "../core/protocol.js";
-import { object, type ObjectData, type PeopleFilter } from "./people.js";
+import { object, type ObjectData, type PeopleFilter } from "../gateway/people.js";
 
 export interface ApprovalPR {
   headRefOid: string;

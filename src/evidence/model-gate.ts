@@ -1,4 +1,4 @@
-import { type ObjectData } from "./people.js";
+import { type ObjectData } from "../gateway/people.js";
 
 /**
  * The verifiable owner gate for `gate: owner` model families (#218). The

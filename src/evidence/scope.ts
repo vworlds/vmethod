@@ -1,11 +1,11 @@
 import { parseFirstLine } from "../core/protocol.js";
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
-import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
+import { object, type ObjectData, type PeopleFilter, type Person } from "../gateway/people.js";
 import { repoOf } from "../github/diagnostic.js";
 import { identityFields, actorFields } from "../github/selections.js";
 import { batchPages, pageCursor } from "../github/pages.js";
-import type { GitHubClient } from "./client.js";
+import type { GitHubClient } from "../gateway/client.js";
 import { readState } from "../board/readme.js";
 import { AutopilotReader, type AutopilotState } from "./autopilot.js";
 

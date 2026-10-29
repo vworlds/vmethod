@@ -1,12 +1,12 @@
 import { expect, test } from "vitest";
 import { writeState } from "../../src/board/readme.js";
-import { bodyHash, legacyScopeCutoff, scopeApproved } from "../../src/gateway/scope.js";
-import { autopilotStates } from "../../src/gateway/autopilot.js";
+import { bodyHash, legacyScopeCutoff, scopeApproved } from "../../src/evidence/scope.js";
+import { autopilotStates } from "../../src/evidence/autopilot.js";
 import { PeopleFilter, type ObjectData } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { fixture } from "../helpers.js";
-import { actor, people } from "./helpers.js";
-import { scopeComment, scopeIssue, scopeMove } from "./scope-fixture.js";
+import { actor, people } from "../gateway/helpers.js";
+import { scopeComment, scopeIssue, scopeMove } from "../gateway/scope-fixture.js";
 
 const review = scopeComment({
   body: `[orchestrator] SCOPE REVIEW\n\nbody sha256: ${bodyHash("Final scope")}`,

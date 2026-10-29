@@ -1,7 +1,7 @@
-import { autopilotHead, containsScopeHeading, heading, parseFirstLine } from "../core/protocol.js";
+import { containsScopeHeading, heading, parseFirstLine } from "../core/protocol.js";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { assertEstimate } from "../board/estimate.js";
-import { ownerAgreement } from "./owner-agreement.js";
+import { EvidenceReader } from "../evidence/reader.js";
 import { getConfig, loadYaml, type Config } from "../config.js";
 import { WorkerWorktrees } from "./worker-launch.js";
 import { WorktreeService, type WorktreeTask } from "./worktrees.js";
@@ -24,7 +24,7 @@ import {
   repoOf,
   restActor,
 } from "../github/diagnostic.js";
-import { actorFields, identityFields } from "../github/selections.js";
+import { identityFields } from "../github/selections.js";
 import { pages } from "../github/pages.js";
 import {
   checkMarkdown,
@@ -40,8 +40,7 @@ import {
   type Transport,
 } from "./transport.js";
 import { tokenIdentity, tokenViewer } from "./identity.js";
-import { approvalRefusal, isOwnerApproved } from "./approval.js";
-import { bodyHash, ScopeReader, legacyScopeCutoff } from "./scope.js";
+import { bodyHash } from "../evidence/scope.js";
 import {
   itemKey,
   readThreadSnapshot,
@@ -54,12 +53,7 @@ import {
   threadTime,
   type ThreadItem,
 } from "./thread.js";
-import {
-  AutopilotReader,
-  inheritAutopilot,
-  workflowLabels,
-  type AutopilotState,
-} from "./autopilot.js";
+import { inheritAutopilot, workflowLabels } from "../evidence/autopilot.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { ownerForTurn, setTurn, turnAssignees } from "./turn.js";
 import { renderProgress } from "../board/progress.js";
@@ -98,7 +92,6 @@ import { mergeLearningPr } from "./learning-merge.js";
 import { releaseNext } from "./release.js";
 import { ConflictService, conflictLockWaitMs } from "./conflicts.js";
 import { verifyConflictHead } from "./verify-hook.js";
-import { isModelApproved } from "./model-gate.js";
 
 class GatewayServer {
   private config: Config;
@@ -191,7 +184,7 @@ class GatewayServer {
           { body }
         );
       },
-      modelApproval: (pr, issue, family) => this.modelApproval(family, { pr, issue }),
+      modelApproval: (pr, issue, family) => this.evidence.modelApproval(family, { pr, issue }),
       submitLearnings: () => this.learningService().command({ action: "submit" }),
       issue: (issue) => this.workerIssue(issue),
       diffStats: async (_pr, base, head) => {
@@ -780,8 +773,8 @@ class GatewayServer {
         return this.ci.snapshot(String(pr));
       },
       approved: async (pr, head) =>
-        (await this.approvalFor(String(pr), head)) === true ||
-        (await this.autopilotApprovalFor(String(pr), head)),
+        (await this.evidence.approvalFor(String(pr), head)) === true ||
+        (await this.evidence.autopilotApprovalFor(String(pr), head)),
       update: async (pr, head) => {
         await this.github.rest(
           `/repos/${String(this.config.repo)}/pulls/${pr}/update-branch`,
@@ -1160,7 +1153,7 @@ class GatewayServer {
   }
 
   private async staleScopeApproval(number: number, item: ObjectData): Promise<string | undefined> {
-    if ((await this.scopeState(item))?.approved === true) {
+    if ((await this.evidence.scopeState(item))?.approved === true) {
       return this.staleMessage(number);
     }
     return (await this.openTaskPr(number)) ? this.staleMessage(number) : undefined;
@@ -1182,21 +1175,6 @@ class GatewayServer {
         return false;
       }
     }
-  }
-
-  /** The batched scope read for one issue; open-task and merge-task's approval checks
-   * share it, so the edit-time warning and the merge gate see the same evidence. */
-  private async scopeState(item: ObjectData) {
-    return (
-      await new ScopeReader(
-        this.github,
-        this.filter,
-        this.config,
-        object(this.config.board).enabled === false
-          ? Infinity
-          : legacyScopeCutoff((await this.board.snapshot()).readme)
-      ).read([String(item.id)])
-    ).get(String(item.id));
   }
 
   /** Publish checked summary with the live digest, then assign scope review to the owner. */
@@ -1223,7 +1201,7 @@ class GatewayServer {
     const card = (await this.board.cards(snapshot.id)).find((card) => card.contentId === issue.id);
     const estimate = card?.values.Estimate;
     assertEstimate(estimate);
-    const autopilot = (await this.autopilotFor(issue)).active;
+    const autopilot = (await this.evidence.autopilotFor(issue)).active;
     const body = `${heading("SCOPE REVIEW")}\n\nI have updated the main body to the final scope.\n\nEstimate: ${estimate}\n\n${summary.trim()}\n\n${autopilot ? "Autopilot: scope approved.\n\nScoping → Spec review under autopilot.\n\n" : ""}body sha256: ${bodyHash(String(issue.body))}`;
     await checkMarkdown(this.root, body);
     guardClosingKeywords(body);
@@ -1267,7 +1245,7 @@ class GatewayServer {
       "Spec review",
       renderProgress({ state: "owner-review", round: null, red: false })
     );
-    if (autopilot && (await this.autopilotFor(issue)).active) {
+    if (autopilot && (await this.evidence.autopilotFor(issue)).active) {
       await this.github.rest(
         `/repos/${String(this.config.repo)}/issues/${number}/comments`,
         "POST",
@@ -1623,7 +1601,7 @@ class GatewayServer {
       github: this.github,
       board: () => this.board,
       people: loadYaml(this.root, "people") as Person[],
-      autopilot: async (ref, kind) => this.autopilotFor(await this.flowThread(ref, kind)),
+      autopilot: async (ref, kind) => this.evidence.autopilotFor(await this.flowThread(ref, kind)),
       copyAutopilot: async (issue, pr) => {
         if (
           (object(issue.labels).nodes as ObjectData[]).some((label) => label.name === "autopilot")
@@ -1631,17 +1609,17 @@ class GatewayServer {
           await inheritAutopilot(this.github, this.filter, this.config, issue, pr);
         }
       },
-      autopilotApproved: (ref, head) => this.autopilotApprovalFor(ref, head),
+      autopilotApproved: (ref, head) => this.evidence.autopilotApprovalFor(ref, head),
       thread: (ref, kind) => this.flowThread(ref, kind),
       // #373: closes a recoverable blocked record at once (mergeable head, stopped
       // fixer) before reporting whether an active record still blocks the handover.
       conflictPending: async (ref) => this.conflicts.recover(Number(ref)),
       comments: (id, kind) => this.flowComments(id, kind === "issue" ? "Issue" : "PullRequest"),
       replyTarget: (id) => this.flowComment(id),
-      approved: (ref, historical) => this.approvalFor(ref, historical),
+      approved: (ref, historical) => this.evidence.approvalFor(ref, historical),
       approvalRefusal: async (ref) => {
         let reason = `Owner approval is missing or cannot be verified for current head; hand over with review ${ref} owner`;
-        await this.approvalFor(ref, undefined, (text) => {
+        await this.evidence.approvalFor(ref, undefined, (text) => {
           reason = text;
         });
         return reason;
@@ -1649,52 +1627,15 @@ class GatewayServer {
       scopeRefusal: async (item) =>
         scopeReasons.get(String(item.id)) ??
         `scope not approved: run scope-review ${String(item.number)} <file>`,
-      candidates: async (ref) => {
-        const { item, person } = await this.thread(ref, "pr");
-        if (!person) {
-          return [];
-        }
-        const candidates = new Set<string>();
-        for (const review of await this.collection(String(item.id), "PullRequest", "reviews")) {
-          if (
-            this.filter.identity(review.author)?.role === "owner" &&
-            (review.lastEditedAt == null ||
-              this.filter.identity(review.editor)?.role === "owner") &&
-            review.state === "APPROVED"
-          ) {
-            const head = object(review.commit).oid;
-            if (typeof head === "string" && /^[a-f\d]{40}$/i.test(head)) {
-              candidates.add(head);
-            }
-          }
-        }
-        for (const comment of await this.flowComments(String(item.id))) {
-          const delegated = autopilotHead(String(comment.body));
-          if (delegated) {
-            candidates.add(delegated);
-          }
-          if (
-            parseFirstLine(String(comment.body), {
-              role: "orchestrator",
-              tags: ["OWNER REVIEW"],
-              boundary: "whitespace",
-            })
-          ) {
-            for (const head of String(comment.body).match(/\b[a-f\d]{40}\b/gi) ?? []) {
-              candidates.add(head);
-            }
-          }
-        }
-        return [...candidates];
-      },
+      candidates: (ref) => this.evidence.candidates(ref),
       issueApproved: async (item) => {
-        const state = await this.scopeState(item);
+        const state = await this.evidence.scopeState(item);
         if (state?.refusal) {
           scopeReasons.set(String(item.id), state.refusal);
         }
         return state?.approved === true;
       },
-      modelApproval: (issue, family) => this.modelApproval(family, { issue }),
+      modelApproval: (issue, family) => this.evidence.modelApproval(family, { issue }),
       // #339: open-task's advisory lines reuse suggest-model's recommendation and the
       // per-family learnings aggregate; informational only, never a refusal source.
       modelSuggestion: async (issue) => {
@@ -1704,70 +1645,22 @@ class GatewayServer {
       learningEvidence: (family) => this.learningService().familyEvidence(family),
       modelHeadroom: (family) => this.workers.headroom(family),
       modelQuotaWarning: (family) => this.workers.quotaWarning(family),
-      ownerAgreement: async (ref, url, since, handback, kind = "pr") => {
-        const match =
-          /^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:pull|issues)\/([1-9]\d*)#issuecomment-([1-9]\d*)$/.exec(
-            url
-          );
-        if (!match || match[1] !== String(this.config.repo) || match[2] !== ref) {
-          return false;
-        }
-        const item = await this.flowThread(ref, kind);
-        const comments = await this.ownerModelComments(
-          String(item.id),
-          kind === "issue" ? "Issue" : "PullRequest",
-          url
-        );
-        return comments.some((comment) =>
-          ownerAgreement(comment, this.filter, String(this.config.repo), ref, url, since, handback)
-        );
-      },
+      ownerAgreement: (ref, url, since, handback, kind) =>
+        this.evidence.ownerAgreed(ref, url, since, handback, kind),
     });
   }
-  /** Gate reads are fresh; watcher state and label presence are not credentials. */
-  /** Historical exact-head review evidence never replaces a current delegation. */
-  private async autopilotApprovalFor(ref: string, head: string): Promise<boolean> {
-    const pr = await this.flowThread(ref, "pr");
-    const state = await this.autopilotFor(pr);
-    const reviews = (await this.flowComments(String(pr.id))).filter((comment) =>
-      String(comment.body).startsWith(`${heading("AUTOPILOT APPROVED")}\n\nCurrent head: ${head}\n`)
-    );
-    if (reviews.length && !state.active) {
-      throw new Error("autopilot delegation is no longer current; ask the owner");
-    }
-    return (
-      state.active &&
-      reviews.some((comment) =>
-        state.at(Date.parse(String(comment.lastEditedAt ?? comment.createdAt)))
-      )
-    );
+  /** Fresh readers share the gateway's existing filtered transport helpers. */
+  private get evidence(): EvidenceReader {
+    return new EvidenceReader(this.github, this.filter, this.config, {
+      board: () => this.board,
+      thread: (ref, kind) => this.thread(ref, kind),
+      node: (id, fields, type) => this.node(id, fields, type),
+      collection: (id, type, field) => this.collection(id, type, field),
+      flowThread: (ref, kind) => this.flowThread(ref, kind),
+      flowComments: (id, type) => this.flowComments(id, type),
+      projectCard: (item) => this.projectCard(item),
+    });
   }
-
-  private async autopilotFor(item: ObjectData): Promise<AutopilotState> {
-    const items = [item];
-    if (item.__typename === "PullRequest") {
-      for (const issue of taskIssueNumbers(String(item.body)) ?? []) {
-        items.push(await this.flowThread(String(issue), "issue"));
-      }
-    }
-    if (
-      !items.some(
-        (value) =>
-          Array.isArray(object(value.labels).nodes) &&
-          (object(value.labels).nodes as ObjectData[]).some((label) => label.name === "autopilot")
-      )
-    ) {
-      return { active: false, at: () => false, unauthorized: false };
-    }
-    return (
-      (
-        await new AutopilotReader(this.github, this.filter, this.config).read(
-          items.map((value) => String(value.id))
-        )
-      ).get(String(item.id)) ?? { active: false, at: () => false, unauthorized: false }
-    );
-  }
-
   /** Stop delegation on an accepted local thread; watcher reconciles its task turn. */
   autopilotStop: Handlers["autopilotStop"] = async ({ ref, kind }) => {
     if (kind !== "issue" && kind !== "pr") {
@@ -1878,129 +1771,6 @@ class GatewayServer {
       }
     }
     return output;
-  }
-
-  /** One thread's verified-owner comments: bodies are read only after the effective
-   * author (author, or an edited comment's editor) identifies as the pinned owner,
-   * so foreign approval text never leaves the people filter. */
-  private async ownerModelComments(
-    id: string,
-    type: "Issue" | "PullRequest",
-    link: string
-  ): Promise<ObjectData[]> {
-    const output: ObjectData[] = [];
-    for (const meta of await this.collection(id, type, "comments")) {
-      if (this.filter.accept(meta, repoOf(meta).owner, link)?.role !== "owner") {
-        continue;
-      }
-      const comment = await this.node(
-        String(meta.id),
-        "body createdAt url issue { number } pullRequest { number }",
-        "IssueComment"
-      );
-      if (this.filter.accept(comment, repoOf(comment).owner, link)?.role === "owner") {
-        output.push(comment);
-      }
-    }
-    return output;
-  }
-
-  /** The verifiable owner gate (#218): a `gate: owner` family honorably launches or
-   * switches only when the task issue or task PR carries the owner's
-   * `APPROVE MODEL <family>` comment, posted after the issue body's last edit and
-   * verified by identity, not display name. #242 adds the card path: the owner's own
-   * Model value on the issue's or task PR's board card counts through the value's
-   * recorded creator, while a value written by anyone else never counts. */
-  private async modelApproval(
-    family: string,
-    task: { pr?: number; issue?: number }
-  ): Promise<boolean> {
-    let since: number | undefined;
-    if (task.issue !== undefined) {
-      const { item, link, person } = await this.thread(String(task.issue), "issue");
-      if (!person) {
-        throw new Error("No accepted task issue");
-      }
-      // Re-read edit times so the bound is the issue's current body state
-      // (identityFields already carries lastEditedAt).
-      const current = await this.node(String(item.id), "createdAt", "Issue");
-      if (!this.filter.accept(current, repoOf(current).owner, link)) {
-        throw new Error("Task issue identity changed during read");
-      }
-      // An unedited body has no lastEditedAt; its creation is the last body edit.
-      const edit = String(current.lastEditedAt ?? current.createdAt ?? "");
-      since = Date.parse(edit);
-      if (!Number.isFinite(since)) {
-        throw new Error("Model gate cannot establish the issue body's last edit");
-      }
-      if (
-        isModelApproved(
-          await this.ownerModelComments(String(item.id), "Issue", link),
-          family,
-          since
-        )
-      ) {
-        return true;
-      }
-      // The comment path failed: the owner may have approved by setting the card.
-      if (await this.ownerCardModel(item, "Issue", family, link)) {
-        return true;
-      }
-    }
-    if (task.pr !== undefined) {
-      const { item, link, person } = await this.thread(String(task.pr), "pr");
-      if (!person) {
-        throw new Error("No accepted task thread");
-      }
-      if (
-        isModelApproved(
-          await this.ownerModelComments(String(item.id), "PullRequest", link),
-          family,
-          since
-        )
-      ) {
-        return true;
-      }
-      if (await this.ownerCardModel(item, "PullRequest", family, link)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** The card path of the owner gate (#242): the task card's Model value on the
-   * configured board counts as an approval when the value's recorded `creator` —
-   * GitHub tracks who set each project field value — is the pinned owner, and the
-   * single-select name or text is the family. A Model value written by anyone else,
-   * including `open-task` writing the task PR card's Model, never counts. */
-  private async ownerCardModel(
-    item: ObjectData,
-    type: "Issue" | "PullRequest",
-    family: string,
-    link: string
-  ): Promise<boolean> {
-    const fields = `projectItems(first: 100) { nodes { id isArchived project { number owner { ... on Organization { login } ... on User { login } } } fieldValues(first: 100) { nodes { ... on ProjectV2ItemFieldSingleSelectValue { name creator { ${actorFields} } field { ... on ProjectV2SingleSelectField { name } } } ... on ProjectV2ItemFieldTextValue { text creator { ${actorFields} } field { ... on ProjectV2Field { name } } } } pageInfo { hasNextPage } } } pageInfo { hasNextPage } }`;
-    const data = await this.node(String(item.id), fields, type);
-    if (!this.filter.accept(data, repoOf(data).owner, link)) {
-      throw new Error("Task identity changed during read");
-    }
-    if (object(object(data.projectItems).pageInfo).hasNextPage === true) {
-      throw new Error("Too many project memberships; refusing incomplete metadata");
-    }
-    const card = object(this.projectCard(data).fieldValues);
-    if (object(card.pageInfo).hasNextPage === true) {
-      throw new Error("Incomplete project field values");
-    }
-    const values = card.nodes;
-    if (!Array.isArray(values)) {
-      return false;
-    }
-    const model = object(values.find((v) => object(object(v).field).name === "Model"));
-    if (String(model.name ?? model.text ?? "").trim() !== family) {
-      return false;
-    }
-    const person = this.filter.identity(model.creator);
-    return person !== undefined && this.filter.roleIn(person, String(this.config.repo)) === "owner";
   }
 
   /**
@@ -2990,123 +2760,7 @@ class GatewayServer {
 
   dropped: Handlers["dropped"] = async ({ since }) => this.digest.read(since);
 
-  ownerApproved: Handlers["ownerApproved"] = async ({ ref }) => this.approvalFor(ref);
-
-  private async approvalFor(
-    ref: string,
-    historical?: string,
-    explain?: (reason: string) => void
-  ): Promise<boolean | "unknown"> {
-    const { item, person } = await this.thread(ref, "pr");
-    if (!person) {
-      return false;
-    }
-    const reviews = await this.collection(String(item.id), "PullRequest", "reviews");
-    // A review is authoritative without needing a usable project timeline API.
-    if (
-      isOwnerApproved(
-        {
-          headRefOid: historical ?? String(item.headRefOid),
-          reviews,
-          timeline: [],
-          comments: [],
-          boardNumber: Number(object(this.config.board).number),
-          historical: historical !== undefined,
-        },
-        this.filter,
-        String(this.config.repo)
-      ) === true
-    ) {
-      const current = await this.thread(ref, "pr");
-      return current.person && current.item.headRefOid === item.headRefOid ? true : "unknown";
-    }
-    const comments: ObjectData[] = [];
-    const target = reference(ref, this.config);
-    for (const meta of await this.collection(String(item.id), "PullRequest", "comments")) {
-      const person = this.filter.accept(meta, repoOf(meta).owner, target.link);
-      if (
-        person?.role !== "orchestrator" ||
-        this.filter.identity(meta.author)?.role !== "orchestrator"
-      ) {
-        continue;
-      }
-      const comment = await this.node(String(meta.id), "body createdAt", "IssueComment");
-      if (
-        this.filter.accept(comment, repoOf(comment).owner, target.link)?.role === "orchestrator"
-      ) {
-        comments.push(comment);
-      }
-    }
-    // Timeline shape is normalized here; current card status is never queried.
-    const timeline: ObjectData[] = [];
-    let stopped: false | "unknown" | undefined;
-    for await (const connection of pages(
-      async (cursor) => {
-        const data = object(
-          await this.github.graphql(
-            `query($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequest { ${identityFields} headRefOid timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } } } pageInfo { hasNextPage endCursor } } } } }`,
-            { id: item.id, cursor }
-          )
-        );
-        return object(data.node);
-      },
-      {
-        connectionError: "Missing timeline nodes",
-        cursorError: "Invalid timeline pagination cursor",
-        stop: (parent) => {
-          if (!this.filter.accept(parent, repoOf(parent).owner, reference(ref, this.config).link)) {
-            stopped = false;
-            return true;
-          }
-          if (parent.headRefOid !== item.headRefOid) {
-            stopped = "unknown";
-            return true;
-          }
-          return false;
-        },
-        connection: (parent) => parent.timelineItems,
-      }
-    )) {
-      for (const node of connection.nodes) {
-        timeline.push({ ...object(node), field: "Status" });
-      }
-    }
-    if (stopped !== undefined) {
-      return stopped;
-    }
-    const evidence = {
-      headRefOid: historical ?? String(item.headRefOid),
-      reviews,
-      timeline,
-      comments,
-      boardNumber: Number(object(this.config.board).number),
-      historical: historical !== undefined,
-    };
-    if (explain) {
-      // Delegation must still be current before an old autopilot head is diagnostic evidence.
-      const delegated = comments.filter((comment) => autopilotHead(String(comment.body)));
-      const state = delegated.length
-        ? await this.autopilotFor(await this.flowThread(ref, "pr"))
-        : undefined;
-      explain(
-        approvalRefusal(
-          {
-            ...evidence,
-            comments: comments.filter(
-              (comment) =>
-                !delegated.includes(comment) ||
-                (state?.active &&
-                  state.at(Date.parse(String(comment.lastEditedAt ?? comment.createdAt))))
-            ),
-          },
-          this.filter,
-          String(this.config.repo),
-          ref
-        )
-      );
-    }
-    return isOwnerApproved(evidence, this.filter, String(this.config.repo));
-  }
+  ownerApproved: Handlers["ownerApproved"] = async ({ ref }) => this.evidence.approvalFor(ref);
 }
 
 export function createGateway(root: string, env: NodeJS.ProcessEnv, deps: Dependencies): Transport {

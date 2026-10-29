@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { fixture } from "../helpers.js";
-import { approvalCarryFiles } from "../../src/gateway/carry-approval.js";
+import { approvalCarryFiles } from "../../src/evidence/carry-approval.js";
 
 const exec = promisify(execFile);
 

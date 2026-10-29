@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { cleanBaseMerges } from "../../src/gateway/clean-base.js";
+import { cleanBaseMerges } from "../../src/evidence/clean-base.js";
 
 const old = "a".repeat(40),
   head = "b".repeat(40),

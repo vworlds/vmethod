@@ -189,7 +189,7 @@ accepted issue or PR. It posts the stop in the thread; the next watcher poll
 reconciles the owner's turn without reverting completed steps. There is no agent
 grant command, and `issue create --label autopilot` is refused. The typed operation
 is `autopilotStop({ref, kind: "issue" | "pr"}) → string`. Owner-event authentication
-and `open-task` inheritance live in `src/gateway/autopilot.ts`; see
+and `open-task` inheritance live in `src/evidence/autopilot.ts`; see
 [autopilot procedure](orchestrator-guide.md#autopilot). Under current delegation,
 `scope-review` and `review <pr> owner` explicitly record and advance their owner
 gates. `merge-task` rechecks delegation after normal verification.
@@ -682,6 +682,19 @@ without a PR never aborts on one failing record: each record is read and
 rendered on its own, a failed record prints `#<pr> error: <reason>` and the loop
 continues to the later records, and the command exits non-zero when any record
 failed.
+
+For lifecycle changes, use the pure `plan` and `staleWakes` functions in
+`src/sessions/lifecycle.ts`; `WorkerService.status()` observes OpenCode and executes
+the plan. A plan lists ordered effects and, when another observation is needed,
+a read with a pure continuation. Keep those reads lazy: quota failures and model
+syncs must be saved before later operations can fail. Usage accounting stays in
+`src/sessions/usage.ts`. The record, wake and lock file formats are unchanged.
+
+The idle drain sends a pending CONFLICT before wakes and records its actual send
+time. Replies at or after that boundary cannot answer queued wakes. A merged PR
+silently drops both queues once idle; an owner summons silently drops wakes only
+when no pending conflict holds the drain. Explicit `resume` owns the refusal
+message. Busy sessions retain both queues and are never steered by the drain.
 
 ### Subscription headroom and quota recovery
 

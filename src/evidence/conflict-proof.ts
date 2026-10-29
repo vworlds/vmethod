@@ -1,4 +1,4 @@
-import { lockfilesOnly } from "./lockfile.js";
+import { lockfilesOnly } from "../gateway/lockfile.js";
 
 /** Prove a full-context remerge patch changes only textual conflict regions.
  * Unknown metadata, binary/mode/rename conflicts and retained markers fail closed.

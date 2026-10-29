@@ -13,7 +13,7 @@ import {
   scopeConnection,
   scopeGraph,
 } from "./scope-fixture.js";
-import { bodyHash } from "../../src/gateway/scope.js";
+import { bodyHash } from "../../src/evidence/scope.js";
 import type { ObjectData } from "../../src/gateway/people.js";
 import { gatewayVerb } from "../../src/cli/gateway.js";
 import { taskFlowVerb } from "../../src/cli/task-flow.js";

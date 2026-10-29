@@ -1,10 +1,10 @@
 import type { Config } from "../config.js";
-import type { GitHubClient } from "./client.js";
-import { object, type ObjectData, type PeopleFilter } from "./people.js";
+import type { GitHubClient } from "../gateway/client.js";
+import { object, type ObjectData, type PeopleFilter } from "../gateway/people.js";
 import { repoOf } from "../github/diagnostic.js";
 import { batchPages, pageCursor } from "../github/pages.js";
 import { actorFields, identityFields, labelEvents } from "../github/selections.js";
-import { taskIssueNumbers } from "./task-flow-types.js";
+import { taskIssueNumbers } from "../gateway/task-flow-types.js";
 
 /** Labels managed by vmethod workflow rather than describing task kind. */
 export const workflowLabels = ["autopilot", "autopilot-stop"] as const;
