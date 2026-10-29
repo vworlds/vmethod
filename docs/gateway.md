@@ -728,6 +728,10 @@ QUOTA #378: glm quota-stopped; switched to sol and resumed
 QUOTA #378: glm quota-stopped; no eligible fallback
 ```
 
+The watcher delivers each recovery notice through its event stream only, not as
+an additional plain report. CLI calls such as `worker status` and `worker model`
+retain plain reporting because they have no watcher event stream.
+
 No eligible fallback changes nothing. Other provider errors do not automatically
 switch. Recovery respects closed/merged tasks, holds, blockers and owner summons;
 setting `limits.enabled: false` disables quota polling and automatic recovery.

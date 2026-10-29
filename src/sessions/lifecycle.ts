@@ -62,6 +62,8 @@ export interface LifecycleOptions {
   comments?: boolean;
   drainWake?: boolean;
   quotaEnabled?: boolean;
+  /** Watcher delivery uses status.quotaEvent instead of a plain report. Defaults to true. */
+  reportQuota?: boolean;
   models?: Model[];
 }
 
@@ -174,7 +176,10 @@ export function plan(
         }
         const family = current.quotaStop!.family;
         const quotaEvent = `QUOTA #${current.pr}: ${family} quota-stopped; switched to ${pending.model.family} and resumed`;
-        effects.push({ kind: "save" }, { kind: "report", text: quotaEvent });
+        effects.push({ kind: "save" });
+        if (options.reportQuota !== false) {
+          effects.push({ kind: "report", text: quotaEvent });
+        }
         return done(effects, { ...running(), errorFamily: family, quotaEvent });
       };
       return pending.model.gate === "owner"
@@ -238,7 +243,10 @@ export function plan(
             const effects: LifecycleEffect[] = reports.map((text) => ({ kind: "report", text }));
             if (!selected) {
               const quotaEvent = `QUOTA #${current.pr}: ${failed.family} quota-stopped; no eligible fallback`;
-              return done([...effects, { kind: "report", text: quotaEvent }], {
+              if (options.reportQuota !== false) {
+                effects.push({ kind: "report", text: quotaEvent });
+              }
+              return done(effects, {
                 ...observed,
                 errorFamily: failed.family,
                 quotaEvent,

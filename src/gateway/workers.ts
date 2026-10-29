@@ -450,7 +450,8 @@ export class WorkerService {
     record: Session,
     comments = true,
     deadline?: number,
-    drainWake = true
+    drainWake = true,
+    reportQuota = true
   ): Promise<WorkerSessionStatus> {
     const status = await this.client().status(
       record.directory,
@@ -469,6 +470,7 @@ export class WorkerService {
         comments,
         drainWake,
         quotaEnabled: limitsConfig(this.config).enabled,
+        reportQuota,
         models: this.models,
         accountUsage: true,
       })
@@ -1125,7 +1127,8 @@ export class WorkerService {
       return false;
     }
   }
-  /** Collect activity/usage and PR cost; quota recovery alone re-checks task/gate metadata. */
+  /** Collect activity/usage and PR cost; quota recovery alone re-checks task/gate metadata.
+   * Returns quotaEvent for watcher delivery without also reporting it as a plain line. */
   async watchStatus(pr: number): Promise<WorkerSessionStatus> {
     return this.locked(pr, "watchStatus", async () => {
       const record = this.read(pr);
@@ -1141,7 +1144,7 @@ export class WorkerService {
           this.save(record);
         }
       }
-      const status = await this.status(record, false);
+      const status = await this.status(record, false, undefined, true, false);
       status.prCost = {
         pr,
         usd: sumUsd(record.segments.map((segment) => segment.usd)),
