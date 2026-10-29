@@ -17,7 +17,7 @@ import { workflowColumns } from "../../src/board/runner.js";
 import { writeState } from "../../src/board/readme.js";
 import { BoardPoller } from "../../src/watch/board.js";
 import { BoardService } from "../../src/gateway/board.js";
-import { TaskFlow } from "../../src/gateway/task-flow.js";
+import { TaskReview } from "../../src/tasks/review.js";
 import { people } from "../gateway/helpers.js";
 import { fixture } from "../helpers.js";
 
@@ -230,7 +230,7 @@ test.each([
   writeFileSync(file, "Review evidence.\n");
   const turn = vi.fn();
   const card = vi.fn();
-  const flow = Object.assign(Object.create(TaskFlow.prototype), {
+  const flow = Object.assign(Object.create(TaskReview.prototype), {
     config: { repo: "example/project", board: { enabled: false } },
     deps: {},
     host: { comments: async () => [], github: { writes: { beginOperation: vi.fn() } } },
@@ -241,7 +241,7 @@ test.each([
     card,
     status: async () => "stopped",
     wake: vi.fn(),
-  }) as TaskFlow;
+  }) as TaskReview;
   await flow.review({ ref: "27", outcome, file });
   expect(turn).toHaveBeenCalledWith("27", role);
   expect(parseProgress(card.mock.calls[0][2]).state).toBe(state);

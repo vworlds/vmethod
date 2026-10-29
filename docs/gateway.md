@@ -1438,6 +1438,15 @@ resume to the recorded opencode session. Only the merge guard treats missing
 records as stopped; ordinary worker status still reports a missing session as
 unknown.
 
+For implementation changes, follow the delegating `src/gateway/task-flow.ts`
+facade into `src/tasks/open.ts` (opening, ancestry and model advice), `review.ts`
+(reviews, questions, hold release and wakes), `merge.ts` (merge gates, the
+`merge-<pr>.json` follow-up journal and closure), or `link.ts` (Development links).
+`src/tasks/common.ts` contains only the shared host contract, gates and helpers;
+marker decoding stays in `src/tasks/markers.ts` and approval evidence in
+`src/evidence/`. These modules preserve the verb and board-write ordering; the
+dependency reinstall remains the last merge follow-up action.
+
 ### Conflict resolution
 
 The implementation separates decisions in `src/conflicts/machine.ts` from the
@@ -1446,6 +1455,9 @@ returns the next record, ordered effects and result line. Its ephemeral `next`
 continuation requests fresh observations after effects; it is never persisted.
 The durable phases and `conflicts/<pr>.json` schema are unchanged. In particular,
 the runner keeps the lock across update/wait/proof and pre-dispatch re-snapshots.
+Its card/lifecycle hooks live in `src/conflicts/cards.ts` (`cardPrior`,
+`cardConflict`, `cardRestore`, `escalateConflict`, `conflictTask` and
+`pullLifecycle`), reached through the same task-flow facade.
 
 Use `resolve-conflicts <pr>` to take the cheapest applicable action. The watcher
 dispatches it automatically for a conflicting head or GitHub's behind-base state,
