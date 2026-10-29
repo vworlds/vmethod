@@ -1145,6 +1145,22 @@ The typed operations are `waitChecks({ref, maxMinutes?, graceSeconds?})`,
 `push` call may additionally select a full frozen `commit` SHA; workers cannot.
 All regular push policy still applies, and refresh pins the task PR in its call.
 
+## Shared GitHub readers
+
+Use `src/github/pages.ts` for connection pagination and numbered REST pages. Pass
+the existing reader's error text, cursor policy and bounds; keep query strings,
+variables, page sizes, identity filtering and special stop conditions at the call
+site. Alias readers use its batch scheduler to retain round-based or first-batch
+draining order. Watcher nested-list size checks stay with the adaptive reader.
+
+Cursor validation normally follows page processing, so a reader's early return
+still avoids further requests. Review-thread readers validate before processing;
+their bounded previous-cursor check is intentionally distinct from full cycle
+detection. Missing connections and malformed cursors throw, never imply completion.
+
+Shared wire selections live in `src/github/selections.ts`; the `gh-read`
+diagnostic enrichment and filtering live in `src/github/diagnostic.ts`.
+
 ## Credentials and budget
 
 The GitHub token comes only from the gh login in `GH_CONFIG_DIR`; `GH_TOKEN` is

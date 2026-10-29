@@ -38,7 +38,9 @@ import {
 } from "./client.js";
 import { stateRoot, type Digest } from "./digest.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
-import { repoOf, restActor, actorFields } from "./queries.js";
+import { repoOf, restActor } from "../github/diagnostic.js";
+import { pages, restPages } from "../github/pages.js";
+import { actorFields, reviewCommentFields } from "../github/selections.js";
 import { WriteJournal } from "./write-journal.js";
 import { taskIssueNumbers } from "./task-flow-types.js";
 import { taskHeld } from "./task-hold.js";
@@ -82,7 +84,6 @@ const BOARD_ABSENT_POLLS = 3;
 const BOARD_ABSENT_MS = 24 * 60 * 60_000;
 const PAGE_LIMIT = 20;
 const PREVIEW_LIMIT = 120;
-const reviewCommentFields = `id databaseId url author { ${actorFields} } editor { ${actorFields} } lastEditedAt body createdAt`;
 const RED_CI = ["FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"];
 const ID = /^[A-Za-z0-9_.@#-]{1,160}$/;
 declare const __VERSION__: string;
@@ -1270,14 +1271,18 @@ export class EventLoop {
     collect: (data: unknown) => T[]
   ): Promise<T[]> {
     const items: T[] = [];
-    for (let page = 1; page <= PAGE_LIMIT; page++) {
-      const collected = collect(await this.restRead(() => this.host.github.rest(path(page))));
-      items.push(...collected);
-      if (collected.length < 100) {
-        return items;
+    for await (const collected of restPages<T>(
+      async (page) => collect(await this.restRead(() => this.host.github.rest(path(page)))),
+      {
+        error: "Invalid watcher page",
+        size: 100,
+        limit: PAGE_LIMIT,
+        limitError: "Watcher pagination limit reached",
       }
+    )) {
+      items.push(...collected);
     }
-    throw new Error("Watcher pagination limit reached");
+    return items;
   }
 
   private list(value: unknown): ObjectData[] {
@@ -1976,11 +1981,11 @@ export class EventLoop {
   private async pollReviewThreads(number: number): Promise<void> {
     const [owner, name] = this.own.split("/");
     const threads: ObjectData[] = [];
-    let cursor: string | null = null;
-    for (let page = 0; page < PAGE_LIMIT; page++) {
-      const data = object(
-        await this.host.github.graphql(
-          `query WatchReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+    for await (const connection of pages(
+      async (cursor) => {
+        const data = object(
+          await this.host.github.graphql(
+            `query WatchReviewThreads($owner: String!, $name: String!, $number: Int!, $cursor: String) {
         repository(owner: $owner, name: $name) { pullRequest(number: $number) {
           reviewThreads(first: 100, after: $cursor) {
             pageInfo { hasNextPage endCursor }
@@ -1990,18 +1995,23 @@ export class EventLoop {
           }
         } }
       }`,
-          { owner, name, number, cursor }
-        )
-      );
-      const connection = object(object(object(data.repository).pullRequest).reviewThreads);
-      cursor = this.reviewPage(connection, cursor);
-      threads.push(...this.list(connection.nodes));
-      if (cursor === null) {
-        break;
+            { owner, name, number, cursor }
+          )
+        );
+        return object(object(data.repository).pullRequest).reviewThreads;
+      },
+      {
+        connectionError: "Invalid review-thread connection",
+        pageInfoError: "Invalid review-thread connection",
+        cursorError: "Invalid review-thread cursor",
+        nonempty: true,
+        repeats: "previous",
+        validateFirst: true,
+        limit: PAGE_LIMIT,
+        limitError: "Watcher review-thread pagination limit reached",
       }
-    }
-    if (cursor !== null) {
-      throw new Error("Watcher review-thread pagination limit reached");
+    )) {
+      threads.push(...this.list(connection.nodes));
     }
     const observed: string[] = [];
     const entries: { comment: ObjectData; thread: ObjectData; suppress: boolean }[] = [];
@@ -2084,45 +2094,37 @@ export class EventLoop {
 
   private async reviewThreadComments(thread: ObjectData): Promise<ObjectData[]> {
     const comments: ObjectData[] = [];
-    let connection = object(thread.comments);
-    let previous: string | null = null;
-    for (let page = 0; page < PAGE_LIMIT; page++) {
-      const cursor = this.reviewPage(connection, previous);
-      comments.push(...this.list(connection.nodes));
-      if (cursor === null) {
-        return comments;
-      }
-      if (page + 1 === PAGE_LIMIT) {
-        break;
-      }
-      const data = object(
-        await this.host.github.graphql(
-          `query WatchReviewThreadComments($id: ID!, $cursor: String!) {
+    for await (const connection of pages(
+      async (cursor) => {
+        if (cursor === null) {
+          return thread.comments;
+        }
+        const data = object(
+          await this.host.github.graphql(
+            `query WatchReviewThreadComments($id: ID!, $cursor: String!) {
         node(id: $id) { ... on PullRequestReviewThread { comments(first: 100, after: $cursor) {
           pageInfo { hasNextPage endCursor } nodes { ${reviewCommentFields} }
         } } }
       }`,
-          { id: thread.id, cursor }
-        )
-      );
-      connection = object(object(data.node).comments);
-      previous = cursor;
+            { id: thread.id, cursor }
+          )
+        );
+        return object(data.node).comments;
+      },
+      {
+        connectionError: "Invalid review-thread connection",
+        pageInfoError: "Invalid review-thread connection",
+        cursorError: "Invalid review-thread cursor",
+        nonempty: true,
+        repeats: "previous",
+        validateFirst: true,
+        limit: PAGE_LIMIT,
+        limitError: "Watcher inline-comment pagination limit reached",
+      }
+    )) {
+      comments.push(...this.list(connection.nodes));
     }
-    throw new Error("Watcher inline-comment pagination limit reached");
-  }
-
-  private reviewPage(connection: ObjectData, previous: string | null): string | null {
-    const info = object(connection.pageInfo);
-    if (!Array.isArray(connection.nodes) || typeof info.hasNextPage !== "boolean") {
-      throw new Error("Invalid review-thread connection");
-    }
-    if (!info.hasNextPage) {
-      return null;
-    }
-    if (!str(info.endCursor) || info.endCursor === previous) {
-      throw new Error("Invalid review-thread cursor");
-    }
-    return str(info.endCursor);
+    return comments;
   }
 
   private async pollComments(): Promise<void> {
@@ -2493,20 +2495,24 @@ export class EventLoop {
   ): Promise<ObjectData> {
     const [owner, name] = repo.split("/");
     const selection = `timelineItems(first: 100, after: $cursor, itemTypes: [ASSIGNED_EVENT, UNASSIGNED_EVENT]) { nodes { __typename ... on AssignedEvent { createdAt actor { ${actorFields} } assignee { ... on User { login databaseId } ... on Bot { login databaseId } } } ... on UnassignedEvent { createdAt actor { ${actorFields} } assignee { ... on User { login databaseId } ... on Bot { login databaseId } } } } pageInfo { hasNextPage endCursor } }`;
-    let cursor: string | null = null;
-    const seen = new Set<string>();
     let latest: ObjectData = {};
-    for (let page = 0; page < PAGE_LIMIT; page++) {
-      const data = object(
-        await this.host.github.graphql(
-          `query WatchAssignment($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { item: issueOrPullRequest(number: $number) { ... on Issue { ${selection} } ... on PullRequest { ${selection} } } } }`,
-          { owner, name, number, cursor }
-        )
-      );
-      const connection = object(object(object(data.repository).item).timelineItems);
-      if (!Array.isArray(connection.nodes)) {
-        throw new Error("Missing assignment timeline");
+    for await (const connection of pages(
+      async (cursor) => {
+        const data = object(
+          await this.host.github.graphql(
+            `query WatchAssignment($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { item: issueOrPullRequest(number: $number) { ... on Issue { ${selection} } ... on PullRequest { ${selection} } } } }`,
+            { owner, name, number, cursor }
+          )
+        );
+        return object(object(data.repository).item).timelineItems;
+      },
+      {
+        connectionError: "Missing assignment timeline",
+        cursorError: "Invalid assignment pagination cursor",
+        limit: PAGE_LIMIT,
+        limitError: "Assignment timeline pagination limit reached",
       }
+    )) {
       for (const event of this.list(connection.nodes)) {
         if (
           event.__typename === type &&
@@ -2518,21 +2524,8 @@ export class EventLoop {
           latest = event;
         }
       }
-      const info = object(connection.pageInfo);
-      if (info.hasNextPage === false) {
-        return latest;
-      }
-      if (
-        info.hasNextPage !== true ||
-        typeof info.endCursor !== "string" ||
-        seen.has(info.endCursor)
-      ) {
-        throw new Error("Invalid assignment pagination cursor");
-      }
-      cursor = info.endCursor;
-      seen.add(cursor);
     }
-    throw new Error("Assignment timeline pagination limit reached");
+    return latest;
   }
 
   private ownAssignment(event: ObjectData, repo: string, number: number, kind: string): boolean {
@@ -3438,39 +3431,28 @@ export class EventLoop {
 
   private async issueClosedByMerge(card: CardInfo): Promise<boolean> {
     const [owner, name] = card.repo.split("/");
-    let cursor: string | null = null;
-    const seen = new Set<string>();
-    for (let page = 0; page < PAGE_LIMIT; page++) {
-      const data = object(
-        await this.host.github.graphql(
-          `query WatchIssueClosers($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { issue(number: $number) { closedByPullRequestsReferences(first: 100, after: $cursor) { nodes { state } pageInfo { hasNextPage endCursor } } } } }`,
-          { owner, name, number: card.number, cursor }
-        )
-      );
-      const connection = object(
-        object(object(data.repository).issue).closedByPullRequestsReferences
-      );
-      if (!Array.isArray(connection.nodes)) {
-        throw new Error("Missing issue closing references");
+    for await (const connection of pages(
+      async (cursor) => {
+        const data = object(
+          await this.host.github.graphql(
+            `query WatchIssueClosers($owner: String!, $name: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $name) { issue(number: $number) { closedByPullRequestsReferences(first: 100, after: $cursor) { nodes { state } pageInfo { hasNextPage endCursor } } } } }`,
+            { owner, name, number: card.number, cursor }
+          )
+        );
+        return object(object(data.repository).issue).closedByPullRequestsReferences;
+      },
+      {
+        connectionError: "Missing issue closing references",
+        cursorError: "Invalid issue closing references cursor",
+        limit: PAGE_LIMIT,
+        limitError: "Issue closing references pagination limit reached",
       }
+    )) {
       if (this.list(connection.nodes).some((pr) => pr.state === "MERGED")) {
         return true;
       }
-      const info = object(connection.pageInfo);
-      if (info.hasNextPage === false) {
-        return false;
-      }
-      if (
-        info.hasNextPage !== true ||
-        typeof info.endCursor !== "string" ||
-        seen.has(info.endCursor)
-      ) {
-        throw new Error("Invalid issue closing references cursor");
-      }
-      cursor = info.endCursor;
-      seen.add(cursor);
     }
-    throw new Error("Issue closing references pagination limit reached");
+    return false;
   }
 
   /** Extend the existing changed-card re-read, paginating only queue-move evidence. */
@@ -3480,45 +3462,44 @@ export class EventLoop {
   ): Promise<{ current: ObjectData; events: ObjectData[] }> {
     const timeline = `timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT, ASSIGNED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } } ... on AssignedEvent { createdAt assignee { ... on User { login } ... on Bot { login } } } } pageInfo { hasNextPage endCursor } }`;
     const events: ObjectData[] = [];
-    const seen = new Set<string>();
-    let cursor: string | null = null;
-    for (let page = 0; page < PAGE_LIMIT; page++) {
-      const result = object(
-        await this.host.github.graphql(
-          `query WatchBoardCurrent($id: ID!, $turn: Boolean!, $cursor: String) { node(id: $id) { ... on ProjectV2Item { status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } progress: fieldValueByName(name: "Progress") @include(if: $turn) { ... on ProjectV2ItemFieldTextValue { text updatedAt } } content @include(if: $turn) { ... on Issue { ${timeline} } ... on PullRequest { ${timeline} } } } } }`,
-          { id: card.id, turn, cursor }
-        )
-      );
-      if (
-        !Object.hasOwn(result, "node") ||
-        (result.node !== null && !Object.hasOwn(object(result.node), "status"))
-      ) {
-        throw new Error("Missing current board value");
+    let current: ObjectData = {};
+    for await (const connection of pages(
+      async (cursor) => {
+        const result = object(
+          await this.host.github.graphql(
+            `query WatchBoardCurrent($id: ID!, $turn: Boolean!, $cursor: String) { node(id: $id) { ... on ProjectV2Item { status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } } progress: fieldValueByName(name: "Progress") @include(if: $turn) { ... on ProjectV2ItemFieldTextValue { text updatedAt } } content @include(if: $turn) { ... on Issue { ${timeline} } ... on PullRequest { ${timeline} } } } } }`,
+            { id: card.id, turn, cursor }
+          )
+        );
+        if (
+          !Object.hasOwn(result, "node") ||
+          (result.node !== null && !Object.hasOwn(object(result.node), "status"))
+        ) {
+          throw new Error("Missing current board value");
+        }
+        return result;
+      },
+      {
+        connectionError: "Missing queue-move evidence",
+        cursorError: "Invalid queue-move pagination cursor",
+        limit: PAGE_LIMIT,
+        limitError: "Queue-move pagination limit reached",
+        stop: (result) => {
+          current = object(result.node);
+          return !turn || result.node === null;
+        },
+        connection: () => {
+          const connection = object(object(current.content).timelineItems);
+          if (!Array.isArray(connection.nodes) || !Object.hasOwn(current, "progress")) {
+            throw new Error("Missing queue-move evidence");
+          }
+          return connection;
+        },
       }
-      const current = object(result.node);
-      if (!turn || result.node === null) {
-        return { current, events };
-      }
-      const connection = object(object(current.content).timelineItems);
-      if (!Array.isArray(connection.nodes) || !Object.hasOwn(current, "progress")) {
-        throw new Error("Missing queue-move evidence");
-      }
+    )) {
       events.push(...this.list(connection.nodes));
-      const info = object(connection.pageInfo);
-      if (info.hasNextPage === false) {
-        return { current, events };
-      }
-      if (
-        info.hasNextPage !== true ||
-        typeof info.endCursor !== "string" ||
-        seen.has(info.endCursor)
-      ) {
-        throw new Error("Invalid queue-move pagination cursor");
-      }
-      cursor = info.endCursor;
-      seen.add(cursor);
     }
-    throw new Error("Queue-move pagination limit reached");
+    return { current, events };
   }
 
   private queueMoveCancelsTurn(card: CardInfo, current: ObjectData, events: ObjectData[]): boolean {

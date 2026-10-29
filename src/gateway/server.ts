@@ -16,15 +16,15 @@ import {
   type Person,
 } from "./people.js";
 import {
-  actorFields,
   filterData,
   filterDiagnostic,
-  identityFields,
   readQuery,
   renderItem,
   repoOf,
   restActor,
-} from "./queries.js";
+} from "../github/diagnostic.js";
+import { actorFields, identityFields } from "../github/selections.js";
+import { pages } from "../github/pages.js";
 import {
   checkMarkdown,
   guardClosingKeywords,
@@ -1370,23 +1370,25 @@ class GatewayServer {
 
   private async preDoneStatus(issue: ObjectData, ref: string): Promise<string> {
     let status = "Backlog";
-    let cursor: string | null = null;
-    const seen = new Set<string>();
-    for (;;) {
-      const data = object(
-        await this.github.graphql(
-          `query($id: ID!, $cursor: String) { node(id: $id) { ... on Issue { ${identityFields} timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { status previousStatus createdAt project { number } } } pageInfo { hasNextPage endCursor } } } } }`,
-          { id: issue.id, cursor }
-        )
-      );
-      const parent = object(data.node);
-      if (!this.filter.accept(parent, repoOf(parent).owner, reference(ref, this.config).link)) {
-        throw new Error("Task identity changed");
+    for await (const connection of pages(
+      async (cursor) => {
+        const data = object(
+          await this.github.graphql(
+            `query($id: ID!, $cursor: String) { node(id: $id) { ... on Issue { ${identityFields} timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { status previousStatus createdAt project { number } } } pageInfo { hasNextPage endCursor } } } } }`,
+            { id: issue.id, cursor }
+          )
+        );
+        const parent = object(data.node);
+        if (!this.filter.accept(parent, repoOf(parent).owner, reference(ref, this.config).link)) {
+          throw new Error("Task identity changed");
+        }
+        return parent.timelineItems;
+      },
+      {
+        connectionError: "Missing timeline nodes",
+        cursorError: "Invalid timeline pagination cursor",
       }
-      const connection = object(parent.timelineItems);
-      if (!Array.isArray(connection.nodes)) {
-        throw new Error("Missing timeline nodes");
-      }
+    )) {
       for (const node of connection.nodes) {
         const event = object(node);
         if (
@@ -1402,20 +1404,8 @@ class GatewayServer {
               : "Backlog";
         }
       }
-      const page = object(connection.pageInfo);
-      if (page.hasNextPage === false) {
-        return status;
-      }
-      if (
-        page.hasNextPage !== true ||
-        typeof page.endCursor !== "string" ||
-        seen.has(page.endCursor)
-      ) {
-        throw new Error("Invalid timeline pagination cursor");
-      }
-      cursor = page.endCursor;
-      seen.add(cursor);
     }
+    return status;
   }
 
   /** Attach a configured-repository sub-issue to a configured-repository epic through
@@ -2119,62 +2109,55 @@ class GatewayServer {
     field: "comments" | "reviews"
   ): Promise<ObjectData[]> {
     const nodes: ObjectData[] = [];
-    let cursor: string | null = null;
-    const seen = new Set<string>();
-    for (;;) {
-      const result = object(
-        await this.github.graphql(
-          `query($id: ID!, $cursor: String) { node(id: $id) { ... on ${type} { ${identityFields} ${field}(first: 100, after: $cursor) { nodes { ${identityFields} ${field === "reviews" ? "submittedAt state commit { oid }" : ""} } pageInfo { hasNextPage endCursor } } } } }`,
-          { id, cursor }
-        )
-      );
-      const parent = object(result.node);
-      const scope = repoOf(parent);
-      const link = `https://github.com/${scope.repo || String(this.config.repo)}`;
-      if (!this.filter.accept(parent, scope.owner, link)) {
-        return [];
+    let rejected = false;
+    for await (const connection of pages(
+      async (cursor) => {
+        const result = object(
+          await this.github.graphql(
+            `query($id: ID!, $cursor: String) { node(id: $id) { ... on ${type} { ${identityFields} ${field}(first: 100, after: $cursor) { nodes { ${identityFields} ${field === "reviews" ? "submittedAt state commit { oid }" : ""} } pageInfo { hasNextPage endCursor } } } } }`,
+            { id, cursor }
+          )
+        );
+        return object(result.node);
+      },
+      {
+        connectionError: "Missing GitHub connection nodes",
+        cursorError: "Invalid GitHub pagination cursor",
+        stop: (parent) => {
+          const scope = repoOf(parent);
+          const link = `https://github.com/${scope.repo || String(this.config.repo)}`;
+          rejected = !this.filter.accept(parent, scope.owner, link);
+          return rejected;
+        },
+        connection: (parent) => parent[field],
       }
-      const connection = object(parent[field]);
-      if (!Array.isArray(connection.nodes)) {
-        throw new Error("Missing GitHub connection nodes");
-      }
+    )) {
       for (const node of connection.nodes) {
         nodes.push(object(node));
       }
-      const page = object(connection.pageInfo);
-      if (page.hasNextPage === false) {
-        return nodes;
-      }
-      if (
-        page.hasNextPage !== true ||
-        typeof page.endCursor !== "string" ||
-        seen.has(page.endCursor)
-      ) {
-        throw new Error("Invalid GitHub pagination cursor");
-      }
-      cursor = page.endCursor;
-      seen.add(cursor);
     }
+    return rejected ? [] : nodes;
   }
 
   /** The pull request's review comments, one listing per resolved review thread; item
    * identity is filtered per comment exactly like the conversation comments. */
   private async reviewThreadComments(prId: string): Promise<ObjectData[]> {
     const comments: ObjectData[] = [];
-    let cursor: string | null = null;
-    const seen = new Set<string>();
-    for (;;) {
-      const result = object(
-        await this.github.graphql(
-          `query($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequest { reviewThreads(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { comments(first: 100) { nodes { ${identityFields} } pageInfo { hasNextPage endCursor } } } } } } }`,
-          { id: prId, cursor }
-        )
-      );
-      const connection = object(object(result.node).reviewThreads);
-      const page = object(connection.pageInfo);
-      if (!Array.isArray(connection.nodes)) {
-        throw new Error("Missing GitHub connection nodes");
+    for await (const connection of pages(
+      async (cursor) => {
+        const result = object(
+          await this.github.graphql(
+            `query($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequest { reviewThreads(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { comments(first: 100) { nodes { ${identityFields} } pageInfo { hasNextPage endCursor } } } } } } }`,
+            { id: prId, cursor }
+          )
+        );
+        return object(result.node).reviewThreads;
+      },
+      {
+        connectionError: "Missing GitHub connection nodes",
+        cursorError: "Invalid GitHub pagination cursor",
       }
+    )) {
       for (const value of connection.nodes) {
         const thread = object(object(value).comments);
         const info = object(thread.pageInfo);
@@ -2186,19 +2169,8 @@ class GatewayServer {
         }
         comments.push(...thread.nodes.map(object));
       }
-      if (page.hasNextPage === false) {
-        return comments;
-      }
-      if (
-        page.hasNextPage !== true ||
-        typeof page.endCursor !== "string" ||
-        seen.has(page.endCursor)
-      ) {
-        throw new Error("Invalid GitHub pagination cursor");
-      }
-      cursor = page.endCursor;
-      seen.add(cursor);
     }
+    return comments;
   }
 
   /** One thread item's body read: verified identity, REST id, time and fenced body. */
@@ -3059,42 +3031,40 @@ class GatewayServer {
     }
     // Timeline shape is normalized here; current card status is never queried.
     const timeline: ObjectData[] = [];
-    let cursor: string | null = null;
-    const seen = new Set<string>();
-    for (;;) {
-      const data = object(
-        await this.github.graphql(
-          `query($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequest { ${identityFields} headRefOid timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } } } pageInfo { hasNextPage endCursor } } } } }`,
-          { id: item.id, cursor }
-        )
-      );
-      const parent = object(data.node);
-      if (!this.filter.accept(parent, repoOf(parent).owner, reference(ref, this.config).link)) {
-        return false;
+    let stopped: false | "unknown" | undefined;
+    for await (const connection of pages(
+      async (cursor) => {
+        const data = object(
+          await this.github.graphql(
+            `query($id: ID!, $cursor: String) { node(id: $id) { ... on PullRequest { ${identityFields} headRefOid timelineItems(first: 100, after: $cursor, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]) { nodes { __typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } } } pageInfo { hasNextPage endCursor } } } } }`,
+            { id: item.id, cursor }
+          )
+        );
+        return object(data.node);
+      },
+      {
+        connectionError: "Missing timeline nodes",
+        cursorError: "Invalid timeline pagination cursor",
+        stop: (parent) => {
+          if (!this.filter.accept(parent, repoOf(parent).owner, reference(ref, this.config).link)) {
+            stopped = false;
+            return true;
+          }
+          if (parent.headRefOid !== item.headRefOid) {
+            stopped = "unknown";
+            return true;
+          }
+          return false;
+        },
+        connection: (parent) => parent.timelineItems,
       }
-      if (parent.headRefOid !== item.headRefOid) {
-        return "unknown";
-      }
-      const connection = object(parent.timelineItems);
-      if (!Array.isArray(connection.nodes)) {
-        throw new Error("Missing timeline nodes");
-      }
+    )) {
       for (const node of connection.nodes) {
         timeline.push({ ...object(node), field: "Status" });
       }
-      const page = object(connection.pageInfo);
-      if (page.hasNextPage === false) {
-        break;
-      }
-      if (
-        page.hasNextPage !== true ||
-        typeof page.endCursor !== "string" ||
-        seen.has(page.endCursor)
-      ) {
-        throw new Error("Invalid timeline pagination cursor");
-      }
-      cursor = page.endCursor;
-      seen.add(cursor);
+    }
+    if (stopped !== undefined) {
+      return stopped;
     }
     const evidence = {
       headRefOid: historical ?? String(item.headRefOid),

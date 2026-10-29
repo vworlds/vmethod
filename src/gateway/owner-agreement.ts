@@ -1,5 +1,5 @@
 import { object, type ObjectData, type PeopleFilter } from "./people.js";
-import { repoOf } from "./queries.js";
+import { repoOf } from "../github/diagnostic.js";
 
 /** Validate the current, effectively owner-authored comment and an exact block quotation.
  * The caller's flag attests that the quoted words constitute agreement; we never infer

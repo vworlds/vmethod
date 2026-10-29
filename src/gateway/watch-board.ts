@@ -1,11 +1,11 @@
 import type { GitHubClient } from "./client.js";
 import { object, type ObjectData } from "./people.js";
-import { actorFields } from "./queries.js";
+import { batchPages, pages, pageCursor } from "../github/pages.js";
+import { actorFields, pageInfo } from "../github/selections.js";
 
 type ListName = "labels" | "blockedBy" | "subIssues" | "reviews";
 type Sizes = Record<"items" | ListName, number>;
 const listNames: ListName[] = ["labels", "blockedBy", "subIssues", "reviews"];
-const pageInfo = "pageInfo { hasNextPage endCursor }";
 const fields: Record<ListName, string> = {
   labels: "nodes { name }",
   blockedBy: "totalCount nodes { number state repository { nameWithOwner } }",
@@ -47,23 +47,26 @@ export class WatchBoard {
     this.cost = 0;
     this.pages = 0;
     this.overflow = 0;
-    let cursor: string | null = null;
-    let readme: string;
-    const seen = new Set<string>();
+    let readme = "";
     const cards: ObjectData[] = [];
     const overflow: Overflow[] = [];
-    for (;;) {
-      const data = await this.query(this.boardQuery(activity), { owner, number, cursor });
-      this.pages++;
-      const project = object(object(data.organization).projectV2);
-      if (typeof project.id !== "string" || !project.id) {
-        throw new Error("Missing board project");
+    for await (const connection of pages(
+      async (cursor) => {
+        const data = await this.query(this.boardQuery(activity), { owner, number, cursor });
+        this.pages++;
+        const project = object(object(data.organization).projectV2);
+        if (typeof project.id !== "string" || !project.id) {
+          throw new Error("Missing board project");
+        }
+        readme = typeof project.readme === "string" ? project.readme : "";
+        return project.items;
+      },
+      {
+        connectionError: "Missing watcher board connection",
+        cursorError: "Invalid board pagination cursor",
+        nonempty: true,
       }
-      readme = typeof project.readme === "string" ? project.readme : "";
-      const connection = object(project.items);
-      if (!Array.isArray(connection.nodes)) {
-        throw new Error("Missing watcher board connection");
-      }
+    )) {
       for (const card of nodes(connection)) {
         cards.push(card);
         const content = object(card.content);
@@ -93,10 +96,6 @@ export class WatchBoard {
           }
         }
       }
-      if (object(connection.pageInfo).hasNextPage === false) {
-        break;
-      }
-      cursor = this.cursor(connection, seen);
     }
     await this.complete(overflow);
     const next = { ...this.sizes, items: sizeFor(cards.length) };
@@ -142,10 +141,9 @@ export class WatchBoard {
 
   private async complete(pending: Overflow[]): Promise<void> {
     // Batch overflow connections: never add a query per ordinary board card.
-    while (pending.length) {
-      const next: Overflow[] = [];
-      for (let start = 0; start < pending.length; start += 50) {
-        const batch = pending.slice(start, start + 50);
+    await batchPages(
+      pending.map((entry) => ({ ...entry, cursor: "" as string | null })),
+      async (batch) => {
         const selections = batch.map((entry, index) => {
           const after = this.cursor(entry.connection, entry.seen);
           return `n${index}: node(id: ${JSON.stringify(entry.id)}) { ... on ${entry.kind} {
@@ -172,26 +170,21 @@ export class WatchBoard {
             if (nodes(connection).length < this.sizes[entry.name]) {
               throw new Error("Invalid watcher nested page");
             }
-            next.push(entry);
+            entry.cursor = "";
+          } else {
+            entry.cursor = null;
           }
         });
-      }
-      pending = next;
-    }
+      },
+      { size: 50, strategy: "rounds" }
+    );
   }
 
   private cursor(connection: ObjectData, seen: Set<string>): string {
-    const info = object(connection.pageInfo);
-    if (
-      info.hasNextPage !== true ||
-      typeof info.endCursor !== "string" ||
-      !info.endCursor ||
-      seen.has(info.endCursor)
-    ) {
-      throw new Error("Invalid board pagination cursor");
-    }
-    seen.add(info.endCursor);
-    return info.endCursor;
+    return pageCursor(connection, seen, {
+      cursorError: "Invalid board pagination cursor",
+      nonempty: true,
+    })!;
   }
 
   private async query(query: string, variables: Record<string, unknown> = {}): Promise<ObjectData> {

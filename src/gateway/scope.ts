@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import type { Config } from "../config.js";
 import { object, type ObjectData, type PeopleFilter, type Person } from "./people.js";
-import { identityFields, actorFields, repoOf } from "./queries.js";
+import { repoOf } from "../github/diagnostic.js";
+import { identityFields, actorFields } from "../github/selections.js";
+import { batchPages, pageCursor } from "../github/pages.js";
 import type { GitHubClient } from "./client.js";
 import { readState } from "../board/readme.js";
 import { AutopilotReader, type AutopilotState } from "./autopilot.js";
@@ -362,52 +364,49 @@ export class ScopeReader {
     field: "comments" | "timelineItems"
   ): Promise<Map<string, ObjectData[]>> {
     const output = new Map(issues.map((item) => [String(item.id), [] as ObjectData[]]));
-    let pending = issues.map((item) => ({ id: String(item.id), cursor: null as string | null }));
-    const seen = new Set<string>();
-    while (pending.length) {
-      const next: typeof pending = [];
-      // Batch aliases rather than one request per board card. IDs/cursors are variables.
-      const variables: ObjectData = {};
-      const declarations: string[] = [];
-      const selections = pending.map(({ id, cursor }, i) => {
-        variables[`id${i}`] = id;
-        variables[`cursor${i}`] = cursor;
-        declarations.push(`$id${i}: ID!`, `$cursor${i}: String`);
-        const selection =
-          field === "comments"
-            ? `${identityFields} url createdAt`
-            : `__typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } }`;
-        return `n${i}: node(id: $id${i}) { ... on Issue { ${identityFields} ${field}(first: 100, after: $cursor${i}${field === "timelineItems" ? ", itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]" : ""}) { nodes { ${selection} } pageInfo { hasNextPage endCursor } } } }`;
-      });
-      const data = object(
-        await this.github.graphql(
-          `query ScopeConnections(${declarations.join(",")}) { ${selections.join(" ")} }`,
-          variables
-        )
-      );
-      pending.forEach(({ id }, i) => {
-        const parent = object(data[`n${i}`]);
-        if (!this.accept(parent)) {
-          throw new Error("Scope identity changed");
-        }
-        const connection = object(parent[field]);
-        if (!Array.isArray(connection.nodes)) {
-          throw new Error("Missing scope connection");
-        }
-        output.get(id)!.push(...connection.nodes.map(object));
-        const page = object(connection.pageInfo);
-        if (page.hasNextPage === false) {
-          return;
-        }
-        const key = `${id}:${String(page.endCursor)}`;
-        if (page.hasNextPage !== true || typeof page.endCursor !== "string" || seen.has(key)) {
-          throw new Error("Invalid scope cursor");
-        }
-        seen.add(key);
-        next.push({ id, cursor: page.endCursor });
-      });
-      pending = next;
-    }
+    const pending = issues.map((item) => ({ id: String(item.id), cursor: null as string | null }));
+    const seen = new Map(issues.map((item) => [String(item.id), new Set<string>()]));
+    await batchPages(
+      pending,
+      async (pending) => {
+        // Batch aliases rather than one request per board card. IDs/cursors are variables.
+        const variables: ObjectData = {};
+        const declarations: string[] = [];
+        const selections = pending.map(({ id, cursor }, i) => {
+          variables[`id${i}`] = id;
+          variables[`cursor${i}`] = cursor;
+          declarations.push(`$id${i}: ID!`, `$cursor${i}: String`);
+          const selection =
+            field === "comments"
+              ? `${identityFields} url createdAt`
+              : `__typename ... on ProjectV2ItemStatusChangedEvent { actor { ${actorFields} } status previousStatus createdAt project { number } }`;
+          return `n${i}: node(id: $id${i}) { ... on Issue { ${identityFields} ${field}(first: 100, after: $cursor${i}${field === "timelineItems" ? ", itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT]" : ""}) { nodes { ${selection} } pageInfo { hasNextPage endCursor } } } }`;
+        });
+        const data = object(
+          await this.github.graphql(
+            `query ScopeConnections(${declarations.join(",")}) { ${selections.join(" ")} }`,
+            variables
+          )
+        );
+        pending.forEach((entry, i) => {
+          const { id } = entry;
+          const parent = object(data[`n${i}`]);
+          if (!this.accept(parent)) {
+            throw new Error("Scope identity changed");
+          }
+          const connection = object(parent[field]);
+          if (!Array.isArray(connection.nodes)) {
+            throw new Error("Missing scope connection");
+          }
+          output.get(id)!.push(...connection.nodes.map(object));
+          const cursor = pageCursor(connection, seen.get(id)!, {
+            cursorError: "Invalid scope cursor",
+          });
+          entry.cursor = cursor;
+        });
+      },
+      { size: Math.max(1, pending.length), strategy: "rounds" }
+    );
     return output;
   }
 

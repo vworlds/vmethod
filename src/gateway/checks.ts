@@ -1,4 +1,5 @@
 import type { Config } from "../config.js";
+import { restPages } from "../github/pages.js";
 import { stripVTControlCharacters } from "node:util";
 import { GitHubClient, type Dependencies } from "./client.js";
 import { object, untrusted, type ObjectData, type PeopleFilter } from "./people.js";
@@ -215,16 +216,18 @@ export class ChecksService {
 
   private async runs(target: ThreadRef, head: string): Promise<ObjectData[]> {
     const latest = new Map<string, ObjectData>();
-    for (let page = 1; ; page++) {
-      const result = object(
-        await this.github.rest(
-          `/repos/${target.repo}/commits/${head}/check-runs?filter=all&per_page=100&page=${page}`
-        )
-      );
-      if (!Array.isArray(result.check_runs)) {
-        throw new Error("Missing check runs");
-      }
-      for (const value of result.check_runs) {
+    for await (const runs of restPages(
+      async (page) => {
+        const result = object(
+          await this.github.rest(
+            `/repos/${target.repo}/commits/${head}/check-runs?filter=all&per_page=100&page=${page}`
+          )
+        );
+        return result.check_runs;
+      },
+      { error: "Missing check runs", size: 100 }
+    )) {
+      for (const value of runs) {
         const run = object(value);
         if (!this.filter.check(run, target.owner, target.link)) {
           continue;
@@ -240,10 +243,8 @@ export class ChecksService {
           latest.set(key, run);
         }
       }
-      if (result.check_runs.length < 100) {
-        return [...latest.values()];
-      }
     }
+    return [...latest.values()];
   }
 
   private async suitesComplete(target: ThreadRef, runs: ObjectData[]): Promise<boolean> {
