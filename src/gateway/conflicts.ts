@@ -334,7 +334,16 @@ export class ConflictService {
         this.save(pr, run.record!);
         break;
       case "close":
-        this.discard(pr);
+        try {
+          this.discard(pr);
+        } catch (error) {
+          // The old pre-dispatch try/catch retried cleanup before propagating
+          // an unlink failure; keep that failure boundary, too.
+          if (effect.cleanupOnError) {
+            this.discard(pr);
+          }
+          throw error;
+        }
         break;
       case "throw":
         throw new Error(effect.message);

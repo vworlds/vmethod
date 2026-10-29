@@ -61,6 +61,24 @@ test.each(["recheck", "recheck-preview"] as const)(
   }
 );
 
+test.each([{ preview: [] }, { preview: ["conflict.txt"] }])(
+  "pre-dispatch close retains catch-path cleanup for preview $preview",
+  ({ preview }) => {
+    const record = structuredClone(conflictTransitions[0].prior!);
+    const result = step(record, {
+      pr: 31,
+      operation: "resolve",
+      at: "recheck-preview",
+      retry: false,
+      root: ".",
+      escalatePaths: [],
+      preview,
+    });
+    expect(result.record).toBeUndefined();
+    expect(result.effects).toEqual([{ kind: "close", cleanupOnError: true }]);
+  }
+);
+
 test("empty auto-merge refusal remains resolved and restores, never marks merged", () => {
   const record = {
     ...structuredClone(conflictTransitions[0].prior!),

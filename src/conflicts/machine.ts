@@ -143,7 +143,7 @@ export type Effect =
   | { kind: "block"; reason: string; files: string[] }
   | { kind: "report"; line: string }
   | { kind: "save" }
-  | { kind: "close" }
+  | { kind: "close"; cleanupOnError?: boolean }
   | { kind: "raise"; error: unknown }
   | { kind: "throw"; message: string };
 
@@ -182,7 +182,7 @@ export function step(record: Resolution | undefined, o: Observation): Transition
             },
           ]
         : []),
-      { kind: "close" },
+      { kind: "close", ...(o.at === "recheck-preview" ? { cleanupOnError: true } : {}) },
     ],
     line: o.operation === "recover" ? "" : `conflict on #${pr} resolved outside the fixer`,
     ...(o.operation === "recover" ? { active: false } : {}),
@@ -349,7 +349,7 @@ export function step(record: Resolution | undefined, o: Observation): Transition
       return o.preview!.length
         ? {
             ...done(`PENDING #${pr}: head or base moved before the conflict dispatch; run again`, [
-              { kind: "close" },
+              { kind: "close", cleanupOnError: true },
             ]),
             record: undefined,
           }
