@@ -22,7 +22,7 @@ import { taskFlowVerb } from "../../src/cli/task-flow.js";
 import type { Operations, Transport } from "../../src/gateway/transport.js";
 import { WorkerService } from "../../src/gateway/workers.js";
 import { bodyHash, scopeApproved } from "../../src/evidence/scope.js";
-import { taskModelOverride } from "../../src/gateway/task-flow-types.js";
+import { taskModelOverride } from "../../src/tasks/markers.js";
 import { PeopleFilter } from "../../src/gateway/people.js";
 import { Digest } from "../../src/gateway/digest.js";
 import { scopeIssue, scopeComment, scopeMove } from "./scope-fixture.js";

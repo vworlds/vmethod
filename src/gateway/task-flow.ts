@@ -25,10 +25,20 @@ import { cleanBaseMerges } from "../evidence/clean-base.js";
 import { liveBaseHead } from "./base-head.js";
 import { approvalCarryFiles } from "../evidence/carry-approval.js";
 import type { ConflictPrior, OpenTaskInput, ReviewInput } from "./task-flow-types.js";
-import { taskIssueNumbers, taskRelation } from "./task-flow-types.js";
+import {
+  closingIssueNumbers,
+  holdBanner,
+  setHeaderPart,
+  taskHeld,
+  taskIssues,
+  taskIssueNumbers,
+  taskRelation,
+  trailingTaskMarker,
+  updateTaskMarker,
+  withoutHold,
+} from "../tasks/markers.js";
 import { modelGateError } from "../evidence/model-gate.js";
 import { ownerForTurn, setTurn, turnAssignees } from "./turn.js";
-import { holdBanner, taskHeld, withoutHold } from "./task-hold.js";
 import { runVerifyHook } from "./verify-hook.js";
 import { assertLockfileInSync, npmCiEnvironment } from "./lockfile.js";
 import packageInfo from "../../package.json" with { type: "json" };
@@ -103,16 +113,6 @@ export function conformingTitle(title: string): boolean {
   );
 }
 
-/** Decode pre-adoption Agent task for / Closes header relations, never branch numbers. */
-export function legacyIssueHeaders(body: string): number[] {
-  const numbers = [
-    ...body.matchAll(/^[\t ]*(?:>[\t ]*)?(?:\*\*)?(?:Closes|Agent task for)\s+#([1-9]\d*)\b/gim),
-  ].map((match) => Number(match[1]));
-  if (numbers.some((number) => !Number.isSafeInteger(number))) {
-    throw new Error("Invalid legacy issue link");
-  }
-  return numbers;
-}
 const roundText = (round: number) =>
   String(round).replace(/\d/g, (digit) => `${digit}\uFE0F\u20E3`);
 
@@ -780,18 +780,8 @@ export class TaskFlow {
     }
     if ((complete && relation.part) || (unlink && !relation.part)) {
       relation.part = unlink;
-      body = body.replace(
-        /^(# Task: [^\r\n]*) \((?:part of )?issue #([1-9]\d*)\)/,
-        (_match, title: string, issue: string) =>
-          `${title} (${relation.part ? "part of " : ""}issue #${issue})`
-      );
-      // The template's marker is last; marker examples in the worker prompt are data.
-      const marker = [...body.matchAll(/<!-- vmethod-task (\{[^\n]*\}) -->/g)].at(-1);
-      if (marker) {
-        const value = object(JSON.parse(marker[1]));
-        const updated = `<!-- vmethod-task ${JSON.stringify({ ...value, issues: relation.issues, part: relation.part })} -->`;
-        body = body.slice(0, marker.index) + updated + body.slice(marker.index + marker[0].length);
-      }
+      body = setHeaderPart(body, relation.part);
+      body = updateTaskMarker(body, relation.issues, relation.part);
     }
     if (body !== item.body) {
       await checkMarkdown(this.root, body);
@@ -816,7 +806,7 @@ export class TaskFlow {
     if (!issues.length) {
       return false;
     }
-    const references = this.linkedIssues(item);
+    const references = closingIssueNumbers(item, this.repo);
     if (typeof item.id !== "string" || !item.id) {
       throw new Error("Missing task PR node id");
     }
@@ -845,7 +835,7 @@ export class TaskFlow {
       changed = true;
     }
     if (unlink && changed) {
-      const remaining = this.linkedIssues(await this.pr(String(item.number)));
+      const remaining = closingIssueNumbers(await this.pr(String(item.number)), this.repo);
       if (issues.some((number) => remaining.has(number))) {
         throw new Error(
           "Closing reference remains; --unlink removes manual links only, not automatic body references"
@@ -853,28 +843,6 @@ export class TaskFlow {
       }
     }
     return changed;
-  }
-
-  private linkedIssues(item: ObjectData): Set<number> {
-    const references = object(item.closingIssuesReferences);
-    if (!Array.isArray(references.nodes) || object(references.pageInfo).hasNextPage !== false) {
-      throw new Error("Missing or incomplete closing issue references");
-    }
-    const numbers = new Set<number>();
-    for (const value of references.nodes) {
-      const node = object(value);
-      if (
-        !Number.isSafeInteger(node.number) ||
-        Number(node.number) < 1 ||
-        typeof object(node.repository).nameWithOwner !== "string"
-      ) {
-        throw new Error("Invalid closing issue reference");
-      }
-      if (object(node.repository).nameWithOwner === this.repo) {
-        numbers.add(Number(node.number));
-      }
-    }
-    return numbers;
   }
 
   async review(input: ReviewInput): Promise<string> {
@@ -1254,34 +1222,9 @@ export class TaskFlow {
     }
   }
 
-  private async issues(item: ObjectData): Promise<number[]> {
-    const relation = taskRelation(String(item.body));
-    if (relation) {
-      return relation.part ? [] : relation.issues;
-    }
-    if (/^[\t ]*(?:>[\t ]*)?(?:\*\*)?Part of\s+#([1-9]\d*)\b/im.test(String(item.body))) {
-      return [];
-    }
-    const references = object(item.closingIssuesReferences);
-    if (object(references.pageInfo).hasNextPage === true) {
-      throw new Error("Too many legacy issue links");
-    }
-    const linked = Array.isArray(references.nodes)
-      ? references.nodes
-          .map(object)
-          .filter((node) => object(node.repository).nameWithOwner === this.repo)
-          .map((node) => Number(node.number))
-      : [];
-    const legacy = linked.length ? linked : legacyIssueHeaders(String(item.body));
-    if (legacy.some((number) => !Number.isSafeInteger(number))) {
-      throw new Error("Invalid legacy issue link");
-    }
-    if (legacy.length) {
-      this.deps.report("legacy link: using pre-adoption issue relation");
-    } else {
-      this.deps.report("no linked issue");
-    }
-    return [...new Set(legacy)];
+  /** The issue relation merge follow-up completes; the report names the fallback. */
+  private issues(item: ObjectData): number[] {
+    return taskIssues(item, this.repo, (line) => this.deps.report(line));
   }
   private stateFile(ref: string): string {
     const name = String(this.config.stateName ?? this.repo.replace("/", "-"));
@@ -1426,8 +1369,7 @@ export class TaskFlow {
       }
       for (const number of taskIssueNumbers(String(item.body)) ?? []) {
         const issue = await this.host.thread(String(number), "issue");
-        const marker = /<!-- vmethod-task (\{[^\r\n]*\}) -->\s*$/.exec(String(item.body));
-        const exception = marker ? object(JSON.parse(marker[1])).scopeException : undefined;
+        const exception = trailingTaskMarker(String(item.body))?.scopeException;
         if (
           !(typeof exception === "string" && exception.trim()) &&
           (await this.host.issueApproved(issue)) !== true
@@ -1664,14 +1606,14 @@ export class TaskFlow {
     const file = this.stateFile(ref);
     const journal: Journal = existsSync(file)
       ? (JSON.parse(readFileSync(file, "utf8")) as Journal)
-      : { head, base, branch, issues: nonTask ? [] : await this.issues(item), done: [] };
+      : { head, base, branch, issues: nonTask ? [] : this.issues(item), done: [] };
     if (journal.head !== head || journal.base !== base || journal.branch !== branch) {
       throw new Error("Merge journal does not match PR");
     }
     // Older completed journals may have missed the issue entirely. Reconcile newly
     // discoverable relations without replaying already-checkpointed issue writes.
     if (!nonTask && existsSync(file)) {
-      const issues = await this.issues(item);
+      const issues = this.issues(item);
       if (JSON.stringify(journal.issues) !== JSON.stringify(issues)) {
         journal.issues = issues;
         journal.done = journal.done.filter((name) => name !== "estimates");

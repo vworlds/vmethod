@@ -4,7 +4,7 @@ import { object, type ObjectData, type PeopleFilter } from "../gateway/people.js
 import { repoOf } from "../github/diagnostic.js";
 import { batchPages, pageCursor } from "../github/pages.js";
 import { actorFields, identityFields, labelEvents } from "../github/selections.js";
-import { taskIssueNumbers } from "../gateway/task-flow-types.js";
+import { autopilotCopyProof, taskIssueNumbers, withAutopilotCopyProof } from "../tasks/markers.js";
 
 /** Labels managed by vmethod workflow rather than describing task kind. */
 export const workflowLabels = ["autopilot", "autopilot-stop"] as const;
@@ -82,11 +82,7 @@ export async function inheritAutopilot(
   if (!(await reader.read([String(issue.id)])).get(String(issue.id))?.active) {
     throw new Error("Autopilot revoked during task creation; inspect the created PR");
   }
-  const body = String(pr.body).replace(
-    /<!-- vmethod-task \{[^\r\n]*\} -->\s*$/,
-    (marker) =>
-      `<!-- vmethod-autopilot-copy ${JSON.stringify({ event: event.id, source: state.grant })} -->\n\n${marker}`
-  );
+  const body = withAutopilotCopyProof(String(pr.body), { event: event.id, source: state.grant });
   if (body === pr.body) {
     throw new Error("Missing task metadata for autopilot copy");
   }
@@ -372,19 +368,5 @@ function copyProof(
   ) {
     return;
   }
-  const marker =
-    /<!-- vmethod-autopilot-copy (\{[^\r\n]*\}) -->\s*<!-- vmethod-task \{[^\r\n]*\} -->\s*$/.exec(
-      String(item.body)
-    );
-  if (!marker) {
-    return;
-  }
-  try {
-    const proof = object(JSON.parse(marker[1]));
-    if (typeof proof.event === "string" && typeof proof.source === "string") {
-      return { event: proof.event, source: proof.source };
-    }
-  } catch {
-    /* malformed metadata confers no authority */
-  }
+  return autopilotCopyProof(String(item.body));
 }
