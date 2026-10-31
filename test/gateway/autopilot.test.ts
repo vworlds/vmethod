@@ -535,6 +535,7 @@ test("a copy whose source grant the poll cannot read removes nothing", async () 
   const body =
     'Task text\n\n<!-- vmethod-autopilot-copy {"event":"copy","source":"grant"} -->\n\n<!-- vmethod-task {"issues":[8]} -->\n';
   const { f, writes, prCard } = taskCopy(body);
+  f.enableWrites = true; // The later issue appearance also triggers dependency ordering.
   // The issue card is not on the board read: its grant history stays unread, so
   // the copy reads unknown, never unauthorized — no removal, no report, no marker.
   f.cards = [prCard];
@@ -553,6 +554,9 @@ test("a copy whose source grant the poll cannot read removes nothing", async () 
     f.advance();
     const second = await f.once(loop);
     expect(writes).toEqual([]);
+    expect(f.writes.filter((write) => "position" in write)).toEqual([
+      { itemId: prCard.id, position: null },
+    ]);
     expect(
       second.some(
         (value) =>
