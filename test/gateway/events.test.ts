@@ -3399,13 +3399,21 @@ test("the real operation wiring delivers and acknowledges server events with the
   writeFileSync(join(f.root, "people.yaml"), stringify(people));
   const gateway = createGateway(f.root, f.env, f.deps);
   const ctx = { role: "orchestrator" } as const;
-  expect(await gateway.call("nextEvents", { timeoutSeconds: 1 }, ctx)).toEqual({ events: [] });
+  expect(await gateway.call("nextEvents", { timeoutSeconds: 1 }, ctx)).toEqual({
+    events: [],
+    debounceSeconds: 1,
+    debounceMaxSeconds: 10,
+  });
   f.advance();
   f.comment("Need help", 0);
   const batch = await gateway.call("nextEvents", { timeoutSeconds: 1 }, ctx);
   expect(batch.events[0].kind).toBe("comment");
   await gateway.call("nextEvents", { timeoutSeconds: 0, ack: batch.events.map((e) => e.id) }, ctx);
-  expect(await gateway.call("nextEvents", { timeoutSeconds: 1 }, ctx)).toEqual({ events: [] });
+  expect(await gateway.call("nextEvents", { timeoutSeconds: 1 }, ctx)).toEqual({
+    events: [],
+    debounceSeconds: 1,
+    debounceMaxSeconds: 10,
+  });
 });
 
 test("a same-server concurrent reader is refused; missing /proc support fails clearly", async () => {

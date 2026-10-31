@@ -1,4 +1,5 @@
 import { BoardPoller } from "../watch/board.js";
+import { appendWatchReport } from "../watch/report-log.js";
 import { PullPoller } from "../watch/pulls.js";
 import { WorkerPoller } from "../watch/workers.js";
 import { CommentStream } from "../watch/comments.js";
@@ -49,6 +50,7 @@ const VERSION = typeof __VERSION__ === "string" ? __VERSION__ : manifest.version
 interface WatchInput {
   timeoutSeconds: unknown;
   ack?: unknown;
+  exclude?: unknown;
   pollOnce?: unknown;
   watchStart?: unknown;
   guideSeen?: unknown;
@@ -262,6 +264,7 @@ export class EventLoop {
   private nextBoardAt = 0;
   private readonly pacing = new WatchPacing();
   private reportedShape = "";
+  private readonly pacingLogReported = new Set<string>();
   private reportedCost = 0;
   private reportedInterval = 0;
   /** Cost observation waiting to be confirmed; a changed cost reports once it
@@ -452,13 +455,19 @@ export class EventLoop {
     events: WatchEvent[];
     notice?: string;
     reminder?: string;
+    debounceSeconds?: number;
+    debounceMaxSeconds?: number;
   }> {
     if (this.reading) {
       throw new Error("watch: another reader is already waiting for this session");
     }
     this.reading = true;
     try {
-      const result = await this.readEvents(input);
+      const result = {
+        ...(await this.readEvents(input)),
+        debounceSeconds: this.host.config.watch?.debounceSeconds ?? 1,
+        debounceMaxSeconds: this.host.config.watch?.debounceMaxSeconds ?? 10,
+      };
       const reminder = input.replay === undefined ? this.chatReminder(result.events) : undefined;
       if (input.replay === undefined) {
         new WatchDelivery(this.dir, this.host.deps.now).append(result.events);
@@ -507,6 +516,14 @@ export class EventLoop {
     if (input.pollOnce !== undefined && typeof input.pollOnce !== "boolean") {
       throw new Error("Expected a boolean pollOnce");
     }
+    if (
+      input.exclude !== undefined &&
+      (!Array.isArray(input.exclude) || input.exclude.some((id) => !ID.test(str(id))))
+    ) {
+      throw new Error("Invalid exclude ids");
+    }
+    const exclude = new Set((input.exclude ?? []) as string[]);
+    const hasPending = () => this.pending().some((event) => !exclude.has(event.id));
     if (input.watchStart !== undefined && typeof input.watchStart !== "boolean") {
       throw new Error("Expected a boolean watchStart");
     }
@@ -540,11 +557,11 @@ export class EventLoop {
       !input.pollOnce &&
       !this.marked(this.state.once(`guide-seen-${VERSION}`))
     ) {
-      return { events: this.buildBatch() };
+      return { events: this.buildBatch(exclude) };
     }
     // Zero timeout is the ack-only operation used by --once; do not fetch unprinted events.
-    if ((input.timeoutSeconds === 0 && !input.pollOnce) || this.pending().length) {
-      return { events: this.buildBatch() };
+    if ((input.timeoutSeconds === 0 && !input.pollOnce) || hasPending()) {
+      return { events: this.buildBatch(exclude) };
     }
     const deadline = this.host.deps.now() + input.timeoutSeconds * 1000;
     for (;;) {
@@ -552,7 +569,7 @@ export class EventLoop {
       if (input.pollOnce) {
         break;
       }
-      if (this.pending().length) {
+      if (hasPending()) {
         // One settling poll, so the rest of the same action joins this wake-up.
         await this.pollOnce();
         break;
@@ -562,7 +579,7 @@ export class EventLoop {
       }
       await this.host.deps.sleep(Math.min(this.nextSleep(), deadline - this.host.deps.now()));
     }
-    return { events: this.buildBatch() };
+    return { events: this.buildBatch(exclude) };
   }
 
   /** The chat-rule reminder attaches to a delivery that already has events, at
@@ -705,7 +722,7 @@ export class EventLoop {
     this.mark(this.state.once(id));
   }
 
-  private buildBatch(): WatchEvent[] {
+  private buildBatch(exclude = new Set<string>()): WatchEvent[] {
     const events: PendingEvent[] = [];
     const orphanedQuiet: string[] = [];
     for (const event of this.pending()) {
@@ -722,20 +739,23 @@ export class EventLoop {
     for (const line of orphanedQuiet) {
       this.quiet(line);
     }
-    if (events.length) {
+    const first = events.findIndex((event) => !exclude.has(event.id));
+    if (first !== -1) {
       const lines = this.state.quiet.lines().filter((line) => !this.journaledCommentLine(line));
       if (lines.length) {
-        events[0] = { ...events[0], quiet: [...(events[0].quiet ?? []), ...lines] };
+        events[first] = { ...events[first], quiet: [...(events[first].quiet ?? []), ...lines] };
       }
       this.state.quiet.stamp("");
     }
     this.savePending(events);
-    return events.map(({ id, kind, line, quiet }) => ({
-      id,
-      kind,
-      line,
-      ...(quiet ? { quiet } : {}),
-    }));
+    return events
+      .filter((event) => !exclude.has(event.id))
+      .map(({ id, kind, line, quiet }) => ({
+        id,
+        kind,
+        line,
+        ...(quiet ? { quiet } : {}),
+      }));
   }
 
   /** Revalidate persisted delivery after a separate writer's response is journaled.
@@ -1404,9 +1424,20 @@ export class EventLoop {
       heldInterval = this.intervalStreak >= 3;
     }
     if (cost > 0 && (shape !== this.reportedShape || heldCost || heldInterval)) {
-      this.host.deps.report(
-        `watcher: board pages items=${sizes.items} labels=${sizes.labels} blockers=${sizes.blockedBy} sub-issues=${sizes.subIssues} reviews=${sizes.reviews}; measured cost=${cost} points/poll; interval=${Math.ceil(interval / 1000)}s`
-      );
+      try {
+        appendWatchReport(
+          this.dir,
+          "watch-pacing.log",
+          `watcher: board pages items=${sizes.items} labels=${sizes.labels} blockers=${sizes.blockedBy} sub-issues=${sizes.subIssues} reviews=${sizes.reviews}; measured cost=${cost} points/poll; interval=${Math.ceil(interval / 1000)}s`,
+          now
+        );
+      } catch (error) {
+        const failure = `watcher: pacing report log unavailable: ${(error as Error).message}`;
+        if (!this.pacingLogReported.has(failure)) {
+          this.pacingLogReported.add(failure);
+          this.host.deps.report(failure);
+        }
+      }
       this.reportedShape = shape;
       this.reportedCost = cost;
       this.reportedInterval = interval;

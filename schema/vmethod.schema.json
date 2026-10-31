@@ -30,7 +30,11 @@
       "type": "object",
       "default": {},
       "additionalProperties": false,
-      "properties": { "preview": { "type": "boolean", "default": false } }
+      "properties": {
+        "preview": { "type": "boolean", "default": false },
+        "debounceSeconds": { "type": "number", "minimum": 0, "default": 1 },
+        "debounceMaxSeconds": { "type": "number", "exclusiveMinimum": 0, "default": 10 }
+      }
     },
     "limits": {
       "type": "object",
