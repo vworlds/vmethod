@@ -1,13 +1,7 @@
 import { permissionDetails } from "./permission-detail.js";
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { appendWatchReport } from "../watch/report-log.js";
+import { resolve } from "node:path";
 import {
   addTokens,
   opencodeUsage,
@@ -86,7 +80,6 @@ export class GitHubHttpError extends Error {
 }
 
 /** The in-poll retry log keeps at most this many lines; the older half goes first. */
-const RETRY_LOG_LINES = 200;
 
 /** Credentials and unfiltered responses must never cross the operation seam. */
 export class GitHubClient {
@@ -145,28 +138,7 @@ export class GitHubClient {
       return;
     }
     try {
-      mkdirSync(this.pollDir, { recursive: true, mode: 0o700 });
-      const path = join(this.pollDir, "watch-retries.log");
-      // First notice creates the log; other read failures (for example EACCES
-      // or EISDIR) surface through the report below instead of failing the retry.
-      let lines: string[] = [];
-      try {
-        lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw error;
-        }
-      }
-      if (lines.length >= RETRY_LOG_LINES) {
-        const temporary = `${path}.tmp`;
-        writeFileSync(temporary, `${lines.slice(-Math.floor(RETRY_LOG_LINES / 2)).join("\n")}\n`, {
-          mode: 0o600,
-        });
-        renameSync(temporary, path);
-      }
-      appendFileSync(path, `${new Date(this.deps.now()).toISOString()} ${message}\n`, {
-        mode: 0o600,
-      });
+      appendWatchReport(this.pollDir, "watch-retries.log", message, this.deps.now());
     } catch (error) {
       const failure = `watcher: retry notice log unavailable: ${(error as Error).message}`;
       if (!this.retryLogReported.has(failure)) {

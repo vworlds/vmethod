@@ -92,13 +92,21 @@ export interface Operations {
     input: SessionInput & {
       timeoutSeconds: number;
       ack?: string[];
+      /** In-memory buffered IDs: omit without acknowledging, and continue polling. */
+      exclude?: string[];
       pollOnce?: boolean;
       watchStart?: boolean;
       guideSeen?: boolean;
       replay?: string;
     };
     /** A nonempty real delivery may carry the one-line chat-rule reminder, at most once every 2h. */
-    output: { events: WatchEvent[]; notice?: string; reminder?: string };
+    output: {
+      events: WatchEvent[];
+      notice?: string;
+      reminder?: string;
+      debounceSeconds?: number;
+      debounceMaxSeconds?: number;
+    };
   };
   /** Stop this checkout's running watcher for the resolved session (#340):
    * verify the lock holder, signal SIGTERM and wait for the lock to clear.

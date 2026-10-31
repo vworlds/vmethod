@@ -517,7 +517,12 @@ so changes to the methodology and your own cards always reach you. Follow
 [tooling budget rules](tooling-rules.md).
 
 Run `watch` unwrapped, with no filtering pipe: filtering can hide the wake line
-while still acknowledging its batch.
+while still acknowledging its batch. Continuous watch output bundles a burst into
+one line: **split on tabs** to read its ordered notice, quiet notes, events and
+reminder. Embedded tabs in items become spaces. The default silence window is one
+second, with a ten-second cap; see [bundle settings](gateway.md#watching-and-muting).
+Pacing measurements live in `watch-pacing.log` in the session's state directory,
+not the wake stream. Budget pause reports still reach the console.
 
 `watch` never exits on its own, so a plain background shell never wakes you. Run
 it as a monitored background shell with a 30-minute timeout (`background: true`,

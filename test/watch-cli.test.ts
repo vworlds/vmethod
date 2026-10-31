@@ -49,9 +49,10 @@ test("--once writes the batch completely before a zero-timeout ack", async () =>
 
 test("stdout failure never acknowledges a batch; timeouts re-arm instead of exiting", async () => {
   const call = vi.fn<Transport["call"]>();
-  call
-    .mockResolvedValueOnce({ events: [] })
-    .mockResolvedValueOnce({ events: [{ id: "1", kind: "comment", line: "COMMENT" }] });
+  call.mockResolvedValueOnce({ events: [] }).mockResolvedValueOnce({
+    events: [{ id: "1", kind: "comment", line: "COMMENT" }],
+    debounceSeconds: 0,
+  });
   await expect(
     watchClient({ call }, [], {}, async () => {
       throw new Error("closed stdout");
@@ -182,13 +183,19 @@ test("guide notice is acknowledged only after successful stdout, even without ev
 
 test("replay prints complete digests and wake lines once without starting or acknowledging", async () => {
   const call = vi.fn<Transport["call"]>().mockResolvedValue({
-    events: [{ id: "lost", kind: "ready", line: "READY #24", quiet: ["NOTE #24"] }],
+    events: [
+      { id: "lost", kind: "ready", line: "READY #24", quiet: ["NOTE #24"] },
+      { id: "next", kind: "comment", line: "COMMENT #25" },
+    ],
   });
   const writes: string[] = [];
   await watchClient({ call }, ["--replay", "previous", "--track", "alpha"], {}, async (text) => {
     writes.push(text);
   });
-  expect(writes).toEqual(["quiet since the last wake-up:\n  NOTE #24\nREADY #24\n"]);
+  expect(writes).toEqual([
+    "quiet since the last wake-up:\n  NOTE #24\nREADY #24\n",
+    "COMMENT #25\n",
+  ]);
   expect(call.mock.calls).toEqual([
     ["nextEvents", { track: "alpha", replay: "previous", timeoutSeconds: 0 }, { role: "worker" }],
   ]);
@@ -267,7 +274,7 @@ test("built CLI --once exits promptly on two successive empty runs against the s
   f.done();
 }, 15000);
 
-test("built CLI watch --stop stops a running watcher and its lock clears", async () => {
+test("built CLI stop flushes a pending bundle; SIGKILL instead leaves events for restart and replay", async () => {
   const f = fixtureServer([]);
   mkdirSync(join(f.root, "dist"));
   mkdirSync(join(f.root, "docs"));
@@ -281,6 +288,7 @@ test("built CLI watch --stop stops a running watcher and its lock clears", async
       org: "example",
       baseBranch: "dev",
       stateName: "watch-stop",
+      watch: { debounceSeconds: 60, debounceMaxSeconds: 60 },
       board: { enabled: false, owner: "example", number: 5, repos: ["example/project"] },
       vmethod: { repo: "off" },
       gateway: { maxRetries: 0 },
@@ -317,20 +325,31 @@ test("built CLI watch --stop stops a running watcher and its lock clears", async
   });
   const env = { ...f.env, VMETHOD_ROOT: f.root, VMETHOD_ROLE: "orchestrator" };
   const watcherErrors: string[] = [];
+  const watcherOutput: string[] = [];
+  const state = join(f.env.XDG_STATE_HOME as string, "vmethod", "watch-stop-alpha");
+  mkdirSync(state, { recursive: true });
+  const seeded = [{ id: "buffered", kind: "comment", line: "COMMENT #6", once: true }];
+  writeFileSync(join(state, "pending.json"), JSON.stringify(seeded));
   const watcher = spawn(process.execPath, ["--import", preload, cli, "watch", "--track", "alpha"], {
     cwd: f.root,
     env,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
   watcher.stderr?.on("data", (chunk: Buffer) => watcherErrors.push(String(chunk)));
+  watcher.stdout?.on("data", (chunk: Buffer) => watcherOutput.push(String(chunk)));
+  const exited = new Promise<number>((resolve) =>
+    watcher.once("exit", (code: number | null) => resolve(code ?? -1))
+  );
   try {
     const lock = join(f.env.XDG_STATE_HOME as string, "vmethod", "watch-stop-alpha", "lock");
-    for (let i = 0; i < 100 && !existsSync(lock); i++) {
+    for (let i = 0; i < 100 && !existsSync(join(state, "delivered.jsonl")); i++) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     expect(existsSync(lock)).toBe(true);
     const holder = JSON.parse(readFileSync(lock, "utf8")) as { pid: number };
     expect(holder.pid).toBe(watcher.pid as number);
+    expect(existsSync(join(state, "delivered.jsonl"))).toBe(true);
+    expect(watcherOutput).toEqual([]);
     expect(isWatchCmdline(readFileSync(`/proc/${watcher.pid}/cmdline`, "utf8"))).toBe(true);
 
     const result = spawnSync(
@@ -343,13 +362,54 @@ test("built CLI watch --stop stops a running watcher and its lock clears", async
     expect(result.stdout).toBe(`watcher stopped (pid ${watcher.pid as number})\n`);
     expect(existsSync(lock)).toBe(false);
     expect(watcherErrors.join("")).toBe("");
-    const exit = await new Promise<number>((resolve) =>
-      watcher.once("exit", (code: number | null) => resolve(code ?? -1))
-    );
+    const exit = await exited;
     expect(exit).toBe(0);
+    expect(watcherOutput.join("")).toContain("\tCOMMENT #6\t");
+    expect(watcherOutput.join("").split("\n").filter(Boolean)).toHaveLength(1);
   } finally {
     // Ours only; a healthy stop above has already left it exited.
     watcher.kill();
+  }
+  const killedState = join(f.env.XDG_STATE_HOME as string, "vmethod", "watch-stop-beta");
+  mkdirSync(killedState, { recursive: true });
+  writeFileSync(join(killedState, "pending.json"), JSON.stringify(seeded));
+  const killedOutput: string[] = [];
+  const killed = spawn(process.execPath, ["--import", preload, cli, "watch", "--track", "beta"], {
+    cwd: f.root,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  killed.stdout?.on("data", (chunk: Buffer) => killedOutput.push(String(chunk)));
+  killed.stderr?.on("data", (chunk: Buffer) => watcherErrors.push(String(chunk)));
+  const killedExit = new Promise((resolve) => killed.once("exit", resolve));
+  try {
+    for (let i = 0; i < 100 && !existsSync(join(killedState, "delivered.jsonl")); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(existsSync(join(killedState, "delivered.jsonl"))).toBe(true);
+    expect(killedOutput).toEqual([]);
+    killed.kill("SIGKILL");
+    await killedExit;
+    for (const flags of [["--replay", "previous"], ["--once"]]) {
+      const restarted = spawnSync(
+        process.execPath,
+        ["--import", preload, cli, "watch", "--track", "beta", ...flags],
+        {
+          cwd: f.root,
+          env,
+          encoding: "utf8",
+          timeout: 10000,
+        }
+      );
+      expect(restarted.error).toBeUndefined();
+      expect(restarted.status).toBe(0);
+      expect(restarted.stderr).toBe("");
+      expect(restarted.stdout).toContain("COMMENT #6\n");
+    }
+    expect(JSON.parse(readFileSync(join(killedState, "pending.json"), "utf8"))).toEqual([]);
+    expect(watcherErrors).toEqual([]);
+  } finally {
+    killed.kill("SIGKILL");
   }
   f.done();
 }, 60000);

@@ -36,6 +36,37 @@ test("minimal valid files omit stateName, releaseBranch and privacy without synt
   expect(config).not.toHaveProperty("learningsPrivacy");
 });
 
+test("watch debounce defaults, fractional overrides and invalid windows", () => {
+  const root = validProject();
+  expect(getConfig(root, {}).watch).toEqual({
+    preview: false,
+    debounceSeconds: 1,
+    debounceMaxSeconds: 10,
+  });
+  expect(
+    getConfig(root, {
+      VMETHOD_WATCH_DEBOUNCE_SECONDS: "0.25",
+      VMETHOD_WATCH_DEBOUNCE_MAX_SECONDS: "2.5",
+    }).watch
+  ).toEqual({ preview: false, debounceSeconds: 0.25, debounceMaxSeconds: 2.5 });
+  for (const watch of [
+    { debounceSeconds: -1 },
+    { debounceMaxSeconds: 0 },
+    { debounceSeconds: "1" },
+  ]) {
+    expect(() =>
+      validateYaml(stringify({ ...testConfig(), watch }), "vmethod", "vmethod.yaml")
+    ).toThrow();
+  }
+  expect(
+    validateYaml(
+      stringify({ ...testConfig(), watch: { debounceSeconds: 0 } }),
+      "vmethod",
+      "vmethod.yaml"
+    ).watch?.debounceSeconds
+  ).toBe(0);
+});
+
 test.each(["repo", "org", "baseBranch", "board"])("schema still requires %s", (key) => {
   const config = { ...testConfig() };
   Reflect.deleteProperty(config, key);

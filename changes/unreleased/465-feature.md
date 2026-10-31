@@ -1,0 +1,3 @@
+Bundle continuous watch output after a configurable silence window, with a maximum
+delay and SIGTERM flush; keep buffered events pending until written. Move board
+pacing telemetry to the bounded private `watch-pacing.log` instead of the console.

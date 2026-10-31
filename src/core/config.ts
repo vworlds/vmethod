@@ -27,7 +27,7 @@ export type Config = {
   workerCheckout?: string;
   stateName?: string;
   vmethod?: { repo?: string };
-  watch?: { preview?: boolean };
+  watch?: { preview?: boolean; debounceSeconds?: number; debounceMaxSeconds?: number };
   limits?: { enabled?: boolean; atRisk?: number; pollSeconds?: number };
   learningsPrivacy?: "public" | "private";
   learningsModel?: string;

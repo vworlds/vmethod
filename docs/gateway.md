@@ -828,14 +828,31 @@ An invalid config edit reports
 `vmethod.yaml reload failed: <reason>; keeping the previous config` once and keeps
 polling with the previous config and loops until a later valid edit applies.
 
-`nextEvents` takes `{ timeoutSeconds, ack?, pollOnce?, watchStart?, guideSeen?, replay?, track?, only?, skip? }` and returns
-`{ events: [{ id, kind, line, quiet? }], notice?, reminder? }`. A zero timeout applies acknowledgements
+Continuous `watch` stdout is events-only (including actionable notices and reminders),
+not pacing telemetry. It buffers output until `watch.debounceSeconds` of silence
+(default `1`), bounded by `watch.debounceMaxSeconds` from the first buffered item
+(default `10`). Both settings accept seconds; debounce may be zero and the maximum
+must be positive. Each bundle is **one line**, with items separated by tabs (`\t`):
+notice, quiet-block heading and notes, event lines, then reminder, in arrival order.
+Tabs inside an item become spaces. Quiet notes have no two-space indent in a bundle.
+`watch.debounceSeconds: 0` restores one-line-per-event presentation; `--once` and
+`--replay` always print immediately in the original, unbundled format.
+
+`nextEvents` takes `{ timeoutSeconds, ack?, exclude?, pollOnce?, watchStart?, guideSeen?, replay?, track?, only?, skip? }` and returns
+`{ events: [{ id, kind, line, quiet? }], notice?, reminder?, debounceSeconds?, debounceMaxSeconds? }`.
+`exclude` omits buffered IDs without acknowledging them, letting collection continue
+without redelivery. It is request-local, never durable acknowledgement state.
+A zero timeout applies acknowledgements
 without polling. The client acknowledges IDs **after stdout finishes writing**;
 `--once` delivers pending events or polls once without waiting for an event, then
 acknowledges any printed batch and exits, including when nothing is new. It uses
 `{ timeoutSeconds: 0, pollOnce: true }`; an ack-only call omits `pollOnce`. A failed
 write leaves the batch pending. Reconnects redeliver pending events until acknowledged;
 delivery is at least once, so a crash after print but before ack may repeat that batch.
+An unwritten bundle remains pending and can be recovered after a kill or with replay.
+Output deadlines run independently of gateway polling and backoff. SIGTERM flushes
+the buffer before exit; if a collecting poll is still in flight, printed events may
+remain unacknowledged and repeat after restart rather than delaying shutdown.
 
 The CLI sets `watchStart` on its first normal request, not on long-poll continuations.
 Each nonempty delivered batch is persisted before return in `delivered.jsonl`, with
@@ -1228,15 +1245,20 @@ and assignments continue while the GraphQL board is paced. This controller does
 not throttle other verbs or guarantee protection against an unlimited external
 spender; it can only react to spending visible in response headers.
 
-Watch reports the current page sizes, measured points per board read and interval
-on stderr after the first measurement, when a board page or overflow query starts
+Watch logs the current page sizes, measured points per board read and interval
+to `watch-pacing.log` in the watcher's state directory, alongside `watch-retries.log`,
+after the first measurement, when a board page or overflow query starts
 or stops, a measured-cost change that has held for three consecutive polls, or an
 interval deviation strictly greater than both 10% and one second from the last
 reported interval, sustained in the same direction for three consecutive polls.
 The interval may vary during that run; the report prints its latest value rounded
 up to seconds. Retraining page sizes within that
 margin reports nothing. Stable polls do not repeat the report. These sizes and
-controller history are session-local and start fresh after restart.
+controller history are session-local and start fresh after restart. Pacing uses the
+same report-log rules as retries: timestamped private lines, bounded to 200 entries
+(trimmed to the latest 100 before appending at the bound), and an unusable log is
+reported once per failure signature without failing the poll. Pacing never reaches
+stdout or stderr; budget-reserve pause reports remain actionable console output.
 
 ## Non-task PR commands
 
