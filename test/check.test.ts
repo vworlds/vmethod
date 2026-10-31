@@ -70,6 +70,32 @@ test("check warns when a session predates local settings, but not with its role 
   expect(check(root, { VMETHOD_ROLE: "worker" })).toEqual({ code: 0, messages: [] });
 });
 
+test("a leftover token in local settings warns by key, never by value, without failing", () => {
+  const root = validProject();
+  const settings = join(root, ".claude/settings.local.json");
+  writeFileSync(settings, JSON.stringify({ env: { VMETHOD_ROLE: "worker" } }));
+  expect(check(root, { VMETHOD_ROLE: "worker" })).toEqual({ code: 0, messages: [] });
+  const token = "ghp_" + "b".repeat(36);
+  writeFileSync(settings, JSON.stringify({ env: { VMETHOD_ROLE: "worker", GH_TOKEN: token } }));
+  const present = check(root, { VMETHOD_ROLE: "worker" });
+  expect(present.code).toBe(0);
+  expect(present.messages).toEqual([
+    "WARN GH_TOKEN in .claude/settings.local.json is unused since GH_CONFIG_DIR logins (#285); remove it",
+  ]);
+  expect(present.messages.join("\n")).not.toContain(token);
+  writeFileSync(settings, JSON.stringify({ env: { GITHUB_TOKEN: token } }));
+  expect(check(root, { VMETHOD_ROLE: "worker" }).messages).toEqual([
+    "WARN GITHUB_TOKEN in .claude/settings.local.json is unused since GH_CONFIG_DIR logins (#285); remove it",
+  ]);
+  writeFileSync(settings, JSON.stringify({ env: { GH_TOKEN: token, GITHUB_TOKEN: token } }));
+  expect(check(root, { VMETHOD_ROLE: "worker" }).messages).toHaveLength(2);
+  // An unreadable file is no declaration, exactly like the role reader above.
+  for (const content of ["{ not json", "", "null", JSON.stringify({ env: "GH_TOKEN=x" })]) {
+    writeFileSync(settings, content);
+    expect(check(root, { VMETHOD_ROLE: "worker" })).toEqual({ code: 0, messages: [] });
+  }
+});
+
 test("only explicit prerelease deferral softens absent settings, on every run", () => {
   const root = validProject();
   rmSync(join(root, ".claude/settings.json"));
