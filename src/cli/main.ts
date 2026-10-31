@@ -108,10 +108,16 @@ try {
         break;
       }
       if (verb === "watch") {
-        // A watcher terminated through `watch --stop` exits via SIGTERM: this
-        // handler lets the process run its exit hook and release the lock (#340).
-        process.on("SIGTERM", () => process.exit(0));
-        const stopCode = await watchClient(transport, args, env);
+        const stopping = new AbortController();
+        const onStop = () => stopping.abort();
+        process.on("SIGTERM", onStop);
+        const stopCode = await watchClient(transport, args, env, undefined, stopping.signal);
+        process.removeListener("SIGTERM", onStop);
+        // A collecting poll may still be sleeping/backing off. Flush first, then
+        // run the exit hook to release its lock without waiting for that poll.
+        if (stopping.signal.aborted) {
+          process.exit(0);
+        }
         if (stopCode !== undefined) {
           process.exitCode = stopCode;
         }
@@ -239,4 +245,9 @@ try {
       : (error as Error).message
   );
   process.exitCode = error instanceof MarkdownDependencyError ? 2 : 1;
+  // A failed bundle write can leave a collecting poll asleep. Do not keep that
+  // poll (and its lock) alive after the CLI has reported failure.
+  if (verb === "watch") {
+    process.exit(process.exitCode);
+  }
 }

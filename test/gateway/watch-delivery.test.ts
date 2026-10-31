@@ -60,6 +60,43 @@ test("delivery retention is seven days and sequences keep increasing after expir
   expect(() => delivery.replay("previous")).toThrow();
 });
 
+test("collection excludes buffered events without acknowledgement, preserves quiet notes and redelivers after restart", async () => {
+  const f = new WatchFake();
+  try {
+    let loop = f.loop();
+    await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true, watchStart: true });
+    f.advance();
+    f.comment("[worker] QUESTION\nBuffered");
+    const first = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true });
+    expect(first.events.length).toBeGreaterThan(0);
+    const exclude = first.events.map((event) => event.id);
+    const requests = f.requests.length;
+    const empty = await loop.nextEvents({ timeoutSeconds: 1, exclude });
+    expect(empty.events).toEqual([]);
+    expect(f.requests.length).toBeGreaterThan(requests);
+    f.advance();
+    f.comment("[worker] BLOCKED\nAnother arrival");
+    writeFileSync(join(f.dir, "quiet"), "NOTE new\n");
+    const second = await loop.nextEvents({ timeoutSeconds: 0, pollOnce: true, exclude });
+    expect(second.events.length).toBeGreaterThan(0);
+    expect(second.events.some((event) => exclude.includes(event.id))).toBe(false);
+    expect(second.events[0].quiet).toContain("NOTE new");
+    loop.close();
+    loop = f.loop();
+    const restarted = await loop.nextEvents({ timeoutSeconds: 0 });
+    expect(restarted.events).toEqual([...first.events, ...second.events]);
+    const replay = await loop.nextEvents({ timeoutSeconds: 0, replay: "previous" });
+    expect(replay.events).toEqual([...first.events, ...second.events, ...restarted.events]);
+    await f.ack(loop, restarted.events);
+    expect((await loop.nextEvents({ timeoutSeconds: 0 })).events).toEqual([]);
+    await expect(loop.nextEvents({ timeoutSeconds: 0, exclude: ["bad id"] })).rejects.toThrow(
+      "Invalid exclude ids"
+    );
+  } finally {
+    f.done();
+  }
+});
+
 test.each(["READY FOR REVIEW (round 1)", "QUESTION", "BLOCKED"])(
   "unanswered %s reminds at five minutes, repeats after thirty and ANSWER stops it",
   async (tag) => {

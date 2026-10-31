@@ -125,8 +125,6 @@ export class WatchFake {
   requests: string[] = [];
   unexpected: string[] = [];
   reports: string[] = [];
-  /** Informational pacing reports are asserted separately from failures. */
-  pollReports: string[] = [];
   sleeps: number[] = [];
   writes: ObjectData[] = [];
   /** Executing order movements the loop requested through `board.moveToTop`. */
@@ -180,15 +178,7 @@ export class WatchFake {
       this.clock += ms;
     },
     report: (message) => {
-      if (
-        /^watcher: board pages items=\d+ labels=\d+ blockers=\d+ sub-issues=\d+ reviews=\d+; measured cost=\d+ points\/poll; interval=\d+s$/.test(
-          message
-        )
-      ) {
-        this.pollReports.push(message);
-      } else {
-        this.reports.push(message);
-      }
+      this.reports.push(message);
     },
     fetch: async (input, init) => {
       const url = new URL(String(input));
@@ -809,6 +799,18 @@ export class WatchFake {
       });
     },
   };
+  /** Informational pacing reports are asserted separately from failures. */
+  get pollReports(): string[] {
+    const path = join(this.dir, "watch-pacing.log");
+    if (!existsSync(path)) {
+      return [];
+    }
+    return readFileSync(path, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => line.slice(25));
+  }
+
   boardCard(card: ObjectData): ObjectData {
     return {
       id: card.id,
