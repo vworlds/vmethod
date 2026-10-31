@@ -178,7 +178,10 @@ export function check(
       );
     }
   }
-  if (!claudeIgnored(root)) {
+  const claudeIgnore = claudeIgnoreStatus(root);
+  if (claudeIgnore === "missing") {
+    messages.push(`no .gitignore found at ${root} (in CI, copy it into the build context)`);
+  } else if (claudeIgnore === "not-ignored") {
     messages.push(
       "Ignore .claude/ in .gitignore: each checkout keeps its own identity in .claude/settings.local.json"
     );
@@ -248,18 +251,17 @@ function localSettingsRole(root: string): string | undefined {
   return typeof role === "string" ? role : undefined;
 }
 
-/** A root .gitignore line ignoring the whole .claude directory, without negations after it. */
-function claudeIgnored(root: string): boolean {
+/** Whether the root .gitignore is absent, ignores the whole .claude directory, or does not. */
+function claudeIgnoreStatus(root: string): "missing" | "ignored" | "not-ignored" {
   let lines: string[];
   try {
     lines = readFileSync(join(root, ".gitignore"), "utf8").split(/\r?\n/);
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "not-ignored";
   }
   const ignored = lines.findLastIndex((line) => /^\/?\.claude\/?$/.test(line.trim()));
-  return (
-    ignored >= 0 && !lines.slice(ignored + 1).some((line) => /^!\/?\.claude\//.test(line.trim()))
-  );
+  const negated = lines.slice(ignored + 1).some((line) => /^!\/?\.claude\//.test(line.trim()));
+  return ignored >= 0 && !negated ? "ignored" : "not-ignored";
 }
 
 function secretPaths(value: unknown, path = ""): string[] {

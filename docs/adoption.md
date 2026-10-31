@@ -215,6 +215,9 @@ the central orchestrator binding described above. See
       settings, never invalid installed settings or other findings. Remove it at
       1.0 and have the owner install permissions: stable releases reject the switch.
       Any later prerelease also accepts it; it is not limited to the 1.0 pilot.
+      A containerised `check` also needs the repository's `.gitignore` in its
+      build context, because `check` verifies the `.claude/` ignore rule; add
+      `COPY .gitignore` to the verify stage.
 - [ ] On a fresh empty project, run `board init` to create the baseline fields
       before adding cards; see [board initialization](board.md#migrations-what-adopters-see).
       Review `board status` and `board migrate --dry-run`, then apply `board migrate`
