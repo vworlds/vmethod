@@ -95,8 +95,10 @@ export function eventLoop(
         conflictPending: (pr) => this.conflicts.pending(pr),
         conflictFixing: (pr) => this.conflicts.fixing(pr),
         board: {
-          set: (input) => this.board.set(input),
-          moveToTop: (itemId) => this.board.moveToTop(itemId),
+          set: (input, operation) => this.board.set(input, operation),
+          moveToTop: (itemId, projectId, nodes) => this.board.moveToTop(itemId, projectId, nodes),
+          orderExecuting: (cards, activity, projectId, nodes) =>
+            this.board.orderExecuting(cards, activity, projectId, nodes),
         },
         digest: this.digest,
       },

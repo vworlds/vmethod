@@ -1615,6 +1615,7 @@ test("a failed position write is reported without failing the triggering verb", 
   const board = setup();
   board.stamp(6, 6);
   v6Fields();
+  board.card("earlier").values.Status = "Executing";
   const pr = board.card("pr");
   pr.kind = "PullRequest";
   pr.values.Status = "Executing";
@@ -1627,9 +1628,9 @@ test("a failed position write is reported without failing the triggering verb", 
   ).resolves.toBe("Board field updated");
   expect(pr.values.Progress).toBe("🤖👍 🔁1️⃣");
   expect(board.reports).toHaveLength(1);
-  expect(board.reports[0]).toContain("to the top failed for item pr");
+  expect(board.reports[0]).toContain("Executing order update failed");
   expect(board.reports[0]).toContain("Interrupted order update");
-  expect(board.cards.map((card) => card.id)).toEqual(["pr", "review"]);
+  expect(board.cards.map((card) => card.id)).toEqual(["earlier", "pr", "review"]);
   board.failOrder = true;
   await expect(
     board
@@ -1639,7 +1640,7 @@ test("a failed position write is reported without failing the triggering verb", 
   expect(pr.values.Status).toBe("Owner review");
   expect(board.reports).toHaveLength(2);
   expect(board.reports[1]).toContain("after Owner review failed for item pr");
-  expect(board.cards.map((card) => card.id)).toEqual(["pr", "review"]);
+  expect(board.cards.map((card) => card.id)).toEqual(["earlier", "pr", "review"]);
   // Both attempts ran the field write and the failed position mutation.
   expect(board.mutations).toEqual([
     "BoardSetCards",

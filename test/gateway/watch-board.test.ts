@@ -53,7 +53,11 @@ class BoardAPI {
           Field(field) {
             if (field.name.value === "items") {
               size = Number(argument(field, "first"));
-            } else if (["labels", "blockedBy", "subIssues", "reviews"].includes(field.name.value)) {
+            } else if (
+              ["labels", "blockedBy", "subIssues", "reviews", "closingIssuesReferences"].includes(
+                field.name.value
+              )
+            ) {
               lists.set(field.name.value, field);
             }
           },
@@ -103,7 +107,11 @@ class BoardAPI {
           );
           visit(selection, {
             Field(field) {
-              if (["labels", "blockedBy", "subIssues", "reviews"].includes(field.name.value)) {
+              if (
+                ["labels", "blockedBy", "subIssues", "reviews", "closingIssuesReferences"].includes(
+                  field.name.value
+                )
+              ) {
                 const source = object(content[field.name.value]).nodes as ObjectData[];
                 data[selection.alias!.value] = { [field.name.value]: connection(field, source) };
                 count++;
@@ -190,8 +198,14 @@ test("nested lists are completed in batches, sized to the largest plus margin, a
       author: { __typename: "User", login: "owner", databaseId: 101 },
     })),
   };
+  pr.closingIssuesReferences = {
+    nodes: Array.from({ length: 15 }, (_, i) => ({
+      number: i + 1,
+      repository: { nameWithOwner: "example/project" },
+    })),
+  };
   const result = await api.reader.read("example", 5, activity);
-  expect(api.overflowBatches).toEqual([4]);
+  expect(api.overflowBatches).toEqual([5]);
   expect(api.reader.pages).toBe(1);
   expect(api.reader.overflow).toBe(1);
   expect(api.reader.cost).toBe(4);
@@ -201,13 +215,17 @@ test("nested lists are completed in batches, sized to the largest plus margin, a
     blockedBy: 22,
     subIssues: 23,
     reviews: 24,
+    closingIssuesReferences: 25,
   });
   expect(object(object(result.nodes[0].content).blockedBy).nodes).toEqual(
     object(issue.blockedBy).nodes
   );
   expect(object(object(result.nodes[1].content).reviews).nodes).toEqual(object(pr.reviews).nodes);
+  expect(object(object(result.nodes[1].content).closingIssuesReferences).nodes).toEqual(
+    object(pr.closingIssuesReferences).nodes
+  );
   await api.reader.read("example", 5, activity);
-  expect(api.overflowBatches).toEqual([4]);
+  expect(api.overflowBatches).toEqual([5]);
   expect(api.reader.pages).toBe(1);
   expect(api.reader.overflow).toBe(0);
   expect(api.reader.cost).toBe(2);
@@ -216,6 +234,7 @@ test("nested lists are completed in batches, sized to the largest plus margin, a
   expect(api.reader.sizes).toEqual({
     items: 11,
     labels: 10,
+    closingIssuesReferences: 10,
     blockedBy: 10,
     subIssues: 10,
     reviews: 10,
