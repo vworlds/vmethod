@@ -205,30 +205,60 @@ export const upstreamComment: Handler<"upstreamComment"> = async function ({ ref
   return `Commented on https://github.com/${central}/issues/${number}`;
 };
 
-/** Close an accepted own-repository issue, optionally posting a validated file comment first. */
-/** Rewrite only the exact body previously returned by read issue. */
-export const issueEdit: Handler<"issueEdit"> = async function ({ ref, file, scopeReview }) {
+/** Rewrite the exact body previously returned by read issue and/or its title; a body
+ * edit keeps the stale-read guard and scope-approval binding, a title-only edit
+ * leaves the body and its approval untouched. */
+export const issueEdit: Handler<"issueEdit"> = async function ({ ref, file, title, scopeReview }) {
   const number = this.localNumber(ref);
-  const body = readFileSync(file, "utf8");
-  guardDependencyText(body);
-  await checkMarkdown(this.root, body);
-  guardClosingKeywords(body);
+  if (file === undefined && title === undefined) {
+    throw new Error("issue edit requires a body file, --title, or both");
+  }
+  if (scopeReview !== undefined && file === undefined) {
+    throw new Error("--scope-review requires a body file");
+  }
+  if (title !== undefined && (typeof title !== "string" || !title.trim() || /[\r\n]/.test(title))) {
+    throw new Error("Invalid issue title");
+  }
+  const body = file === undefined ? undefined : readFileSync(file, "utf8");
+  if (body !== undefined) {
+    guardDependencyText(body);
+    await checkMarkdown(this.root, body);
+    guardClosingKeywords(body);
+  }
+  if (title !== undefined) {
+    await checkMarkdown(this.root, title);
+    guardClosingKeywords(title);
+  }
   // #359: validate the paired summary before any write, exactly like the standalone
   // scope-review verb; the edit below then hands the new body straight to review.
   const summary = scopeReview === undefined ? undefined : this.scopeSummary(scopeReview);
   const item = await this.flowThread(String(number), "issue");
   const snapshot = resolve(this.root, ".tmp", `issue-read-${number}.sha256`);
-  if (!existsSync(snapshot) || readFileSync(snapshot, "utf8") !== bodyHash(String(item.body))) {
+  if (
+    body !== undefined &&
+    (!existsSync(snapshot) || readFileSync(snapshot, "utf8") !== bodyHash(String(item.body)))
+  ) {
     throw new Error("Issue body changed since read (or not read); read issue again before editing");
   }
-  // #359: the current, pre-edit approval is what the edit voids; read it before writing.
-  // The paired --scope-review flow voids and re-approves in one verb, so it skips the warning.
-  const stale = summary === undefined ? await this.staleScopeApproval(number, item) : undefined;
-  // Journal the body write as the verb's operation (#199) so a poll between it and
-  // a sibling write cannot report the card.
+  // #359: the current, pre-edit approval is what a body edit voids; read it before
+  // writing. Approval binds the body hash, so a title-only edit leaves it approved,
+  // and the paired --scope-review flow voids and re-approves in one verb.
+  const stale =
+    body !== undefined && summary === undefined
+      ? await this.staleScopeApproval(number, item)
+      : undefined;
+  // Journal the write as the verb's operation (#199) so a poll between it and a
+  // sibling write cannot report the card.
   this.github.writes.beginOperation("issue edit", [{ repo: this.config.repo, number }]);
-  await this.github.rest(`/repos/${this.config.repo}/issues/${number}`, "PATCH", { body }, false);
-  writeFileSync(snapshot, bodyHash(body));
+  await this.github.rest(
+    `/repos/${this.config.repo}/issues/${number}`,
+    "PATCH",
+    { ...(body === undefined ? {} : { body }), ...(title === undefined ? {} : { title }) },
+    false
+  );
+  if (body !== undefined) {
+    writeFileSync(snapshot, bodyHash(body));
+  }
   if (summary !== undefined) {
     return `Updated issue #${number}; ${await this.scopeReviewCore(number, summary)}`;
   }

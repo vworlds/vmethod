@@ -29,13 +29,52 @@ export async function gatewayVerb(
           ctx
         );
       }
-      if (
-        args[0] === "edit" &&
-        (args.length === 3 || (args.length === 5 && args[3] === "--scope-review"))
-      ) {
+      if (args[0] === "edit" && args[1] && !args[1].startsWith("--")) {
+        let file: string | undefined;
+        let title: string | undefined;
+        let scopeReview: string | undefined;
+        for (let i = 2; i < args.length; i++) {
+          const arg = args[i];
+          if (arg === "--title" || arg === "--scope-review") {
+            const value = args[++i];
+            if (!value || value.startsWith("--")) {
+              throw new Error(`Missing value for ${arg}`);
+            }
+            if (arg === "--title") {
+              if (title !== undefined) {
+                throw new Error("Usage: --title may appear only once");
+              }
+              title = value;
+            } else {
+              if (scopeReview !== undefined) {
+                throw new Error("Usage: --scope-review may appear only once");
+              }
+              scopeReview = value;
+            }
+          } else if (!arg.startsWith("--") && file === undefined) {
+            file = arg;
+          } else {
+            throw new Error(
+              "Usage: issue edit <n> [<body-file>] [--title <text>] [--scope-review <summary-file>]"
+            );
+          }
+        }
+        if (file === undefined && title === undefined) {
+          throw new Error(
+            "Usage: issue edit <n> [<body-file>] [--title <text>] [--scope-review <summary-file>]"
+          );
+        }
+        if (scopeReview !== undefined && file === undefined) {
+          throw new Error("--scope-review requires a body file");
+        }
         return transport.call(
           "issueEdit",
-          { ref: args[1], file: args[2], scopeReview: args[4] },
+          {
+            ref: args[1],
+            ...(file === undefined ? {} : { file }),
+            ...(title === undefined ? {} : { title }),
+            ...(scopeReview === undefined ? {} : { scopeReview }),
+          },
           ctx
         );
       }
@@ -131,7 +170,7 @@ export async function gatewayVerb(
         return transport.call("issueEstimate", { ref: args[1], points: Number(args[2]) }, ctx);
       }
       throw new Error(
-        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic] | issue close <n> [--comment file] [--force] | issue reopen <n> [--comment file] | issue edit <n> <body-file> [--scope-review <summary-file>] | issue block <n> <blocker> | issue unblock <n> <blocker> | issue parent <n> <epic> | issue unparent <n> <epic> | issue estimate <n> <points>"
+        "Usage: issue create <title> <body-file> [--label l] [--estimate n] [--status name] [--parent epic] | issue close <n> [--comment file] [--force] | issue reopen <n> [--comment file] | issue edit <n> [<body-file>] [--title <text>] [--scope-review <summary-file>] | issue block <n> <blocker> | issue unblock <n> <blocker> | issue parent <n> <epic> | issue unparent <n> <epic> | issue estimate <n> <points>"
       );
     }
     case "upstream":

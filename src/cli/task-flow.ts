@@ -20,11 +20,41 @@ export async function taskFlowVerb(
         ctx
       );
     }
-    if (args[0] === "edit" && args.length === 3 && /^[1-9]\d*$/.test(args[1])) {
-      return transport.call("prEdit", { ref: args[1], file: args[2] }, ctx);
+    if (args[0] === "edit" && /^[1-9]\d*$/.test(args[1] ?? "")) {
+      let file: string | undefined;
+      let title: string | undefined;
+      for (let i = 2; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "--title") {
+          const value = args[++i];
+          if (!value || value.startsWith("--")) {
+            throw new Error("Missing value for --title");
+          }
+          if (title !== undefined) {
+            throw new Error("Usage: --title may appear only once");
+          }
+          title = value;
+        } else if (!arg.startsWith("--") && file === undefined) {
+          file = arg;
+        } else {
+          throw new Error("Usage: pr edit <n> [<body-file>] [--title <text>]");
+        }
+      }
+      if (file === undefined && title === undefined) {
+        throw new Error("Usage: pr edit <n> [<body-file>] [--title <text>]");
+      }
+      return transport.call(
+        "prEdit",
+        {
+          ref: args[1],
+          ...(file === undefined ? {} : { file }),
+          ...(title === undefined ? {} : { title }),
+        },
+        ctx
+      );
     }
     throw new Error(
-      "Usage: pr open <branch> <title> <body-file> [--draft] or pr edit <n> <body-file> or pr merge <n>"
+      "Usage: pr open <branch> <title> <body-file> [--draft] or pr edit <n> [<body-file>] [--title <text>] or pr merge <n>"
     );
   }
   if (verb === "resolve-conflicts") {

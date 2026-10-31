@@ -22,9 +22,13 @@ export interface Operations {
   };
   issueClose: { input: { ref: string; comment?: string; force?: boolean }; output: string };
   issueReopen: { input: { ref: string; comment?: string }; output: string };
-  /** Replace a previously read issue body, refusing stale read evidence; the optional
-   * summary file pairs the edit with a scope review of the new body (#359). */
-  issueEdit: { input: { ref: string; file: string; scopeReview?: string }; output: string };
+  /** Replace a previously read issue body and/or its title, at least one of them;
+   * a body edit refuses stale read evidence, and the optional summary file pairs it
+   * with a scope review of the new body (#359). */
+  issueEdit: {
+    input: { ref: string; file?: string; title?: string; scopeReview?: string };
+    output: string;
+  };
   /** File an issue on the central repository for a bound consumer orchestrator (#333). */
   upstreamIssue: { input: { title: string; file: string }; output: string };
   /** Comment on an existing central-repository issue under the same gate and checks. */
@@ -67,8 +71,9 @@ export interface Operations {
     input: { branch: string; title: string; file: string; draft?: boolean };
     output: string;
   };
-  /** Replace the body of a same-repository PR with checked Markdown; orchestrator only. */
-  prEdit: { input: { ref: string; file: string }; output: string };
+  /** Replace the body and/or title of a same-repository PR with checked Markdown;
+   * at least one of them; orchestrator only. */
+  prEdit: { input: { ref: string; file?: string; title?: string }; output: string };
   /** Squash a non-task PR with exact-head owner or delegated review and normal CI/base gates. */
   prMerge: { input: { ref: string }; output: string };
   reviewTask: { input: ReviewInput; output: string };
