@@ -34,6 +34,8 @@ export class FakeBoard {
     })),
   }));
   cards: Card[] = [];
+  /** Dependency fields projected onto recorded WatchBoard content for ordering tests. */
+  orderingContent = new Map<string, ObjectData>();
   /** Other project memberships before this board's item, to exercise nested paging/filtering. */
   otherMemberships = new Map<string, ObjectData[]>();
   /** Repository issues/PRs with no membership on this board. */
@@ -280,6 +282,46 @@ export class FakeBoard {
                   })),
                 variables.cursor
               ),
+            },
+          };
+          break;
+        case "WatchBoard":
+          // Projection of the WatchFake.card recorded GraphQL board shape.
+          data = {
+            rateLimit: { cost: 1 },
+            organization: {
+              projectV2: {
+                id: "project",
+                readme: this.readme,
+                items: this.page(
+                  this.cards
+                    .filter((card) => !card.archived)
+                    .map((card) => ({
+                      id: card.id,
+                      isArchived: false,
+                      status: { name: card.values.Status },
+                      content: {
+                        __typename: card.kind,
+                        id: card.contentId ?? `content-${card.id}`,
+                        number: card.number,
+                        repository: { nameWithOwner: card.repo },
+                        labels: connection([]),
+                        ...(card.kind === "Issue"
+                          ? {
+                              blockedBy: { totalCount: 0, ...connection([]) },
+                              subIssues: connection([]),
+                            }
+                          : {
+                              body: "",
+                              reviews: connection([]),
+                              closingIssuesReferences: connection([]),
+                            }),
+                        ...this.orderingContent.get(card.id),
+                      },
+                    })),
+                  variables.cursor
+                ),
+              },
             },
           };
           break;

@@ -92,14 +92,39 @@ test("scope-review advances both gates under verified owner autopilot and commen
     },
     ...boardReads(recording),
     mutations([undefined, { singleSelectOptionId: "executing" }]),
+    // The singleton Executing column is already ordered: read its complete
+    // dependency snapshot, but no redundant position mutation is needed.
     {
-      path: "/graphql",
-      json: { data: { updateProjectV2ItemPosition: { clientMutationId: null } } },
-      checkQuery(query, variables) {
-        expect(query).toContain("updateProjectV2ItemPosition");
-        expect(variables).toEqual({
-          input: { projectId: recording.id, itemId: card.id, afterId: null },
-        });
+      ...graph({
+        rateLimit: { cost: 1 },
+        organization: {
+          projectV2: {
+            id: recording.id,
+            readme: recording.readme,
+            items: {
+              nodes: [
+                {
+                  id: card.id,
+                  isArchived: false,
+                  status: { name: "Executing" },
+                  content: {
+                    ...issue,
+                    blockedBy: {
+                      totalCount: 0,
+                      nodes: [],
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                    subIssues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+                  },
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      }),
+      checkQuery(query: string) {
+        expect(query).toContain("query WatchBoard(");
       },
     },
   ]);

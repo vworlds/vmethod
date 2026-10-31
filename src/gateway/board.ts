@@ -1,4 +1,6 @@
 import { parseDocument } from "yaml";
+import { executingCards, executingOrder, positionMoves, type OrderCard } from "../board/order.js";
+import { WatchBoard } from "./watch-board.js";
 import { assertEstimate } from "../board/estimate.js";
 import type { Config } from "../config.js";
 import { compatibility, readState } from "../board/readme.js";
@@ -67,11 +69,14 @@ function nextCursor(connection: ObjectData, seen: Set<string>): string | null {
 
 /** Explicitly scoped to one verb's card choreography; never retained on the service. */
 export interface BoardOperation {
+  /** Complete current watcher poll; never retained by the service. */
+  orderingNodes?: ObjectData[];
   membership?: { snapshot: Snapshot; node?: ObjectData; itemId: string };
   card?: Card;
 }
 
 export class BoardService implements BoardIO {
+  private orderCycles = new Set<string>();
   private readonly settings: NonNullable<Config["board"]>;
   private readonly runner: MigrationRunner;
   constructor(
@@ -681,7 +686,8 @@ export class BoardService implements BoardIO {
             { field: "Progress", value: input.progress! },
             { field: "Status", value: input.value },
           ]
-        : [{ field: input.field, value: input.value }]
+        : [{ field: input.field, value: input.value }],
+      operation?.orderingNodes
     );
     if (membership && operation) {
       operation.card = {
@@ -931,18 +937,78 @@ export class BoardService implements BoardIO {
   }
   /** Best-effort ordering on GitHub's single manual order per project
    * (`updateProjectV2ItemPosition`; `afterId: null` is the top, and the item
-   * listing returns that order). Executing activity belongs at the top and an
+   * listing returns that order). Executing activity breaks dependency-order ties; an
    * Owner review handover at the bottom; every other column keeps the owner's
    * order. A failed position write is reported and never blocks the verb or
    * watcher move that triggered it, and the position mutation is journaled with
    * the write's other board updates at the single GitHub boundary. */
-  async moveToTop(itemId: string, projectId?: string): Promise<void> {
+  async moveToTop(itemId: string, projectId?: string, orderingNodes?: ObjectData[]): Promise<void> {
+    await this.orderExecuting(undefined, itemId, projectId, orderingNodes);
+  }
+
+  /** Re-sort Executing after activity or a dependency edit. A supplied complete
+   * watcher graph avoids another board read; only configured repositories move.
+   * Position failures remain best effort and successful writes are journaled. */
+  async orderExecuting(
+    cards?: OrderCard[],
+    activity?: string,
+    projectId?: string,
+    orderingNodes?: ObjectData[]
+  ): Promise<void> {
     try {
-      await this.positionItem(itemId, projectId ?? (await this.guardedProject()).id, null);
-    } catch (error) {
-      this.report(
-        `Board card order update to the top failed for item ${itemId}: ${(error as Error).message}`
+      const project = projectId ?? (await this.guardedProject()).id;
+      if (!cards && orderingNodes) {
+        cards = executingCards(orderingNodes);
+      }
+      if (!cards) {
+        const snapshot = await new WatchBoard(this.github).read(
+          String(this.settings.owner),
+          Number(this.settings.number),
+          { issue: "", pr: "" }
+        );
+        cards = executingCards(snapshot.nodes);
+      }
+      const result = executingOrder(cards, activity);
+      const nextCycles = new Set<string>();
+      for (const cycle of result.cycles) {
+        const ids = new Set(cycle);
+        const signature = JSON.stringify(
+          cards
+            .filter((card) => ids.has(card.id))
+            .map((card) => [
+              card.id,
+              card.dependencies
+                .filter((id) => ids.has(id))
+                .slice()
+                .sort(),
+            ])
+            .sort()
+        );
+        nextCycles.add(signature);
+        if (!this.orderCycles.has(signature)) {
+          this.report(`Executing dependency cycle: ${[...cycle].sort().join(" → ")}`);
+        }
+      }
+      this.orderCycles = nextCycles;
+      const repos = new Set(this.repositories().map((repo) => repo.toLowerCase()));
+      const owned = new Set(
+        cards.filter((card) => repos.has(card.repo.toLowerCase())).map((card) => card.id)
       );
+      const current = cards.map((card) => card.id);
+      for (const move of positionMoves(current, result.order, owned)) {
+        await this.positionItem(move.itemId, project, move.afterId);
+        if (orderingNodes) {
+          const index = orderingNodes.findIndex((node) => node.id === move.itemId);
+          const [node] = orderingNodes.splice(index, 1);
+          const after =
+            move.afterId === null
+              ? -1
+              : orderingNodes.findIndex((node) => node.id === move.afterId);
+          orderingNodes.splice(after + 1, 0, node);
+        }
+      }
+    } catch (error) {
+      this.report(`Board Executing order update failed: ${(error as Error).message}`);
     }
   }
   /** Best-effort: move a card after the column's last card left in Owner review
@@ -992,7 +1058,8 @@ export class BoardService implements BoardIO {
     card: Card,
     snapshot: Snapshot,
     writes: { field: Field; value: string | number | null; progress?: string | null }[],
-    order: { field: string; value: string | number | null; progress?: string | number | null }[]
+    order: { field: string; value: string | number | null; progress?: string | number | null }[],
+    orderingNodes?: ObjectData[]
   ): Promise<void> {
     const changes: { id: string; field: Field; value: string | number | null }[] = [];
     for (const write of writes) {
@@ -1006,16 +1073,17 @@ export class BoardService implements BoardIO {
       changes.push({ id: card.id, field: write.field, value: write.value });
     }
     await this.setChanges(snapshot.id, changes);
-    await this.orderAfterEntries(card, order, snapshot.id);
+    await this.orderAfterEntries(card, order, snapshot.id, orderingNodes);
   }
   /** Card order caused by Progress/Status entries: a changed Executing-Progress or a
-   * Status entry into Executing moves the card to the top; a Status entry into Owner
+   * Status entry into Executing re-sorts dependencies with this card most recent; a Status entry into Owner
    * review queues it after the column's last card. All other target columns are
    * owner-ordered and never moved. */
   private async orderAfterEntries(
     card: Card,
     entries: { field: string; value: string | number | null; progress?: string | number | null }[],
-    projectId: string
+    projectId: string,
+    orderingNodes?: ObjectData[]
   ): Promise<void> {
     if (!entries.some((entry) => ["Status", "Progress"].includes(entry.field))) {
       return;
@@ -1037,7 +1105,13 @@ export class BoardService implements BoardIO {
       return;
     }
     if (status === "Executing") {
-      await this.moveToTop(card.id, projectId);
+      if (orderingNodes) {
+        const node = orderingNodes.find((node) => node.id === card.id);
+        if (node) {
+          node.status = { ...object(node.status), name: status };
+        }
+      }
+      await this.moveToTop(card.id, projectId, orderingNodes);
     } else if (entries.some((entry) => entry.field === "Status") && status === "Owner review") {
       await this.moveToOwnerReviewBottom(card.id, projectId);
     }

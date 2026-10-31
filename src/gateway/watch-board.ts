@@ -3,14 +3,21 @@ import { object, type ObjectData } from "./people.js";
 import { batchPages, pages, pageCursor } from "../github/pages.js";
 import { actorFields, pageInfo } from "../github/selections.js";
 
-type ListName = "labels" | "blockedBy" | "subIssues" | "reviews";
+type ListName = "labels" | "blockedBy" | "subIssues" | "reviews" | "closingIssuesReferences";
 type Sizes = Record<"items" | ListName, number>;
-const listNames: ListName[] = ["labels", "blockedBy", "subIssues", "reviews"];
+const listNames: ListName[] = [
+  "labels",
+  "blockedBy",
+  "subIssues",
+  "reviews",
+  "closingIssuesReferences",
+];
 const fields: Record<ListName, string> = {
   labels: "nodes { name }",
   blockedBy: "totalCount nodes { number state repository { nameWithOwner } }",
   subIssues: "nodes { id }",
   reviews: `nodes { id state commit { oid } author { ${actorFields} } }`,
+  closingIssuesReferences: "nodes { number repository { nameWithOwner } }",
 };
 const nodes = (connection: ObjectData): ObjectData[] =>
   Array.isArray(connection.nodes) ? connection.nodes.map(object) : [];
@@ -26,7 +33,14 @@ interface Overflow {
 
 /** One watch session's bounded, adaptive board pages; only complete reads train sizes. */
 export class WatchBoard {
-  sizes: Sizes = { items: 10, labels: 10, blockedBy: 10, subIssues: 10, reviews: 10 };
+  sizes: Sizes = {
+    items: 10,
+    labels: 10,
+    blockedBy: 10,
+    subIssues: 10,
+    reviews: 10,
+    closingIssuesReferences: 10,
+  };
   /** Actual sum of rateLimit.cost across board and overflow queries in the last read. */
   cost = 0;
   /** Board page and overflow queries the last read needed; boundary changes report. */
@@ -76,7 +90,7 @@ export class WatchBoard {
         }
         for (const name of listNames) {
           if (
-            (kind === "Issue" && name === "reviews") ||
+            (kind === "Issue" && (name === "reviews" || name === "closingIssuesReferences")) ||
             (kind === "PullRequest" && (name === "blockedBy" || name === "subIssues"))
           ) {
             continue;
@@ -120,7 +134,7 @@ export class WatchBoard {
       rateLimit { cost }
       organization(login: $owner) { projectV2(number: $number) { id readme
         items(first: ${this.sizes.items}, after: $cursor) { nodes {
-          id
+          id isArchived
           status: fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt } }
           estimate: fieldValueByName(name: "Estimate") { ... on ProjectV2ItemFieldNumberValue { number } }
           progress: fieldValueByName(name: "Progress") { ... on ProjectV2ItemFieldTextValue { text } }
@@ -128,7 +142,7 @@ export class WatchBoard {
             ... on Issue { ${activity.issue} ${common} stateReason ${list("blockedBy")} ${list("subIssues")}
               closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT]) { nodes { ... on ClosedEvent { actor { login } } } }
             }
-            ... on PullRequest { ${activity.pr} ${common} headRefOid ${list("reviews")}
+            ... on PullRequest { ${activity.pr} ${common} body headRefOid ${list("reviews")} ${list("closingIssuesReferences")}
               closure: timelineItems(last: 1, itemTypes: [CLOSED_EVENT, MERGED_EVENT]) { nodes {
                 ... on ClosedEvent { actor { login } } ... on MergedEvent { actor { login } }
               } }

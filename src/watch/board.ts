@@ -16,6 +16,7 @@ import {
   WAITING_TURN_REMINDER_MINUTES,
 } from "../core/time.js";
 import { readState } from "../board/readme.js";
+import { executingCards, type OrderCard } from "../board/order.js";
 import { ScopeReader } from "../evidence/scope.js";
 import {
   AutopilotReader,
@@ -186,6 +187,8 @@ export class BoardPoller {
   private readonly boardReader: WatchBoard;
   private autopilot = new Map<string, AutopilotState>();
   private nextSignature = "";
+  private orderSignature: string | undefined;
+  private orderingNodes: ObjectData[] = [];
   private nextAt = 0;
   private launchedIssues = new Set<number>();
   private readonly boardEnabled: boolean;
@@ -241,6 +244,7 @@ export class BoardPoller {
       throw new Error("Missing board configuration");
     }
     const cards = await this.readBoard(owner, number);
+    this.orderingNodes = cards.nodes;
     await this.watchAutopilot(cards.list);
     const ownerWaits = cards.list.filter(
       (card) =>
@@ -267,6 +271,13 @@ export class BoardPoller {
     const migration = migrationActive(readState(cards.readme), this.host.deps.now(), (message) =>
       this.host.deps.report(`watcher: ${message}`)
     );
+    const orderSignature = JSON.stringify(
+      [...cards.order].sort((a, b) => a.id.localeCompare(b.id))
+    );
+    if (!migration && this.orderSignature !== undefined && orderSignature !== this.orderSignature) {
+      await this.host.board.orderExecuting(cards.order, undefined, undefined, this.orderingNodes);
+    }
+    this.orderSignature = orderSignature;
     this.inprogress = [];
     const ready: CardInfo[] = [];
     const specReview: CardInfo[] = [];
@@ -310,7 +321,7 @@ export class BoardPoller {
       ) {
         const next = turnAssignees(this.host.filter.people, card.repo, card.assignees, null);
         await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
-        await this.host.board.set({
+        await this.setBoard({
           itemId: card.id,
           field: "Status",
           value: "Done",
@@ -383,7 +394,7 @@ export class BoardPoller {
           )
         );
         await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
-        await this.host.board.set({ itemId: card.id, field: "Progress", value: "👤🔍" });
+        await this.setBoard({ itemId: card.id, field: "Progress", value: "👤🔍" });
         card.assignees = next;
         card.progress = "👤🔍";
       }
@@ -788,7 +799,7 @@ export class BoardPoller {
   private async readBoard(
     owner: string,
     number: number
-  ): Promise<{ readme: string; list: CardInfo[] }> {
+  ): Promise<{ readme: string; list: CardInfo[]; order: OrderCard[]; nodes: ObjectData[] }> {
     try {
       const result = await this.boardReader.read(owner, number, {
         issue: this.owners.size > 1 ? ownerActivityFields(false) : "",
@@ -797,6 +808,8 @@ export class BoardPoller {
       return {
         readme: result.readme,
         list: result.nodes.map((node) => this.decodeCard(node)).filter((card) => card !== null),
+        order: executingCards(result.nodes),
+        nodes: result.nodes,
       };
     } catch (error) {
       if (error instanceof GraphQLResponseError) {
@@ -1003,7 +1016,7 @@ export class BoardPoller {
       await setTurn(this.host.github, card.repo, card.number, card.assignees, next);
       card.assignees = next;
       if (card.progress) {
-        await this.host.board.set({ itemId: card.id, field: "Progress", value: null });
+        await this.setBoard({ itemId: card.id, field: "Progress", value: null });
         card.progress = "";
       }
     }
@@ -1050,7 +1063,7 @@ export class BoardPoller {
     }
     this.state.pr(card.number).pendingProgress.remove();
     if (card.column !== "Done") {
-      await this.host.board.set({
+      await this.setBoard({
         itemId: card.id,
         field: "Status",
         value: "Done",
@@ -1059,7 +1072,7 @@ export class BoardPoller {
       card.column = "Done";
       card.progress = "";
     } else if (card.progress) {
-      await this.host.board.set({ itemId: card.id, field: "Progress", value: null });
+      await this.setBoard({ itemId: card.id, field: "Progress", value: null });
       card.progress = "";
     }
     this.state.card(card.id).column.write("Done\n");
@@ -1280,6 +1293,17 @@ export class BoardPoller {
     return true;
   }
 
+  private async setBoard(input: Parameters<BoardDeps["host"]["board"]["set"]>[0]): Promise<string> {
+    const result = await this.host.board.set(input, { orderingNodes: this.orderingNodes });
+    if (input.field === "Status") {
+      const node = this.orderingNodes?.find((node) => node.id === input.itemId);
+      if (node) {
+        node.status = { ...object(node.status), name: input.value };
+      }
+    }
+    return result;
+  }
+
   private async applyProgress(card: CardInfo): Promise<void> {
     const marker = this.state.pr(card.number).pendingProgress;
     if (!marker.exists()) {
@@ -1319,7 +1343,7 @@ export class BoardPoller {
         str(pending.status) !== card.column &&
         (!ownerPaused || pending.releaseOwner === true)
       ) {
-        await this.host.board.set({
+        await this.setBoard({
           itemId: card.id,
           field: "Status",
           value: str(pending.status),
@@ -1329,7 +1353,7 @@ export class BoardPoller {
         this.state.card(card.id).column.write(`${card.column}\n`);
         wroteBoard = true;
       } else if (text !== card.progress) {
-        await this.host.board.set({ itemId: card.id, field: "Progress", value: text || null });
+        await this.setBoard({ itemId: card.id, field: "Progress", value: text || null });
         wroteBoard = true;
       }
       card.progress = text;
@@ -1341,7 +1365,7 @@ export class BoardPoller {
         // An Executing handback is activity too, unless the Status/Progress write
         // above already ordered this card to the top this cycle (best effort).
         if (changed && card.column === "Executing" && !wroteBoard) {
-          await this.host.board.moveToTop(card.id);
+          await this.host.board.moveToTop(card.id, undefined, this.orderingNodes);
         }
       }
       marker.remove();
@@ -1403,7 +1427,7 @@ export class BoardPoller {
       card.assignees = next;
       // A reconciled Executing turn is an assignee change: activity moves to the top.
       if (card.column === "Executing") {
-        await this.host.board.moveToTop(card.id);
+        await this.host.board.moveToTop(card.id, undefined, this.orderingNodes);
       }
     }
   }
@@ -1454,7 +1478,7 @@ export class BoardPoller {
       await setTurn(this.host.github, issue.repo, issue.number, issue.assignees, next);
       issue.assignees = next;
       if (mirrored) {
-        await this.host.board.set({ itemId: issue.id, field: "Progress", value: null });
+        await this.setBoard({ itemId: issue.id, field: "Progress", value: null });
         issue.progress = "";
       }
     }

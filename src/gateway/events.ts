@@ -91,7 +91,7 @@ export interface LoopHost {
   conflictPending?: (pr: number) => boolean;
   /** True while a dispatched conflict fixer owns the card; worker moves must not revive it. */
   conflictFixing?: (pr: number) => boolean;
-  board: Pick<BoardService, "set" | "moveToTop">;
+  board: Pick<BoardService, "set" | "moveToTop" | "orderExecuting">;
   digest: Digest;
   /** Refresh registry/config before each poll, optionally replacing this loop. */
   refresh?: () => EventLoop | undefined;

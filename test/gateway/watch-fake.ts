@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { expect } from "vitest";
 import { parse, Kind, visit } from "graphql";
 import type { Config } from "../../src/config.js";
+import { BoardService } from "../../src/gateway/board.js";
 import {
   EventLoop,
   type EventDeps,
@@ -49,7 +50,7 @@ function boardCards(cards: ObjectData[]): ObjectData[] {
     const content = object(card.content);
     const names =
       content.__typename === "PullRequest"
-        ? ["labels", "reviews"]
+        ? ["labels", "reviews", "closingIssuesReferences"]
         : ["labels", "blockedBy", "subIssues"];
     for (const name of names) {
       const original = object(content[name]);
@@ -923,6 +924,11 @@ export class WatchFake {
   workerTrees?: () => Promise<{ path: string; branch: string }[]>;
   loop(input: SessionInput = {}): EventLoop {
     const digest = new Digest(this.env, "watch-test", this.deps.now);
+    const ordering = new BoardService(
+      this.config,
+      new GitHubClient(this.config, this.env, this.deps),
+      this.deps
+    );
     const loop = new EventLoop(
       {
         root: this.root,
@@ -968,6 +974,9 @@ export class WatchFake {
         conflictPending: this.conflictPending,
         conflictFixing: this.conflictFixing,
         board: {
+          orderExecuting: async (cards, activity, _projectId, nodes) => {
+            await ordering.orderExecuting(cards, activity, "project", nodes);
+          },
           set: async (input) => {
             if (this.failSet) {
               throw new Error("scripted Progress write failure");
@@ -1041,7 +1050,14 @@ export class WatchFake {
               },
               subIssues: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
             }
-          : { reviews: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } } }),
+          : {
+              body: "",
+              closingIssuesReferences: {
+                nodes: [],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+              reviews: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            }),
       },
       ...overrides,
     };

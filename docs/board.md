@@ -96,13 +96,13 @@ item after another (`afterId: null` moves it to the top) and the item listing
 returns that order. What the top card means differs by column; vmethod only orders
 the two columns it owns:
 
-| Column               | Top means                   | Who orders            | vmethod does                                                                                                                 |
-| -------------------- | --------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Backlog              | most important to the owner | owner                 | never reorders                                                                                                               |
-| Scoping, Spec review | deal with first             | owner                 | never reorders; the orchestrator works these top-down, and the watcher lists pending Scoping/Spec review work in board order |
-| Executing            | most recent activity        | vmethod               | moves the card to the top whenever its Progress or assignee changes, through a verb or the watcher                           |
-| Owner review         | oldest handover (FIFO)      | vmethod               | moves a card to the bottom (after the column's last card) when it enters Owner review                                        |
-| Approved             | merge first                 | owner (drop position) | the orchestrator merges top-down, and the watcher lists approved PRs in board order                                          |
+| Column               | Top means                                     | Who orders            | vmethod does                                                                                                                              |
+| -------------------- | --------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Backlog              | most important to the owner                   | owner                 | never reorders                                                                                                                            |
+| Scoping, Spec review | deal with first                               | owner                 | never reorders; the orchestrator works these top-down, and the watcher lists pending Scoping/Spec review work in board order              |
+| Executing            | dependencies first, then most recent activity | vmethod               | closing PR above its issue, blocker above blocked, sub-issue above epic; re-sorts on Progress or assignee activity and dependency changes |
+| Owner review         | oldest handover (FIFO)                        | vmethod               | moves a card to the bottom (after the column's last card) when it enters Owner review                                                     |
+| Approved             | merge first                                   | owner (drop position) | the orchestrator merges top-down, and the watcher lists approved PRs in board order                                                       |
 
 Position writes are best effort: a failure is reported and never blocks the verb
 or board move that triggered it, and like those writes a reorder is journaled
@@ -111,6 +111,21 @@ Approved lists in board order but derives no event from card position, so a
 reorder silently settles into the next poll. Hand-drag a card when _you_ are
 ordering a column; vmethod imposes the two rules above again only on its next
 write, never while just reading the board.
+
+Executing activity first moves the active card to the front of the current order,
+then a stable topological sort repeatedly chooses the earliest card whose dependencies
+are already placed. A closing task relation (`vmethod-task` or Development link),
+native blocked-by relation, or sub-issue relation puts the dependency above its
+dependent. Partial task relations do not close their issues. Only Executing cards
+participate: dependencies outside the column are ignored, without tracing through
+them. Cycle members keep their recency order and the watcher reports a cycle once
+until it changes.
+
+The watcher also re-sorts when an Executing task PR appears, a card enters Executing,
+or a blocked-by or sub-issue edit changes the column's dependencies. A hand-drag holds
+until the next activity or dependency-triggered write. On shared boards each
+orchestrator computes the order over the whole column but moves only cards in its
+configured repositories; foreign cards can be position anchors, never write targets.
 
 `board status` lists cards whose open/closed state disagrees with Status, and cards
 with an empty Status, which otherwise appear in no column. Use `board status --fix`
