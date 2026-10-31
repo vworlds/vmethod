@@ -305,6 +305,19 @@ test("check requires .claude/ to be gitignored, since it holds each checkout's i
   expect(check(root).code).toBe(0);
 });
 
+test("check names a missing .gitignore instead of only the .claude/ rule", () => {
+  const root = validProject();
+  rmSync(join(root, ".gitignore"));
+  const result = check(root);
+  expect(result.code).toBe(1);
+  expect(result.messages).toContain(
+    `no .gitignore found at ${root} (in CI, copy it into the build context)`
+  );
+  expect(result.messages).not.toContain(
+    "Ignore .claude/ in .gitignore: each checkout keeps its own identity in .claude/settings.local.json"
+  );
+});
+
 test("check returns 0 for a valid project, 1 for findings, 2 for a missing dependency", () => {
   const root = validProject();
   expect(check(root)).toEqual({ code: 0, messages: [] });
