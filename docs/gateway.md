@@ -134,7 +134,7 @@ merge fails closed with retry guidance without partial writes.
 - `vmethod issue close <n> [--comment file] [--force]`
 - `vmethod issue reopen <n> [--comment file]`
 - `vmethod issue estimate <n> <points>`
-- `vmethod issue edit <n> <body-file> [--scope-review <summary-file>]`
+- `vmethod issue edit <n> [<body-file>] [--title <text>] [--scope-review <summary-file>]`
 - `vmethod issue block <n> <blocker>` (`<blocker>` is `#m`, `m` or `org/repo#m`)
 - `vmethod issue unblock <n> <blocker>`
 - `vmethod upstream issue <title> <body-file>`
@@ -203,30 +203,35 @@ the watcher leaves the copied label unjudged for the two-minute in-flight window
 `autopilotInherit({ref}) → string`.
 
 `issue edit` and `scope-review` are orchestrator-only, configured-repository writes.
-Read an issue first: `read issue` (plain or with `--new`) saves its exact body hash
-in worktree-local `.tmp/`; `issue edit` checks the live body against it immediately
-before writing.
+`issue edit <n> [<body-file>] [--title <text>]` needs at least one of the body file
+and `--title`. Read an issue first: `read issue` (plain or with `--new`) saves its
+exact body hash in worktree-local `.tmp/`; a body edit checks the live body against
+it immediately before writing. A title-only edit does not touch the body, so it
+needs no read snapshot and leaves the stored one alone.
 This is a stale-read guard, not an atomic GitHub compare-and-swap. Both writes
-validate Markdown and closing syntax, and refuse a body whose line consists only
-of a dependency reference: dependencies go in the blocked-by relation through
-`issue block`/`issue unblock`, not in issue text. `scope-review` takes a plain
-change summary, refuses a summary opening with a protocol header (`[orchestrator] …`
-or `[worker] …`) before any write, adds the live hash itself and hands the issue
-to the owner. See the
+validate Markdown and closing syntax, including a new title, and refuse a body
+whose line consists only of a dependency reference: dependencies go in the
+blocked-by relation through `issue block`/`issue unblock`, not in issue text.
+`scope-review` takes a plain change summary, refuses a summary opening with a
+protocol header (`[orchestrator] …` or `[worker] …`) before any write, adds the
+live hash itself and hands the issue to the owner. See the
 [scope review procedure](orchestrator-guide.md#scope-review).
 
-`issue edit` on an issue with an approved scope, an open task PR or both (#359)
+A body edit on an issue with an approved scope, an open task PR or both (#359)
 reports `scope approval for #<n> is now stale; run scope-review <n> <summary-file>
-before merging`. Scope approval is bound to the body hash, so the edit voids it
+before merging`. Scope approval is bound to the body hash, so the body edit voids it
 and every gate from `open-task` on would refuse; without the check, only
-`merge-task` at the end would name the edit. Editing an issue with neither prints
-nothing extra. `issue edit <n> <body-file> --scope-review <summary-file>` does
+`merge-task` at the end would name the edit. A title-only edit changes no body
+hash and leaves the approval in place, reporting nothing extra. Body edits on an
+issue with neither an approved scope nor an open task PR also print nothing extra.
+`issue edit <n> <body-file> --scope-review <summary-file>` does
 both in one journaled flow: it validates the summary like `scope-review` before
 any write, then the edit's and the review's own operation records, comment, owner
 turn and board handoff all land in sequence. The review comment carries the
 edited body's `body sha256:`, so approval continues to bind the new body;
 under autopilot it approves immediately, otherwise the owner re-approves from
-Spec review.
+Spec review. `--scope-review` pairs with a body edit and is refused without a
+body file.
 
 `issue block`/`issue unblock` are orchestrator-only relation writes. They resolve
 the target from the configured repository and the blocker from any repository in
@@ -1271,10 +1276,11 @@ and `merge-task` instead.
   `<type>: <subject>` without scope. The body receives the same Markdown and
   closing-keyword checks as posts; task markers are refused. Configured task-pattern
   and pack branches are refused. No worker or task issue relation is created.
-- `vmethod pr edit <n> <body-file>` replaces the body of a same-repository pull
-  request. It is orchestrator-only under the same role rules as `pr open`, applies
-  the same Markdown and closing-keyword checks as posts, and journals the write like
-  `issue edit`, so the watcher stays quiet on your own edit.
+- `vmethod pr edit <n> [<body-file>] [--title <text>]` replaces the body and/or title
+  of a same-repository pull request, requiring at least one of them. It is
+  orchestrator-only under the same role rules as `pr open`, applies the same
+  Markdown and closing-keyword checks as posts to the new body and title, and
+  journals the write like `issue edit`, so the watcher stays quiet on your own edit.
 - `vmethod pr merge <n>` squash-merges a same-repository, non-task PR against
   `baseBranch`. It requires Approved board position (when the board is enabled),
   current-head owner approval through `review <n> owner <file>` and the owner's

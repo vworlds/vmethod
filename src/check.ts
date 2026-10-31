@@ -178,13 +178,32 @@ export function check(
       );
     }
   }
-  if (!claudeIgnored(root)) {
+  const claudeIgnore = claudeIgnoreStatus(root);
+  if (claudeIgnore === "missing") {
+    messages.push(`no .gitignore found at ${root} (in CI, copy it into the build context)`);
+  } else if (claudeIgnore === "not-ignored") {
     messages.push(
       "Ignore .claude/ in .gitignore: each checkout keeps its own identity in .claude/settings.local.json"
     );
   }
+  warnings.push(...leftoverTokenWarnings(root));
   warnings.push(...codeownersWarnings(root));
   return { code: missing ? 2 : messages.length ? 1 : 0, messages: [...messages, ...warnings] };
+}
+
+/** Keys vmethod stopped reading when each identity became its GH_CONFIG_DIR login (#285):
+ * a leftover here is a live credential on disk exported into every session, unused. */
+const unusedTokenKeys = ["GH_TOKEN", "GITHUB_TOKEN"];
+
+/** Name each leftover token key, never its value, and leave removal to the owner. */
+function leftoverTokenWarnings(root: string): string[] {
+  const env = localSettingsEnv(root);
+  return unusedTokenKeys
+    .filter((key) => env !== undefined && Object.hasOwn(env, key))
+    .map(
+      (key) =>
+        `WARN ${key} in .claude/settings.local.json is unused since GH_CONFIG_DIR logins (#285); remove it`
+    );
 }
 
 /** The orchestrator launches workers in their own clone; it must exist apart from this one. */
@@ -211,31 +230,38 @@ function workerCheckoutFindings(root: string, config: Config, env: NodeJS.Proces
   }
 }
 
-/** The role this checkout's own .claude/settings.local.json declares, if it does. */
-function localSettingsRole(root: string): string | undefined {
+/** The `env` block this checkout's own .claude/settings.local.json declares, if it does.
+ * A malformed or absent file is simply no declaration, not a finding.
+ */
+function localSettingsEnv(root: string): Record<string, unknown> | undefined {
   try {
     const settings = JSON.parse(
       readFileSync(join(root, ".claude/settings.local.json"), "utf8")
-    ) as { env?: { VMETHOD_ROLE?: unknown } };
-    const role = settings.env?.VMETHOD_ROLE;
-    return typeof role === "string" ? role : undefined;
+    ) as { env?: unknown };
+    const env = settings?.env;
+    return env && typeof env === "object" ? (env as Record<string, unknown>) : undefined;
   } catch {
     return undefined;
   }
 }
 
-/** A root .gitignore line ignoring the whole .claude directory, without negations after it. */
-function claudeIgnored(root: string): boolean {
+/** The role this checkout's own .claude/settings.local.json declares, if it does. */
+function localSettingsRole(root: string): string | undefined {
+  const role = localSettingsEnv(root)?.VMETHOD_ROLE;
+  return typeof role === "string" ? role : undefined;
+}
+
+/** Whether the root .gitignore is absent, ignores the whole .claude directory, or does not. */
+function claudeIgnoreStatus(root: string): "missing" | "ignored" | "not-ignored" {
   let lines: string[];
   try {
     lines = readFileSync(join(root, ".gitignore"), "utf8").split(/\r?\n/);
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "not-ignored";
   }
   const ignored = lines.findLastIndex((line) => /^\/?\.claude\/?$/.test(line.trim()));
-  return (
-    ignored >= 0 && !lines.slice(ignored + 1).some((line) => /^!\/?\.claude\//.test(line.trim()))
-  );
+  const negated = lines.slice(ignored + 1).some((line) => /^!\/?\.claude\//.test(line.trim()));
+  return ignored >= 0 && !negated ? "ignored" : "not-ignored";
 }
 
 function secretPaths(value: unknown, path = ""): string[] {

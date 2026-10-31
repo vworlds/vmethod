@@ -69,17 +69,35 @@ export const prOpen: Handler<"prOpen"> = async function (input) {
   return this.flow.openPr(input);
 };
 
-/** Replace a same-repository PR's body (#442). `pr open` is orchestrator-only and so is
- * this sibling; the body receives the post checks, and the operation record keeps the
- * watcher quiet on this checkout's own write, like `issue edit`. */
-export const prEdit: Handler<"prEdit"> = async function ({ ref, file }) {
+/** Replace a same-repository PR's body and/or title (#442), at least one of them.
+ * `pr open` is orchestrator-only and so is this sibling; the body and title receive
+ * the post checks, and the operation record keeps the watcher quiet on this
+ * checkout's own write, like `issue edit`. */
+export const prEdit: Handler<"prEdit"> = async function ({ ref, file, title }) {
   const number = this.localNumber(ref);
-  const body = readFileSync(file, "utf8");
-  await checkMarkdown(this.root, body);
-  guardClosingKeywords(body);
+  if (file === undefined && title === undefined) {
+    throw new Error("pr edit requires a body file, --title, or both");
+  }
+  if (title !== undefined && (typeof title !== "string" || !title.trim() || /[\r\n]/.test(title))) {
+    throw new Error("Invalid pull request title");
+  }
+  const body = file === undefined ? undefined : readFileSync(file, "utf8");
+  if (body !== undefined) {
+    await checkMarkdown(this.root, body);
+    guardClosingKeywords(body);
+  }
+  if (title !== undefined) {
+    await checkMarkdown(this.root, title);
+    guardClosingKeywords(title);
+  }
   await this.flowThread(String(number), "pr");
   this.github.writes.beginOperation("pr edit", [{ repo: this.config.repo, number }]);
-  await this.github.rest(`/repos/${this.config.repo}/pulls/${number}`, "PATCH", { body }, false);
+  await this.github.rest(
+    `/repos/${this.config.repo}/pulls/${number}`,
+    "PATCH",
+    { ...(body === undefined ? {} : { body }), ...(title === undefined ? {} : { title }) },
+    false
+  );
   return `Updated pull request #${number}`;
 };
 

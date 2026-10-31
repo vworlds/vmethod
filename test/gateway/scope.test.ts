@@ -633,35 +633,62 @@ test("issue edit writes the checked body only when the previous read still match
   f.done();
 });
 
-test("issue edit on an approved-scope issue prints the stale-scope warning (#359)", async () => {
+test("a title-only issue edit leaves approved scope approved", async () => {
   const issue = scopeIssue({ state: "OPEN" });
-  const comment = review();
+  const comments = [review()];
+  const timeline = [scopeMove({ status: "Executing", previousStatus: "Spec review" })];
   const f = fixtureServer([
     graph({ repository: { issue } }),
     graph({ node: issue }),
-    ...boardReads(),
-    ...scopeReads(
-      issue,
-      [comment],
-      [scopeMove({ status: "Executing", previousStatus: "Spec review" })]
-    ),
-    scopeGraph({ nodes: [comment] }),
     {
       path: "/repos/example/project/issues/8",
       method: "PATCH",
-      body: { body: "New scope" },
+      body: { title: "New title" },
       json: {},
     },
   ]);
-  const file = join(f.root, "body.md");
-  writeFileSync(file, "New scope");
-  mkdirSync(join(f.root, ".tmp"));
-  writeFileSync(join(f.root, ".tmp/issue-read-8.sha256"), bodyHash("Final scope"));
-  await expect(f.transport.call("issueEdit", { ref: "8", file })).resolves.toBe(
-    `Updated issue #8\nscope approval for #8 is now stale; run scope-review 8 <summary-file> before merging`
+  expect(scopeApproved(issue, comments, timeline, config, filter())).toBe(true);
+  await expect(f.transport.call("issueEdit", { ref: "8", title: "New title" })).resolves.toBe(
+    "Updated issue #8"
   );
+  expect(
+    scopeApproved({ ...issue, title: "New title" }, comments, timeline, config, filter())
+  ).toBe(true);
   f.done();
 });
+
+test.each([undefined, "New title"])(
+  "issue body edit on an approved scope warns (title=%s)",
+  async (title) => {
+    const issue = scopeIssue({ state: "OPEN" });
+    const comment = review();
+    const f = fixtureServer([
+      graph({ repository: { issue } }),
+      graph({ node: issue }),
+      ...boardReads(),
+      ...scopeReads(
+        issue,
+        [comment],
+        [scopeMove({ status: "Executing", previousStatus: "Spec review" })]
+      ),
+      scopeGraph({ nodes: [comment] }),
+      {
+        path: "/repos/example/project/issues/8",
+        method: "PATCH",
+        body: { body: "New scope", ...(title === undefined ? {} : { title }) },
+        json: {},
+      },
+    ]);
+    const file = join(f.root, "body.md");
+    writeFileSync(file, "New scope");
+    mkdirSync(join(f.root, ".tmp"));
+    writeFileSync(join(f.root, ".tmp/issue-read-8.sha256"), bodyHash("Final scope"));
+    await expect(f.transport.call("issueEdit", { ref: "8", file, title })).resolves.toBe(
+      `Updated issue #8\nscope approval for #8 is now stale; run scope-review 8 <summary-file> before merging`
+    );
+    f.done();
+  }
+);
 
 test.each([
   {
@@ -825,6 +852,12 @@ test("issue edit --scope-review forwards the summary and refuses malformed flags
     ["edit", "8", "body.md", "--scope-review", "summary.md"],
     env
   );
+  await gatewayVerb(
+    transport,
+    "issue",
+    ["edit", "8", "--title", "New title", "body.md", "--scope-review", "summary.md"],
+    env
+  );
   expect(calls).toEqual([
     { operation: "issueEdit", input: { ref: "8", file: "body.md" }, ctx: { role: "orchestrator" } },
     {
@@ -832,10 +865,15 @@ test("issue edit --scope-review forwards the summary and refuses malformed flags
       input: { ref: "8", file: "body.md", scopeReview: "summary.md" },
       ctx: { role: "orchestrator" },
     },
+    {
+      operation: "issueEdit",
+      input: { ref: "8", file: "body.md", title: "New title", scopeReview: "summary.md" },
+      ctx: { role: "orchestrator" },
+    },
   ]);
   calls.length = 0;
   await expect(
     gatewayVerb(transport, "issue", ["edit", "8", "body.md", "--scope-review"], env)
-  ).rejects.toThrow("Usage: issue");
+  ).rejects.toThrow("Missing value for --scope-review");
   expect(calls).toEqual([]);
 });

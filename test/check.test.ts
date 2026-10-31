@@ -70,6 +70,32 @@ test("check warns when a session predates local settings, but not with its role 
   expect(check(root, { VMETHOD_ROLE: "worker" })).toEqual({ code: 0, messages: [] });
 });
 
+test("a leftover token in local settings warns by key, never by value, without failing", () => {
+  const root = validProject();
+  const settings = join(root, ".claude/settings.local.json");
+  writeFileSync(settings, JSON.stringify({ env: { VMETHOD_ROLE: "worker" } }));
+  expect(check(root, { VMETHOD_ROLE: "worker" })).toEqual({ code: 0, messages: [] });
+  const token = "ghp_" + "b".repeat(36);
+  writeFileSync(settings, JSON.stringify({ env: { VMETHOD_ROLE: "worker", GH_TOKEN: token } }));
+  const present = check(root, { VMETHOD_ROLE: "worker" });
+  expect(present.code).toBe(0);
+  expect(present.messages).toEqual([
+    "WARN GH_TOKEN in .claude/settings.local.json is unused since GH_CONFIG_DIR logins (#285); remove it",
+  ]);
+  expect(present.messages.join("\n")).not.toContain(token);
+  writeFileSync(settings, JSON.stringify({ env: { GITHUB_TOKEN: token } }));
+  expect(check(root, { VMETHOD_ROLE: "worker" }).messages).toEqual([
+    "WARN GITHUB_TOKEN in .claude/settings.local.json is unused since GH_CONFIG_DIR logins (#285); remove it",
+  ]);
+  writeFileSync(settings, JSON.stringify({ env: { GH_TOKEN: token, GITHUB_TOKEN: token } }));
+  expect(check(root, { VMETHOD_ROLE: "worker" }).messages).toHaveLength(2);
+  // An unreadable file is no declaration, exactly like the role reader above.
+  for (const content of ["{ not json", "", "null", JSON.stringify({ env: "GH_TOKEN=x" })]) {
+    writeFileSync(settings, content);
+    expect(check(root, { VMETHOD_ROLE: "worker" })).toEqual({ code: 0, messages: [] });
+  }
+});
+
 test("only explicit prerelease deferral softens absent settings, on every run", () => {
   const root = validProject();
   rmSync(join(root, ".claude/settings.json"));
@@ -303,6 +329,19 @@ test("check requires .claude/ to be gitignored, since it holds each checkout's i
   expect(check(root).code).toBe(1);
   writeFileSync(join(root, ".gitignore"), "/.claude/\n");
   expect(check(root).code).toBe(0);
+});
+
+test("check names a missing .gitignore instead of only the .claude/ rule", () => {
+  const root = validProject();
+  rmSync(join(root, ".gitignore"));
+  const result = check(root);
+  expect(result.code).toBe(1);
+  expect(result.messages).toContain(
+    `no .gitignore found at ${root} (in CI, copy it into the build context)`
+  );
+  expect(result.messages).not.toContain(
+    "Ignore .claude/ in .gitignore: each checkout keeps its own identity in .claude/settings.local.json"
+  );
 });
 
 test("check returns 0 for a valid project, 1 for findings, 2 for a missing dependency", () => {
