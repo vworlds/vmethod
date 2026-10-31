@@ -79,8 +79,6 @@ export class GitHubHttpError extends Error {
   }
 }
 
-/** The in-poll retry log keeps at most this many lines; the older half goes first. */
-
 /** Credentials and unfiltered responses must never cross the operation seam. */
 export class GitHubClient {
   /** Session-local successful-write attribution; no credentials or response text. */
